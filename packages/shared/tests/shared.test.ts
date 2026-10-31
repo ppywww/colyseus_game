@@ -12,13 +12,17 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  ARENA_RADIUS,
   CLIENT_INTERPOLATION_DELAY_MS,
   GAME_TICK_INTERVAL_MS,
   GAME_TICK_RATE,
   MAX_MESSAGES_PER_SECOND,
   MAX_PLAYERS_PER_ROOM,
+  PLAYER_TRANSFORM_RATE_HZ,
   PROJECT_NAME,
   PROTOCOL_VERSION,
+  clampPitch,
+  normalizeYaw,
 } from "../src/index.js";
 
 describe("时间与频率常量", () => {
@@ -58,5 +62,31 @@ describe("房间与协议常量", () => {
   it("项目名称应为非空字符串", () => {
     assert.equal(typeof PROJECT_NAME, "string");
     assert.ok(PROJECT_NAME.length > 0);
+  });
+});
+
+describe("S2 位置同步常量", () => {
+  it("场地半径应为正数", () => {
+    assert.ok(ARENA_RADIUS > 0);
+  });
+
+  it("上报频率应为正数且不高于逻辑帧率的 2 倍", () => {
+    assert.ok(PLAYER_TRANSFORM_RATE_HZ > 0);
+    assert.ok(PLAYER_TRANSFORM_RATE_HZ <= GAME_TICK_RATE * 2);
+  });
+});
+
+describe("角度工具函数", () => {
+  it("normalizeYaw 应归一化到 (-π, π]", () => {
+    assert.ok(normalizeYaw(Math.PI * 3) <= Math.PI);
+    assert.ok(normalizeYaw(-Math.PI * 3) > -Math.PI);
+    assert.equal(normalizeYaw(0), 0);
+    assert.ok(Math.abs(normalizeYaw(Math.PI * 2.5) - (Math.PI * 0.5)) < 1e-9);
+  });
+
+  it("clampPitch 应限制在 ±π/2 内", () => {
+    assert.equal(clampPitch(10), Math.PI / 2);
+    assert.equal(clampPitch(-10), -Math.PI / 2);
+    assert.equal(clampPitch(0.3), 0.3);
   });
 });

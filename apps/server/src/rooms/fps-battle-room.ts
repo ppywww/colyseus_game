@@ -2,6 +2,7 @@ import { Room, type Client } from "@colyseus/core";
 import type { Logger } from "pino";
 
 import {
+  ARENA_RADIUS,
   GAME_TICK_INTERVAL_MS,
   MAX_DISPLAY_NAME_LENGTH,
   MAX_PLAYERS_PER_ROOM,
@@ -14,6 +15,7 @@ import {
 import { BattleState } from "../state/battle-state.js";
 import { Player } from "../state/player.js";
 import { createLogger } from "../utils/logger.js";
+import { sanitizeTransform } from "./transform.js";
 
 export interface FPSBattleRoomOptions {
   maxClients?: number;
@@ -39,6 +41,21 @@ function sanitizeDisplayName(rawName: unknown, sessionId: string): string {
   return `玩家-${sessionId.slice(0, 6)}`;
 }
 
+/**
+ * 确定性出生点：按加入顺序绕场地中心均匀散开（黄金角分布），
+ * 避免玩家重叠出生；S4 可替换为自定义重生逻辑。
+ */
+function nextSpawnPoint(index: number): { x: number; y: number; z: number } {
+  const goldenAngle: number = Math.PI * (3 - Math.sqrt(5));
+  const angle: number = index * goldenAngle;
+  const radius: number = Math.min(ARENA_RADIUS * 0.4, 4 + index * 1.5);
+  return {
+    x: Math.cos(angle) * radius,
+    y: 0,
+    z: Math.sin(angle) * radius,
+  };
+}
+
 /** FPS 对战房间：S1 先验证加入、离开、状态同步与消息往返。 */
 export class FPSBattleRoom extends Room<BattleState> {
   private logger: Logger = createLogger("info");
@@ -59,6 +76,26 @@ export class FPSBattleRoom extends Room<BattleState> {
       client.send(MESSAGE_TYPES.PONG, response);
     });
 
+    this.onMessage<unknown>(MESSAGE_TYPES.PLAYER_TRANSFORM, (client: Client, raw: unknown) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player) {
+        return;
+      }
+
+      const transform = sanitizeTransform(raw);
+      // 丢弃非法消息与乱序包（seq 回绕按 uint32 比较处理常见情形）
+      if (transform === null || transform.seq <= player.seq) {
+        return;
+      }
+
+      player.seq = transform.seq;
+      player.x = transform.x;
+      player.y = transform.y;
+      player.z = transform.z;
+      player.yaw = transform.yaw;
+      player.pitch = transform.pitch;
+    });
+
     this.logger.info({ maxClients: this.maxClients, patchRate: this.patchRate }, "房间已创建");
   }
 
@@ -72,6 +109,12 @@ export class FPSBattleRoom extends Room<BattleState> {
     player.sessionId = client.sessionId;
     player.displayName = sanitizeDisplayName(joinOptions.name, client.sessionId);
     player.joinedAt = Date.now();
+
+    const spawn = nextSpawnPoint(this.state.players.size);
+    player.x = spawn.x;
+    player.y = spawn.y;
+    player.z = spawn.z;
+
     this.state.players.set(client.sessionId, player);
 
     this.logger.info(

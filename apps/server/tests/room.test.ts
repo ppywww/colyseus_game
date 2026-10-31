@@ -54,13 +54,19 @@ async function waitFor(
   throw new Error(`等待超时：${description}`);
 }
 
-/** 等待房间状态满足条件（依赖 Colyseus 状态补丁推送）。 */
+/** 等待房间状态满足条件（依赖 Colyseus 状态补丁推送，容忍首个补丁前的空状态）。 */
 async function waitForState(
   room: Room,
   condition: (state: BattleStateLike) => boolean,
   description: string,
 ): Promise<void> {
-  await waitFor(() => condition(room.state as unknown as BattleStateLike), description);
+  await waitFor(
+    () => {
+      const state = room.state as unknown as BattleStateLike | undefined;
+      return state?.players !== undefined && condition(state);
+    },
+    description,
+  );
 }
 
 function joinOptions(name: string): { name: string; protocolVersion: number } {
@@ -153,6 +159,60 @@ describe("双客户端联机闭环", () => {
       await waitForState(roomA, (s) => s.players.size === 1, "B 离开后 A 应只看到 1 名玩家");
     } finally {
       await roomA.leave();
+    }
+  });
+
+  it("出生点应写入玩家状态且各不相同", async () => {
+    const roomA = (await clientA.joinOrCreate(DEFAULT_ROOM_NAME, joinOptions("SpawnerA"))) as Room;
+    const roomB = (await clientB.joinOrCreate(DEFAULT_ROOM_NAME, joinOptions("SpawnerB"))) as Room;
+
+    try {
+      await waitForState(roomA, (s) => s.players.size === 2, "应看到 2 名玩家");
+      const state = roomA.state as unknown as {
+        players: Map<string, { x: number; z: number }>;
+      };
+      const [a, b] = [...state.players.values()];
+      assert.ok(a && b, "应有两名玩家");
+      const distance = Math.hypot(a.x - b.x, a.z - b.z);
+      assert.ok(distance > 0.5, `两名玩家出生点应分开，实际距离 ${distance}`);
+    } finally {
+      await roomA.leave();
+      await roomB.leave();
+    }
+  });
+
+  it("A 的位置上报应同步到 B，乱序与非法消息应被忽略", async () => {
+    const roomA = (await clientA.joinOrCreate(DEFAULT_ROOM_NAME, joinOptions("Mover"))) as Room;
+    const roomB = (await clientB.joinOrCreate(DEFAULT_ROOM_NAME, joinOptions("Observer"))) as Room;
+
+    try {
+      await waitForState(roomB, (s) => s.players.size === 2, "B 应看到 2 名玩家");
+
+      // 非法消息：不应改变状态
+      roomA.send(MESSAGE_TYPES.PLAYER_TRANSFORM, { seq: 1, x: NaN, y: 0, z: 0, yaw: 0, pitch: 0 });
+      // 乱序消息：seq 相同，不应生效
+      roomA.send(MESSAGE_TYPES.PLAYER_TRANSFORM, { seq: 1, x: 5, y: 0, z: 5, yaw: 0, pitch: 0 });
+      // 合法消息
+      roomA.send(MESSAGE_TYPES.PLAYER_TRANSFORM, { seq: 2, x: 7.5, y: 0, z: -3.25, yaw: 1.2, pitch: 0.1 });
+
+      const stateB = roomB.state as unknown as {
+        players: Map<string, { x: number; z: number; seq: number }>;
+      };
+      const sessionA = roomA.sessionId;
+      await waitFor(
+        () => {
+          const player = stateB.players.get(sessionA);
+          return player !== undefined && player.seq === 2;
+        },
+        "B 应收到 A 的 seq=2 位置更新",
+      );
+
+      const player = stateB.players.get(sessionA);
+      assert.ok(Math.abs(player!.x - 7.5) < 0.01, `x 应为 7.5，实际 ${player!.x}`);
+      assert.ok(Math.abs(player!.z + 3.25) < 0.01, `z 应为 -3.25，实际 ${player!.z}`);
+    } finally {
+      await roomA.leave();
+      await roomB.leave();
     }
   });
 });

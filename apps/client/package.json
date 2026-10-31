@@ -13,8 +13,9 @@
   },
   "dependencies": {
     "@colyseus-fps/shared": "workspace:*",
-    "@colyseus/schema": "^5.0.43",
-    "colyseus.js": "^0.16.22"
+    "@types/three": "^0.186.0",
+    "colyseus.js": "^0.16.22",
+    "three": "^0.187.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

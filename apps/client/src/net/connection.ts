@@ -4,6 +4,7 @@ import {
   DEFAULT_ROOM_NAME,
   MESSAGE_TYPES,
   PROTOCOL_VERSION,
+  type PlayerTransformMessage,
   type PongMessage,
 } from "@colyseus-fps/shared";
 
@@ -43,7 +44,17 @@ export class LobbyConnection {
     room.onStateChange((state: BattleRoomState) => {
       const players: PlayerState[] = [];
       state.players.forEach((player: PlayerState) => {
-        players.push({ ...player });
+        players.push({
+          sessionId: player.sessionId,
+          displayName: player.displayName,
+          joinedAt: player.joinedAt,
+          x: player.x,
+          y: player.y,
+          z: player.z,
+          yaw: player.yaw,
+          pitch: player.pitch,
+          seq: player.seq,
+        });
       });
       players.sort((left, right) => left.joinedAt - right.joinedAt);
       this.handlers.onPlayers(players);
@@ -67,6 +78,18 @@ export class LobbyConnection {
       throw new Error("尚未加入房间");
     }
     this.room.send(MESSAGE_TYPES.PING, { sentAt: Date.now() });
+  }
+
+  public get sessionId(): string | null {
+    return this.room?.sessionId ?? null;
+  }
+
+  /** 上报本地位置/视角；未加入房间时静默忽略（游戏循环无需额外判断）。 */
+  public sendTransform(message: PlayerTransformMessage): void {
+    if (this.room === null) {
+      return;
+    }
+    this.room.send(MESSAGE_TYPES.PLAYER_TRANSFORM, message);
   }
 
   public async leave(): Promise<void> {

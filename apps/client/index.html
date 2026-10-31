@@ -4,14 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
-    <title>Colyseus FPS · 联机大厅</title>
+    <title>Colyseus FPS · 竞技场</title>
   </head>
   <body>
-    <main class="shell">
+    <!-- 大厅：连接设置 -->
+    <main id="lobby" class="shell">
       <section class="panel hero">
         <p class="eyebrow">Colyseus FPS Prototype</p>
-        <h1>S1 联机大厅</h1>
-        <p class="summary">打开两个浏览器标签页，使用不同玩家名加入同一房间，验证 Colyseus 状态同步。</p>
+        <h1>S2 多人竞技场</h1>
+        <p class="summary">加入房间后进入第一人称竞技场，打开两个浏览器标签页即可看到彼此的化身。</p>
       </section>
 
       <section class="panel controls" aria-label="连接设置">
@@ -24,39 +25,29 @@
           <input id="player-name" maxlength="24" autocomplete="off" />
         </label>
         <div class="actions">
-          <button id="join-button" type="button">加入房间</button>
-          <button id="ping-button" type="button" disabled>测试消息</button>
-          <button id="leave-button" type="button" class="secondary" disabled>离开</button>
+          <button id="join-button" type="button">进入战场</button>
         </div>
-      </section>
-
-      <section class="grid">
-        <article class="panel">
-          <div class="section-heading">
-            <h2>连接状态</h2>
-            <span id="status-badge" class="badge">未连接</span>
-          </div>
-          <dl class="details">
-            <div><dt>房间</dt><dd id="room-id">—</dd></div>
-            <div><dt>会话</dt><dd id="session-id">—</dd></div>
-            <div><dt>协议</dt><dd id="protocol-version">—</dd></div>
-          </dl>
-        </article>
-
-        <article class="panel">
-          <div class="section-heading">
-            <h2>房间玩家</h2>
-            <span id="player-count" class="badge">0 人</span>
-          </div>
-          <ul id="player-list" class="player-list"></ul>
-        </article>
+        <p class="join-meta">
+          <span id="join-status" class="badge">未连接</span>
+          <span>协议 v<span id="protocol-version">—</span></span>
+        </p>
       </section>
 
       <section class="panel">
-        <h2>事件日志</h2>
-        <ol id="event-log" class="event-log"></ol>
+        <h2>操作说明</h2>
+        <ul class="help-list">
+          <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移动</li>
+          <li><kbd>Shift</kbd> 冲刺</li>
+          <li><kbd>空格</kbd> 跳跃</li>
+          <li><kbd>鼠标</kbd> 视角（点击画面锁定指针）</li>
+          <li><kbd>Esc</kbd> 释放鼠标</li>
+        </ul>
       </section>
     </main>
+
+    <!-- 游戏容器：canvas 与 HUD 由代码注入 -->
+    <div id="game-container" class="hidden"></div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

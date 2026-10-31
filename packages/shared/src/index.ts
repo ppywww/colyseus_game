@@ -42,10 +42,11 @@ export const DEFAULT_SERVER_PORT: number = 2567;
 /** 玩家显示名最大长度（按字符截断，避免异常长名称刷爆状态同步）。 */
 export const MAX_DISPLAY_NAME_LENGTH: number = 24;
 
-/** S1 阶段的客户端/服务端消息类型。 */
+/** S2 阶段的客户端/服务端消息类型。 */
 export const MESSAGE_TYPES = {
   PING: "ping",
   PONG: "pong",
+  PLAYER_TRANSFORM: "player_transform",
 } as const;
 
 export type MessageType = (typeof MESSAGE_TYPES)[keyof typeof MESSAGE_TYPES];
@@ -66,4 +67,48 @@ export interface PongMessage {
   sentAt: number;
   serverTime: number;
   protocolVersion: number;
+}
+
+/* ------------------------------------------------------------------ *
+ * S2：位置与视角同步
+ * ------------------------------------------------------------------ */
+
+/** 场地半径（米）：客户端出生点与移动边界、服务端越界钳制的共同依据。 */
+export const ARENA_RADIUS: number = 30;
+
+/** 玩家眼睛高度（米）：本地相机与远端模型头顶标签的共同依据。 */
+export const EYE_HEIGHT: number = 1.6;
+
+/** 玩家身高（米）：远端模型与碰撞体的共同依据。 */
+export const PLAYER_HEIGHT: number = 1.8;
+
+/** 客户端上报自身位置/视角的频率（Hz）。 */
+export const PLAYER_TRANSFORM_RATE_HZ: number = 15;
+
+/** 客户端上行位置/视角消息（seq 单调递增，服务端据此丢弃乱序包）。 */
+export interface PlayerTransformMessage {
+  seq: number;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  pitch: number;
+}
+
+/** 归一化 yaw 到 (-π, π]。 */
+export function normalizeYaw(yaw: number): number {
+  const twoPi: number = Math.PI * 2;
+  let result: number = yaw % twoPi;
+  if (result <= -Math.PI) {
+    result += twoPi;
+  } else if (result > Math.PI) {
+    result -= twoPi;
+  }
+  return result;
+}
+
+/** 钳制 pitch 到 [-π/2, π/2]，防止远端视角翻转。 */
+export function clampPitch(pitch: number): number {
+  const limit: number = Math.PI / 2;
+  return Math.min(limit, Math.max(-limit, pitch));
 }

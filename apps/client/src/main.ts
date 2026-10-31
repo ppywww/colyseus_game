@@ -1,11 +1,10 @@
 import {
   DEFAULT_SERVER_PORT,
-  MESSAGE_TYPES,
   PROTOCOL_VERSION,
-  type PongMessage,
 } from "@colyseus-fps/shared";
 
-import { LobbyConnection, type ConnectionInfo } from "./net/connection.js";
+import { Game } from "./game/game.js";
+import { LobbyConnection } from "./net/connection.js";
 import type { PlayerState } from "./net/types.js";
 import "./style.css";
 
@@ -19,139 +18,95 @@ function requiredElement<T extends HTMLElement>(id: string): T {
   return element as T;
 }
 
+const lobby = requiredElement<HTMLElement>("lobby");
+const gameContainer = requiredElement<HTMLElement>("game-container");
 const serverUrlInput = requiredElement<HTMLInputElement>("server-url");
 const playerNameInput = requiredElement<HTMLInputElement>("player-name");
 const joinButton = requiredElement<HTMLButtonElement>("join-button");
-const pingButton = requiredElement<HTMLButtonElement>("ping-button");
-const leaveButton = requiredElement<HTMLButtonElement>("leave-button");
-const statusBadge = requiredElement<HTMLSpanElement>("status-badge");
-const roomIdElement = requiredElement<HTMLElement>("room-id");
-const sessionIdElement = requiredElement<HTMLElement>("session-id");
+const statusBadge = requiredElement<HTMLElement>("join-status");
 const protocolVersionElement = requiredElement<HTMLElement>("protocol-version");
-const playerCountElement = requiredElement<HTMLSpanElement>("player-count");
-const playerList = requiredElement<HTMLUListElement>("player-list");
-const eventLog = requiredElement<HTMLOListElement>("event-log");
 
 let connection: LobbyConnection | null = null;
-let knownPlayerIds = new Set<string>();
+let game: Game | null = null;
+/** 最新一次房间状态快照，供出生点查询与游戏初始化使用。 */
+let latestPlayers: readonly PlayerState[] = [];
 
+protocolVersionElement.textContent = String(PROTOCOL_VERSION);
 serverUrlInput.value = defaultServerUrl;
 playerNameInput.value = `玩家-${Math.floor(Math.random() * 900 + 100)}`;
-protocolVersionElement.textContent = String(PROTOCOL_VERSION);
 
-function appendLog(message: string): void {
-  const item = document.createElement("li");
-  const time = document.createElement("time");
-  time.dateTime = new Date().toISOString();
-  time.textContent = new Date().toLocaleTimeString();
-  item.append(time, document.createTextNode(message));
-  eventLog.prepend(item);
-}
-
-function setStatus(text: string, connected: boolean): void {
+function setStatus(text: string, busy: boolean): void {
   statusBadge.textContent = text;
-  statusBadge.classList.toggle("connected", connected);
+  statusBadge.classList.toggle("busy", busy);
 }
 
-function setConnectedUI(connected: boolean): void {
-  joinButton.disabled = connected;
-  pingButton.disabled = !connected;
-  leaveButton.disabled = !connected;
-  serverUrlInput.disabled = connected;
-  playerNameInput.disabled = connected;
-}
-
-function renderPlayers(players: PlayerState[]): void {
-  playerList.replaceChildren();
-  playerCountElement.textContent = `${players.length} 人`;
-
-  const nextPlayerIds = new Set(players.map((player) => player.sessionId));
-  for (const player of players) {
-    if (!knownPlayerIds.has(player.sessionId)) {
-      appendLog(`${player.displayName} 加入了房间`);
-    }
-
-    const item = document.createElement("li");
-    const name = document.createElement("strong");
-    const session = document.createElement("span");
-    name.textContent = player.displayName;
-    session.textContent = player.sessionId;
-    item.append(name, session);
-    playerList.append(item);
-  }
-
-  for (const playerId of knownPlayerIds) {
-    if (!nextPlayerIds.has(playerId)) {
-      appendLog(`玩家 ${playerId} 离开了房间`);
-    }
-  }
-  knownPlayerIds = nextPlayerIds;
-}
-
-function resetRoomInfo(): void {
-  roomIdElement.textContent = "—";
-  sessionIdElement.textContent = "—";
-  playerList.replaceChildren();
-  playerCountElement.textContent = "0 人";
-  knownPlayerIds = new Set<string>();
-}
-
-function handleLeave(code: number): void {
+function returnToLobby(message: string): void {
+  game?.dispose();
+  game = null;
   connection = null;
-  setConnectedUI(false);
-  setStatus("未连接", false);
-  resetRoomInfo();
-  appendLog(`连接已关闭（代码 ${code}）`);
+  latestPlayers = [];
+  lobby.classList.remove("hidden");
+  gameContainer.classList.add("hidden");
+  joinButton.disabled = false;
+  setStatus(message, false);
+  document.exitPointerLock?.();
+}
+
+/** 加入后从房间状态读取自己的出生点（首个状态补丁必达）。 */
+function waitForSelfSpawn(selfId: string): Promise<{ x: number; y: number; z: number }> {
+  return new Promise((resolve, reject) => {
+    const startedAt = performance.now();
+    const poll = (): void => {
+      const self = latestPlayers.find((player) => player.sessionId === selfId);
+      if (self) {
+        resolve({ x: self.x, y: self.y, z: self.z });
+      } else if (performance.now() - startedAt > 8000) {
+        reject(new Error("等待出生点超时"));
+      } else {
+        window.setTimeout(poll, 30);
+      }
+    };
+    poll();
+  });
 }
 
 joinButton.addEventListener("click", () => {
   void (async () => {
     joinButton.disabled = true;
-    setStatus("连接中…", false);
-    appendLog(`正在连接 ${serverUrlInput.value}`);
+    setStatus("连接中…", true);
 
     connection = new LobbyConnection(serverUrlInput.value, {
-      onPlayers: renderPlayers,
-      onPong(message: PongMessage) {
-        const latency = Date.now() - message.sentAt;
-        appendLog(`${MESSAGE_TYPES.PING}/${MESSAGE_TYPES.PONG} 往返约 ${latency}ms`);
+      onPlayers(players: PlayerState[]): void {
+        latestPlayers = players;
+        game?.onPlayersChanged(players);
       },
-      onLeave: handleLeave,
+      onPong() {
+        // S2 不再需要手动 ping，保留通道供调试
+      },
+      onLeave(code: number): void {
+        returnToLobby(`连接已关闭（代码 ${code}）`);
+      },
     });
 
     try {
-      const info: ConnectionInfo = await connection.join(playerNameInput.value);
-      roomIdElement.textContent = info.roomId;
-      sessionIdElement.textContent = info.sessionId;
-      setStatus("已连接", true);
-      setConnectedUI(true);
-      appendLog("加入房间成功");
+      await connection.join(playerNameInput.value);
+      const selfId = connection.sessionId;
+      if (selfId === null) {
+        throw new Error("会话未建立");
+      }
+
+      const spawn = await waitForSelfSpawn(selfId);
+
+      game = new Game(gameContainer, connection, selfId, spawn);
+      game.start();
+      game.onPlayersChanged(latestPlayers);
+
+      lobby.classList.add("hidden");
+      gameContainer.classList.remove("hidden");
     } catch (error: unknown) {
       connection = null;
       joinButton.disabled = false;
-      setStatus("连接失败", false);
-      appendLog(error instanceof Error ? `连接失败：${error.message}` : "连接失败");
+      setStatus(error instanceof Error ? `连接失败：${error.message}` : "连接失败", false);
     }
   })();
 });
-
-leaveButton.addEventListener("click", () => {
-  void (async () => {
-    leaveButton.disabled = true;
-    try {
-      await connection?.leave();
-    } finally {
-      handleLeave(1000);
-    }
-  })();
-});
-
-pingButton.addEventListener("click", () => {
-  try {
-    connection?.sendPing();
-  } catch (error: unknown) {
-    appendLog(error instanceof Error ? error.message : "发送测试消息失败");
-  }
-});
-
-appendLog("页面已就绪");

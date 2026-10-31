@@ -3,49 +3,60 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Colyseus FPS 原型（客户端占位）</title>
-    <style>
-      body {
-        margin: 0;
-        min-height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: #10151c;
-        color: #e6edf3;
-        font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-      }
-      main {
-        max-width: 640px;
-        padding: 32px 40px;
-        border: 1px solid #2b3644;
-        border-radius: 12px;
-        line-height: 1.7;
-      }
-      h1 {
-        font-size: 20px;
-        margin: 0 0 12px;
-      }
-      code {
-        background: #1d2632;
-        padding: 2px 6px;
-        border-radius: 4px;
-      }
-    </style>
+    <meta name="color-scheme" content="dark" />
+    <title>Colyseus FPS · 联机大厅</title>
   </head>
   <body>
-    <main>
-      <h1>Colyseus FPS 原型 · 客户端占位页</h1>
-      <p>
-        客户端渲染引擎方案（Three.js / Babylon.js / PlayCanvas）将在<strong>原型阶段</strong>确定后引入，
-        届时本文件会被替换为真实的游戏画布容器（<code>&lt;canvas id="game"&gt;</code>）。
-      </p>
-      <p>当前可执行的验证方式：</p>
-      <ul>
-        <li><code>pnpm dev:client</code>：以 tsx 运行 <code>src/main.ts</code> 占位脚本</li>
-        <li><code>pnpm --filter @colyseus-fps/client typecheck</code>：类型检查</li>
-      </ul>
-      <p>目录规划：<code>net/</code> 网络连接 · <code>scenes/</code> 场景 · <code>ui/</code> 界面 · <code>input/</code> 输入。</p>
+    <main class="shell">
+      <section class="panel hero">
+        <p class="eyebrow">Colyseus FPS Prototype</p>
+        <h1>S1 联机大厅</h1>
+        <p class="summary">打开两个浏览器标签页，使用不同玩家名加入同一房间，验证 Colyseus 状态同步。</p>
+      </section>
+
+      <section class="panel controls" aria-label="连接设置">
+        <label>
+          服务端地址
+          <input id="server-url" type="url" spellcheck="false" autocomplete="off" />
+        </label>
+        <label>
+          玩家名
+          <input id="player-name" maxlength="24" autocomplete="off" />
+        </label>
+        <div class="actions">
+          <button id="join-button" type="button">加入房间</button>
+          <button id="ping-button" type="button" disabled>测试消息</button>
+          <button id="leave-button" type="button" class="secondary" disabled>离开</button>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <div class="section-heading">
+            <h2>连接状态</h2>
+            <span id="status-badge" class="badge">未连接</span>
+          </div>
+          <dl class="details">
+            <div><dt>房间</dt><dd id="room-id">—</dd></div>
+            <div><dt>会话</dt><dd id="session-id">—</dd></div>
+            <div><dt>协议</dt><dd id="protocol-version">—</dd></div>
+          </dl>
+        </article>
+
+        <article class="panel">
+          <div class="section-heading">
+            <h2>房间玩家</h2>
+            <span id="player-count" class="badge">0 人</span>
+          </div>
+          <ul id="player-list" class="player-list"></ul>
+        </article>
+      </section>
+
+      <section class="panel">
+        <h2>事件日志</h2>
+        <ol id="event-log" class="event-log"></ol>
+      </section>
     </main>
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

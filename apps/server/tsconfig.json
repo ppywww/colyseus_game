@@ -26,6 +26,8 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
     "isolatedModules": true
   },
   "include": ["src/**/*.ts"],

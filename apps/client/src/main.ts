@@ -1,35 +1,157 @@
-/**
- * 客户端入口（骨架占位版本）。
- *
- * 当前阶段客户端渲染引擎尚未确定（候选：Three.js / Babylon.js / PlayCanvas），
- * 因此这里只做「常量可见性 + 目录规划」的占位验证，不创建画布、不建立网络连接。
- *
- * 后续实现顺序：
- *   1. src/net    ：Colyseus 客户端连接、房间状态订阅、消息发送
- *   2. src/input  ：键鼠输入采集与本地预测缓冲
- *   3. src/scenes ：场景、玩家实体、插值与外推渲染
- *   4. src/ui     ：HUD、计分板、结算界面
- */
+import {
+  DEFAULT_SERVER_PORT,
+  MESSAGE_TYPES,
+  PROTOCOL_VERSION,
+  type PongMessage,
+} from "@colyseus-fps/shared";
 
-import { CLIENT_INTERPOLATION_DELAY_MS, GAME_TICK_RATE, PROJECT_NAME } from "@colyseus-fps/shared";
+import { LobbyConnection, type ConnectionInfo } from "./net/connection.js";
+import type { PlayerState } from "./net/types.js";
+import "./style.css";
 
-const placeholderInfo: string[] = [
-  `${PROJECT_NAME} - 客户端（骨架占位）`,
-  `逻辑帧率           : ${GAME_TICK_RATE} Hz`,
-  `客户端插值延迟     : ${CLIENT_INTERPOLATION_DELAY_MS} ms`,
-  "渲染引擎           : 原型阶段确定（Three.js / Babylon.js / PlayCanvas）",
-  "连接地址           : 由 src/net/connection.ts 读取环境变量后建立",
-];
+const defaultServerUrl: string = import.meta.env.VITE_COLYSEUS_URL ?? `ws://localhost:${DEFAULT_SERVER_PORT}`;
 
-console.log("=========================================================");
-for (const line of placeholderInfo) {
-  console.log(` ${line}`);
+function requiredElement<T extends HTMLElement>(id: string): T {
+  const element = document.getElementById(id);
+  if (element === null) {
+    throw new Error(`缺少页面元素 #${id}`);
+  }
+  return element as T;
 }
-console.log("---------------------------------------------------------");
-console.log(" 待实现位置：");
-console.log("   - src/net/connection.ts   ：Colyseus 客户端连接与重连");
-console.log("   - src/net/state-sync.ts   ：状态订阅与快照缓冲");
-console.log("   - src/input/keyboard-mouse.ts ：输入采集");
-console.log("   - src/scenes/battle-scene.ts  ：战斗场景与实体渲染");
-console.log("   - src/ui/hud.ts           ：HUD 与计分板");
-console.log("=========================================================");
+
+const serverUrlInput = requiredElement<HTMLInputElement>("server-url");
+const playerNameInput = requiredElement<HTMLInputElement>("player-name");
+const joinButton = requiredElement<HTMLButtonElement>("join-button");
+const pingButton = requiredElement<HTMLButtonElement>("ping-button");
+const leaveButton = requiredElement<HTMLButtonElement>("leave-button");
+const statusBadge = requiredElement<HTMLSpanElement>("status-badge");
+const roomIdElement = requiredElement<HTMLElement>("room-id");
+const sessionIdElement = requiredElement<HTMLElement>("session-id");
+const protocolVersionElement = requiredElement<HTMLElement>("protocol-version");
+const playerCountElement = requiredElement<HTMLSpanElement>("player-count");
+const playerList = requiredElement<HTMLUListElement>("player-list");
+const eventLog = requiredElement<HTMLOListElement>("event-log");
+
+let connection: LobbyConnection | null = null;
+let knownPlayerIds = new Set<string>();
+
+serverUrlInput.value = defaultServerUrl;
+playerNameInput.value = `玩家-${Math.floor(Math.random() * 900 + 100)}`;
+protocolVersionElement.textContent = String(PROTOCOL_VERSION);
+
+function appendLog(message: string): void {
+  const item = document.createElement("li");
+  const time = document.createElement("time");
+  time.dateTime = new Date().toISOString();
+  time.textContent = new Date().toLocaleTimeString();
+  item.append(time, document.createTextNode(message));
+  eventLog.prepend(item);
+}
+
+function setStatus(text: string, connected: boolean): void {
+  statusBadge.textContent = text;
+  statusBadge.classList.toggle("connected", connected);
+}
+
+function setConnectedUI(connected: boolean): void {
+  joinButton.disabled = connected;
+  pingButton.disabled = !connected;
+  leaveButton.disabled = !connected;
+  serverUrlInput.disabled = connected;
+  playerNameInput.disabled = connected;
+}
+
+function renderPlayers(players: PlayerState[]): void {
+  playerList.replaceChildren();
+  playerCountElement.textContent = `${players.length} 人`;
+
+  const nextPlayerIds = new Set(players.map((player) => player.sessionId));
+  for (const player of players) {
+    if (!knownPlayerIds.has(player.sessionId)) {
+      appendLog(`${player.displayName} 加入了房间`);
+    }
+
+    const item = document.createElement("li");
+    const name = document.createElement("strong");
+    const session = document.createElement("span");
+    name.textContent = player.displayName;
+    session.textContent = player.sessionId;
+    item.append(name, session);
+    playerList.append(item);
+  }
+
+  for (const playerId of knownPlayerIds) {
+    if (!nextPlayerIds.has(playerId)) {
+      appendLog(`玩家 ${playerId} 离开了房间`);
+    }
+  }
+  knownPlayerIds = nextPlayerIds;
+}
+
+function resetRoomInfo(): void {
+  roomIdElement.textContent = "—";
+  sessionIdElement.textContent = "—";
+  playerList.replaceChildren();
+  playerCountElement.textContent = "0 人";
+  knownPlayerIds = new Set<string>();
+}
+
+function handleLeave(code: number): void {
+  connection = null;
+  setConnectedUI(false);
+  setStatus("未连接", false);
+  resetRoomInfo();
+  appendLog(`连接已关闭（代码 ${code}）`);
+}
+
+joinButton.addEventListener("click", () => {
+  void (async () => {
+    joinButton.disabled = true;
+    setStatus("连接中…", false);
+    appendLog(`正在连接 ${serverUrlInput.value}`);
+
+    connection = new LobbyConnection(serverUrlInput.value, {
+      onPlayers: renderPlayers,
+      onPong(message: PongMessage) {
+        const latency = Date.now() - message.sentAt;
+        appendLog(`${MESSAGE_TYPES.PING}/${MESSAGE_TYPES.PONG} 往返约 ${latency}ms`);
+      },
+      onLeave: handleLeave,
+    });
+
+    try {
+      const info: ConnectionInfo = await connection.join(playerNameInput.value);
+      roomIdElement.textContent = info.roomId;
+      sessionIdElement.textContent = info.sessionId;
+      setStatus("已连接", true);
+      setConnectedUI(true);
+      appendLog("加入房间成功");
+    } catch (error: unknown) {
+      connection = null;
+      joinButton.disabled = false;
+      setStatus("连接失败", false);
+      appendLog(error instanceof Error ? `连接失败：${error.message}` : "连接失败");
+    }
+  })();
+});
+
+leaveButton.addEventListener("click", () => {
+  void (async () => {
+    leaveButton.disabled = true;
+    try {
+      await connection?.leave();
+    } finally {
+      handleLeave(1000);
+    }
+  })();
+});
+
+pingButton.addEventListener("click", () => {
+  try {
+    connection?.sendPing();
+  } catch (error: unknown) {
+    appendLog(error instanceof Error ? error.message : "发送测试消息失败");
+  }
+});
+
+appendLog("页面已就绪");

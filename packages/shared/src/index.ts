@@ -32,3 +32,38 @@ export const MAX_MESSAGES_PER_SECOND: number = 30;
 
 /** 协议版本号：客户端与服务端不一致时拒绝连接。 */
 export const PROTOCOL_VERSION: number = 1;
+
+/** 默认房间名：客户端与服务端必须保持一致。 */
+export const DEFAULT_ROOM_NAME: string = "fps_battle";
+
+/** 默认服务端 WebSocket 端口。 */
+export const DEFAULT_SERVER_PORT: number = 2567;
+
+/** 玩家显示名最大长度（按字符截断，避免异常长名称刷爆状态同步）。 */
+export const MAX_DISPLAY_NAME_LENGTH: number = 24;
+
+/** S1 阶段的客户端/服务端消息类型。 */
+export const MESSAGE_TYPES = {
+  PING: "ping",
+  PONG: "pong",
+} as const;
+
+export type MessageType = (typeof MESSAGE_TYPES)[keyof typeof MESSAGE_TYPES];
+
+/** 加入房间时客户端提交的选项。 */
+export interface JoinRoomOptions {
+  name?: string;
+  protocolVersion: number;
+}
+
+/** 客户端 Ping 消息，用于验证消息通道。 */
+export interface PingMessage {
+  sentAt: number;
+}
+
+/** 服务端 Pong 响应。 */
+export interface PongMessage {
+  sentAt: number;
+  serverTime: number;
+  protocolVersion: number;
+}

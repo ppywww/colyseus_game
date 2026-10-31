@@ -1,0 +1,8 @@
+# pnpm workspace 配置
+# apps/*    ：可运行应用（服务端、客户端）
+# packages/* ：可复用代码包（前后端共享的类型与常量）
+packages:
+  - "apps/*"
+  - "packages/*"
+allowBuilds:
+  esbuild: true

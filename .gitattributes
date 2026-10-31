@@ -1,0 +1,20 @@
+# 统一行尾：仓库内一律 LF，检出时按各平台自动转换
+* text=auto eol=lf
+
+# Windows 脚本保持 CRLF，避免 cmd/PowerShell 执行异常
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制资源，禁止 Git 做任何转换或 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.mp3 binary
+*.mp4 binary
+*.glb binary

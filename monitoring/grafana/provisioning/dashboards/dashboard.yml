@@ -1,0 +1,16 @@
+# Grafana 仪表盘自动供给（Provisioning）
+# 扫描 /var/lib/grafana/dashboards 目录下的 JSON 仪表盘文件并自动导入。
+
+apiVersion: 1
+
+providers:
+  - name: colyseus-fps
+    orgId: 1
+    folder: Colyseus FPS
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

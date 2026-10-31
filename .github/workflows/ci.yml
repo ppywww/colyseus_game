@@ -1,0 +1,47 @@
+name: CI
+
+# 触发条件：推送到主分支，或针对主分支的 PR
+on:
+  push:
+    branches: ["main", "develop"]
+  pull_request:
+    branches: ["main", "develop"]
+  workflow_dispatch:
+
+# 同一分支的多次提交只保留最新一次运行，避免排队浪费
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Install / Typecheck / Test (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          # 未显式指定 version 时读取 package.json 的 packageManager 字段（pnpm@12.16.1）
+          run_install: false
+
+      - name: 安装 Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 类型检查
+        run: pnpm typecheck
+
+      - name: 运行测试
+        run: pnpm test
+
+      - name: 构建
+        run: pnpm build

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Colyseus FPS 原型（客户端占位）</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #10151c;
+        color: #e6edf3;
+        font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      }
+      main {
+        max-width: 640px;
+        padding: 32px 40px;
+        border: 1px solid #2b3644;
+        border-radius: 12px;
+        line-height: 1.7;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 12px;
+      }
+      code {
+        background: #1d2632;
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Colyseus FPS 原型 · 客户端占位页</h1>
+      <p>
+        客户端渲染引擎方案（Three.js / Babylon.js / PlayCanvas）将在<strong>原型阶段</strong>确定后引入，
+        届时本文件会被替换为真实的游戏画布容器（<code>&lt;canvas id="game"&gt;</code>）。
+      </p>
+      <p>当前可执行的验证方式：</p>
+      <ul>
+        <li><code>pnpm dev:client</code>：以 tsx 运行 <code>src/main.ts</code> 占位脚本</li>
+        <li><code>pnpm --filter @colyseus-fps/client typecheck</code>：类型检查</li>
+      </ul>
+      <p>目录规划：<code>net/</code> 网络连接 · <code>scenes/</code> 场景 · <code>ui/</code> 界面 · <code>input/</code> 输入。</p>
+    </main>
+  </body>
+</html>

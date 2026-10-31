@@ -1,0 +1,26 @@
+{
+  "name": "colyseus-fps-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "description": "基于 Colyseus 框架的多人实时对战游戏原型及其安全增强设计与实现（本科毕业设计）",
+  "license": "MIT",
+  "author": "Yu Peng",
+  "packageManager": "pnpm@12.16.1",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=12.0.0"
+  },
+  "scripts": {
+    "dev:server": "pnpm --filter @colyseus-fps/server dev",
+    "dev:client": "pnpm --filter @colyseus-fps/client dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "monitoring:up": "docker compose -f monitoring/docker-compose.yml up -d"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

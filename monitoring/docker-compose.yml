@@ -1,0 +1,54 @@
+# =============================================================
+# 监控组件：Prometheus + Grafana
+#
+# 前置条件：本机需安装 Docker Desktop（当前未安装）。
+# 启动：在项目根目录执行   pnpm monitoring:up
+# 停止：docker compose -f monitoring/docker-compose.yml down
+#
+# 说明：
+#   - 服务端由宿主机（Windows）直接运行，Prometheus 通过 host.docker.internal 访问宿主机端口；
+#   - 服务端需先暴露 http://127.0.0.1:9464/metrics（METRICS_PORT 保持一致）；
+#   - 变量读取：Compose 默认读取「compose 文件所在目录」下的 .env，即 monitoring/.env，
+#     而不是仓库根目录的 .env（因为启动时用了 -f 指定文件路径）。
+#     如需覆盖 GRAFANA_ADMIN_PASSWORD，请在 monitoring/ 目录下自建 .env，
+#     或使用：docker compose -f monitoring/docker-compose.yml --env-file .env up -d
+#     未设置时回落到默认值 admin。
+# =============================================================
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: colyseus-fps-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.5.0
+    container_name: colyseus-fps-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_INSTALL_PLUGINS: ""
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  prometheus-data:
+  grafana-data:

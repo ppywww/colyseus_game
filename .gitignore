@@ -1,0 +1,48 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# 测试与覆盖率
+coverage/
+.nyc_output/
+
+# 环境变量（本地私密配置，不入库）
+.env
+.env.local
+.env.*.local
+
+# 日志
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# SQLite 数据库文件（含 WAL 模式附属文件）
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.db-journal
+data/*.sqlite
+data/*.sqlite-wal
+data/*.sqlite-shm
+data/*.sqlite-journal
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 编辑器（保留团队共享配置作为例外）
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+
+# 临时文件
+tmp/
+temp/

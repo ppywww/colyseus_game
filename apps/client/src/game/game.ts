@@ -14,11 +14,15 @@ import {
   CLIENT_INTERPOLATION_DELAY_MS,
   EYE_HEIGHT,
   PLAYER_TRANSFORM_RATE_HZ,
+  WEAPON_COOLDOWN_MS,
+  type KillMessage,
   type PlayerTransformMessage,
+  type ShotMessage,
 } from "@colyseus-fps/shared";
 
 import type { LobbyConnection } from "../net/connection.js";
 import type { PlayerState } from "../net/types.js";
+import { CombatEffects } from "./effects.js";
 import { Hud } from "./hud.js";
 import { InputController } from "./input.js";
 import { RemotePlayerManager } from "./remote-players.js";
@@ -42,6 +46,7 @@ export class Game {
   private readonly hud: Hud;
   private readonly remotePlayers: RemotePlayerManager;
   private readonly viewModel: ViewModel;
+  private readonly effects: CombatEffects;
   private readonly colliders = obstacleColliders();
 
   private readonly kinematics: PlayerKinematics;
@@ -52,6 +57,13 @@ export class Game {
   private transformSeq = 0;
   private latestPlayers: readonly PlayerState[] = [];
   private disposed = false;
+
+  // S3 战斗状态（全部以服务端下发为准）
+  private lastFireAt = 0;
+  private lastRespawnSeq = 0;
+  private selfAlive = true;
+  private selfHp = 100;
+  private selfRespawnAt = 0;
 
   public constructor(
     private readonly container: HTMLElement,
@@ -85,6 +97,7 @@ export class Game {
     this.hud = new Hud(container);
     this.remotePlayers = new RemotePlayerManager(this.scene, CLIENT_INTERPOLATION_DELAY_MS);
     this.viewModel = new ViewModel(this.camera);
+    this.effects = new CombatEffects(this.scene);
 
     this.kinematics = {
       x: spawn.x,
@@ -101,6 +114,7 @@ export class Game {
     this.hud.lockOverlayElement.addEventListener("click", this.handleCanvasClick);
     document.addEventListener("pointerlockchange", this.handlePointerLockChange);
     document.addEventListener("pointerlockerror", this.handlePointerLockError);
+    document.addEventListener("mousedown", this.handleMouseDown);
     window.addEventListener("resize", this.handleResize);
 
     // 容器尺寸可能被 CSS/布局变化（而非 window resize）改变，主动监听
@@ -121,6 +135,35 @@ export class Game {
     console.warn("指针锁定失败：请再次点击画面（浏览器可能限制了锁定频率）");
   };
 
+  /** 左键开火：仅发送意图，弹道与伤害由服务端裁定。 */
+  private readonly handleMouseDown = (event: MouseEvent): void => {
+    if (event.button !== 0 || !this.input.isPointerLocked() || !this.selfAlive) {
+      return;
+    }
+    const now = performance.now();
+    if (now - this.lastFireAt < WEAPON_COOLDOWN_MS) {
+      return;
+    }
+    this.lastFireAt = now;
+    this.connection.sendFire();
+    this.viewModel.recoil();
+  };
+
+  /** 服务端弹道广播：渲染轨迹；自己命中时给命中反馈。 */
+  public handleShot(message: ShotMessage): void {
+    this.effects.addTracer(message.origin, message.hit);
+    if (message.shooterId === this.selfSessionId && message.hitPlayerId !== null) {
+      this.hud.flashHitmarker();
+    }
+  }
+
+  /** 击杀广播：写入击杀播报。 */
+  public handleKill(message: KillMessage): void {
+    const nameOf = (id: string): string =>
+      this.latestPlayers.find((player) => player.sessionId === id)?.displayName ?? id.slice(0, 6);
+    this.hud.pushKillFeed(`${nameOf(message.killerId)} 击杀了 ${nameOf(message.victimId)}`);
+  }
+
   private readonly handlePointerLockChange = (): void => {
     this.hud.setLockOverlayVisible(!this.input.isPointerLocked());
   };
@@ -138,6 +181,23 @@ export class Game {
     this.latestPlayers = players;
     this.remotePlayers.sync(players, this.selfSessionId, performance.now());
     this.hud.setPlayers(players, this.selfSessionId);
+
+    const self = players.find((player) => player.sessionId === this.selfSessionId);
+    if (self) {
+      // 重生：服务端 respawnSeq 自增，本地位置吸附到新的出生点
+      if (self.respawnSeq !== this.lastRespawnSeq) {
+        this.lastRespawnSeq = self.respawnSeq;
+        this.kinematics.x = self.x;
+        this.kinematics.y = self.y;
+        this.kinematics.z = self.z;
+        this.kinematics.vy = 0;
+        this.kinematics.yaw = Math.atan2(-self.x, -self.z);
+        this.kinematics.pitch = 0;
+      }
+      this.selfAlive = self.alive;
+      this.selfHp = self.hp;
+      this.selfRespawnAt = self.respawnAt;
+    }
   }
 
   public start(): void {
@@ -209,18 +269,22 @@ export class Game {
     // 远端插值渲染（回退固定延迟，见 shared 常量）
     this.remotePlayers.render(nowMs - 0); // sample 内部已减延迟
 
-    // 视模型摆动
+    // 视模型摆动与特效
     const moving =
       locked &&
       (moveInput.forward || moveInput.backward || moveInput.left || moveInput.right) &&
       this.kinematics.grounded;
     this.viewModel.update(dtSeconds, moving, this.kinematics.grounded);
+    this.effects.update(nowMs);
 
     // HUD
     this.hud.update({
       position: { x: this.kinematics.x, y: this.kinematics.y, z: this.kinematics.z },
       playerCount: this.latestPlayers.length,
       remoteCount: this.remotePlayers.count(),
+      selfHp: this.selfHp,
+      selfAlive: this.selfAlive,
+      selfRespawnAt: this.selfRespawnAt,
     });
 
     this.renderer.render(this.scene, this.camera);
@@ -237,10 +301,12 @@ export class Game {
     this.hud.lockOverlayElement.removeEventListener("click", this.handleCanvasClick);
     document.removeEventListener("pointerlockchange", this.handlePointerLockChange);
     document.removeEventListener("pointerlockerror", this.handlePointerLockError);
+    document.removeEventListener("mousedown", this.handleMouseDown);
     window.removeEventListener("resize", this.handleResize);
     this.input.dispose();
     this.hud.dispose();
     this.remotePlayers.dispose();
+    this.effects.dispose();
     this.viewModel.dispose(this.camera);
     this.renderer.dispose();
     this.renderer.domElement.remove();

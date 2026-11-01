@@ -8,6 +8,7 @@ import * as THREE from "three";
 export class ViewModel {
   private readonly holder: THREE.Group;
   private bobPhase = 0;
+  private recoilOffset = 0;
 
   public constructor(camera: THREE.Camera) {
     this.holder = new THREE.Group();
@@ -40,14 +41,20 @@ export class ViewModel {
     camera.add(this.holder);
   }
 
+  /** 开火后坐：枪身短促后顶并指数回弹。 */
+  public recoil(): void {
+    this.recoilOffset = 0.07;
+  }
+
   /** moving：是否正在移动（用于摆动）； grounded 预留落地回弹。 */
   public update(dtSeconds: number, moving: boolean, _grounded: boolean): void {
     if (moving) {
       this.bobPhase += dtSeconds * 9;
     }
+    this.recoilOffset *= Math.exp(-dtSeconds * 14);
     const bobX = Math.sin(this.bobPhase) * 0.008;
     const bobY = Math.abs(Math.cos(this.bobPhase)) * 0.01;
-    this.holder.position.set(0.24 + bobX, -0.22 + bobY, -0.45);
+    this.holder.position.set(0.24 + bobX, -0.22 + bobY, -0.45 + this.recoilOffset);
   }
 
   public dispose(camera: THREE.Camera): void {

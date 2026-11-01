@@ -282,3 +282,126 @@ kbd {
   font-weight: 600;
   letter-spacing: 0.1em;
 }
+
+/* ---------- S3 战斗 HUD ---------- */
+
+/* 命中标记：命中玩家时准星旁短暂显示 ✕ */
+#hitmarker {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  color: #f87171;
+  font-size: 20px;
+  font-weight: 700;
+  text-shadow: 0 0 4px rgba(0, 0, 0, 0.9);
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+
+#hitmarker.visible {
+  opacity: 1;
+}
+
+.hud-player-row.dead {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+/* 击杀播报（右上） */
+.hud-killfeed {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+  min-width: 200px;
+}
+
+.hud-killfeed-item {
+  padding: 3px 10px;
+  background: rgba(60, 18, 18, 0.78);
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #fecaca;
+  animation: killfeed-in 0.15s ease;
+}
+
+@keyframes killfeed-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 血量条（左下） */
+.hud-hp {
+  position: absolute;
+  left: 16px;
+  bottom: 52px;
+  width: 220px;
+  height: 20px;
+  background: rgba(13, 20, 32, 0.78);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.hud-hp-bar {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #22c55e, #4ade80);
+  transition: width 0.12s ease;
+}
+
+.hud-hp-bar.low {
+  background: linear-gradient(90deg, #dc2626, #f87171);
+}
+
+.hud-hp-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e8eef5;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+}
+
+/* 死亡遮罩：全屏暗红 + 重生倒计时 */
+#death-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgba(70, 10, 10, 0.42);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+#death-overlay.visible {
+  opacity: 1;
+}
+
+#death-overlay p {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  color: #fecaca;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
+}
+
+#death-overlay .death-countdown {
+  font-size: 15px;
+  font-weight: 400;
+  color: #fca5a5;
+}

@@ -42,11 +42,14 @@ export const DEFAULT_SERVER_PORT: number = 2567;
 /** 玩家显示名最大长度（按字符截断，避免异常长名称刷爆状态同步）。 */
 export const MAX_DISPLAY_NAME_LENGTH: number = 24;
 
-/** S2 阶段的客户端/服务端消息类型。 */
+/** S2/S3 阶段的客户端/服务端消息类型。 */
 export const MESSAGE_TYPES = {
   PING: "ping",
   PONG: "pong",
   PLAYER_TRANSFORM: "player_transform",
+  FIRE: "fire",
+  SHOT: "shot",
+  KILL: "kill",
 } as const;
 
 export type MessageType = (typeof MESSAGE_TYPES)[keyof typeof MESSAGE_TYPES];
@@ -111,4 +114,94 @@ export function normalizeYaw(yaw: number): number {
 export function clampPitch(pitch: number): number {
   const limit: number = Math.PI / 2;
   return Math.min(limit, Math.max(-limit, pitch));
+}
+
+/* ------------------------------------------------------------------ *
+ * S3：服务端权威战斗（开火 / 命中 / 血量 / 重生 / 计分）
+ * ------------------------------------------------------------------ */
+
+/** 玩家最大血量。 */
+export const PLAYER_MAX_HP: number = 100;
+
+/** 单发伤害：4 发击杀。 */
+export const WEAPON_DAMAGE: number = 25;
+
+/** 开火最小间隔（毫秒），服务端据此限流，客户端据此做本地预冷却。 */
+export const WEAPON_COOLDOWN_MS: number = 150;
+
+/** 武器射程（米）：超过该距离不再命中玩家。 */
+export const WEAPON_RANGE: number = 60;
+
+/** 玩家命中判定圆柱半径（米）。 */
+export const PLAYER_HIT_RADIUS: number = 0.35;
+
+/** 死亡后重生延迟（毫秒）。 */
+export const PLAYER_RESPAWN_DELAY_MS: number = 3000;
+
+/** 服务端广播的弹道结果：所有客户端据此渲染轨迹与命中反馈。 */
+export interface ShotMessage {
+  shooterId: string;
+  origin: { x: number; y: number; z: number };
+  hit: { x: number; y: number; z: number };
+  /** 被命中的玩家 sessionId；未命中玩家（打空或打在掩体上）为 null。 */
+  hitPlayerId: string | null;
+}
+
+/** 服务端广播的击杀事件。 */
+export interface KillMessage {
+  killerId: string;
+  victimId: string;
+}
+
+/* ------------------------------------------------------------------ *
+ * 场地障碍物：渲染（客户端）、碰撞（客户端物理）、弹道遮挡（服务端）
+ * 共用同一份数据，保证「所见即所挡」。
+ * ------------------------------------------------------------------ */
+
+export interface ObstacleSpec {
+  x: number;
+  z: number;
+  width: number;
+  height: number;
+  depth: number;
+  color: number;
+}
+
+/** 轴对齐包围盒（客户端物理与服务端射线遮挡共用）。 */
+export interface Aabb {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  minZ: number;
+  maxZ: number;
+}
+
+/** 掩体布局：中心一块主掩体，四周对称分布（单位：米）。 */
+export const OBSTACLES: readonly ObstacleSpec[] = [
+  { x: 0, z: 0, width: 6, height: 2.4, depth: 6, color: 0x4a5568 },
+  { x: 12, z: 0, width: 3, height: 1.6, depth: 8, color: 0x5a6b7d },
+  { x: -12, z: 0, width: 3, height: 1.6, depth: 8, color: 0x5a6b7d },
+  { x: 0, z: 12, width: 8, height: 1.6, depth: 3, color: 0x5a6b7d },
+  { x: 0, z: -12, width: 8, height: 1.6, depth: 3, color: 0x5a6b7d },
+  { x: 9, z: 9, width: 2.4, height: 3, depth: 2.4, color: 0x6b5a7d },
+  { x: -9, z: 9, width: 2.4, height: 3, depth: 2.4, color: 0x6b5a7d },
+  { x: 9, z: -9, width: 2.4, height: 3, depth: 2.4, color: 0x6b5a7d },
+  { x: -9, z: -9, width: 2.4, height: 3, depth: 2.4, color: 0x6b5a7d },
+  { x: 20, z: 14, width: 4, height: 2, depth: 2, color: 0x50607a },
+  { x: -20, z: -14, width: 4, height: 2, depth: 2, color: 0x50607a },
+  { x: -20, z: 14, width: 4, height: 2, depth: 2, color: 0x50607a },
+  { x: 20, z: -14, width: 4, height: 2, depth: 2, color: 0x50607a },
+];
+
+/** 由障碍数据推导碰撞 AABB。 */
+export function obstacleColliders(): Aabb[] {
+  return OBSTACLES.map((obstacle) => ({
+    minX: obstacle.x - obstacle.width / 2,
+    maxX: obstacle.x + obstacle.width / 2,
+    minY: 0,
+    maxY: obstacle.height,
+    minZ: obstacle.z - obstacle.depth / 2,
+    maxZ: obstacle.z + obstacle.depth / 2,
+  }));
 }

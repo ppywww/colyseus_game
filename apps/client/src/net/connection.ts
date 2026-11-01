@@ -4,8 +4,10 @@ import {
   DEFAULT_ROOM_NAME,
   MESSAGE_TYPES,
   PROTOCOL_VERSION,
+  type KillMessage,
   type PlayerTransformMessage,
   type PongMessage,
+  type ShotMessage,
 } from "@colyseus-fps/shared";
 
 import type { BattleRoomState, PlayerState } from "./types.js";
@@ -19,6 +21,8 @@ export interface ConnectionHandlers {
   onPlayers(players: PlayerState[]): void;
   onPong(message: PongMessage): void;
   onLeave(code: number): void;
+  onShot(message: ShotMessage): void;
+  onKill(message: KillMessage): void;
 }
 
 /** 封装 S1 联机大厅的 Colyseus 连接、状态订阅和消息通道。 */
@@ -54,6 +58,12 @@ export class LobbyConnection {
           yaw: player.yaw,
           pitch: player.pitch,
           seq: player.seq,
+          hp: player.hp,
+          alive: player.alive,
+          kills: player.kills,
+          deaths: player.deaths,
+          respawnSeq: player.respawnSeq,
+          respawnAt: player.respawnAt,
         });
       });
       players.sort((left, right) => left.joinedAt - right.joinedAt);
@@ -61,6 +71,12 @@ export class LobbyConnection {
     });
     room.onMessage<PongMessage>(MESSAGE_TYPES.PONG, (message: PongMessage) => {
       this.handlers.onPong(message);
+    });
+    room.onMessage<ShotMessage>(MESSAGE_TYPES.SHOT, (message: ShotMessage) => {
+      this.handlers.onShot(message);
+    });
+    room.onMessage<KillMessage>(MESSAGE_TYPES.KILL, (message: KillMessage) => {
+      this.handlers.onKill(message);
     });
     room.onLeave((code: number) => {
       this.room = null;
@@ -90,6 +106,14 @@ export class LobbyConnection {
       return;
     }
     this.room.send(MESSAGE_TYPES.PLAYER_TRANSFORM, message);
+  }
+
+  /** 上报开火意图；弹道由服务端计算。 */
+  public sendFire(): void {
+    if (this.room === null) {
+      return;
+    }
+    this.room.send(MESSAGE_TYPES.FIRE);
   }
 
   public async leave(): Promise<void> {

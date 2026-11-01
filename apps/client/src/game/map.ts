@@ -1,53 +1,17 @@
 /**
- * 竞技场地图：几何构建（three.js）与碰撞体数据源。
+ * 竞技场地图：几何构建（three.js）。
  *
  * 布局借鉴 web-multiplayer-template 的简洁风格：圆形场地 + 边界 +
- * 对称掩体箱；障碍数据同时驱动渲染与本地物理碰撞，保证所见即所挡。
+ * 对称掩体箱。障碍物数据已上移到 @colyseus-fps/shared，
+ * 客户端渲染/物理与服务端弹道遮挡共用同一数据源。
  */
 
 import * as THREE from "three";
 
-import { ARENA_RADIUS } from "@colyseus-fps/shared";
+import { ARENA_RADIUS, OBSTACLES, obstacleColliders } from "@colyseus-fps/shared";
 
-import type { Aabb } from "./player-physics.js";
-
-export interface ObstacleSpec {
-  x: number;
-  z: number;
-  width: number;
-  height: number;
-  depth: number;
-  color: number;
-}
-
-/** 掩体布局：中心一块主掩体，四周对称分布（单位：米）。 */
-export const OBSTACLES: readonly ObstacleSpec[] = [
-  { x: 0, z: 0, width: 6, height: 2.4, depth: 6, color: 0x4a5568 },
-  { x: 12, z: 0, width: 3, height: 1.6, depth: 8, color: 0x5a6b7d },
-  { x: -12, z: 0, width: 3, height: 1.6, depth: 8, color: 0x5a6b7d },
-  { x: 0, z: 12, width: 8, height: 1.6, depth: 3, color: 0x5a6b7d },
-  { x: 0, z: -12, width: 8, height: 1.6, depth: 3, color: 0x5a6b7d },
-  { x: 9, z: 9, width: 2.4, height: 3, depth: 2.4, color: 0x6b5a7d },
-  { x: -9, z: 9, width: 2.4, height: 3, depth: 2.4, color: 0x6b5a7d },
-  { x: 9, z: -9, width: 2.4, height: 3, depth: 2.4, color: 0x6b5a7d },
-  { x: -9, z: -9, width: 2.4, height: 3, depth: 2.4, color: 0x6b5a7d },
-  { x: 20, z: 14, width: 4, height: 2, depth: 2, color: 0x50607a },
-  { x: -20, z: -14, width: 4, height: 2, depth: 2, color: 0x50607a },
-  { x: -20, z: 14, width: 4, height: 2, depth: 2, color: 0x50607a },
-  { x: 20, z: -14, width: 4, height: 2, depth: 2, color: 0x50607a },
-];
-
-/** 由障碍数据推导碰撞 AABB（渲染与物理共用同一数据源）。 */
-export function obstacleColliders(): Aabb[] {
-  return OBSTACLES.map((obstacle) => ({
-    minX: obstacle.x - obstacle.width / 2,
-    maxX: obstacle.x + obstacle.width / 2,
-    minY: 0,
-    maxY: obstacle.height,
-    minZ: obstacle.z - obstacle.depth / 2,
-    maxZ: obstacle.z + obstacle.depth / 2,
-  }));
-}
+/** 重新导出，保持既有调用方（Game / 物理）不变。 */
+export { obstacleColliders };
 
 /** 构建竞技场场景，返回可加入 scene 的根节点。 */
 export function buildArena(): THREE.Group {

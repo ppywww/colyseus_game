@@ -8,6 +8,12 @@ export interface PlayerState {
   yaw: number;
   pitch: number;
   seq: number;
+  hp: number;
+  alive: boolean;
+  kills: number;
+  deaths: number;
+  respawnSeq: number;
+  respawnAt: number;
 }
 
 /** 与 Colyseus MapSchema 结构兼容的最小只读接口。 */

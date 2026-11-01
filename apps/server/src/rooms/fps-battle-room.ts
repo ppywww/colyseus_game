@@ -7,7 +7,14 @@ import {
   MAX_DISPLAY_NAME_LENGTH,
   MAX_PLAYERS_PER_ROOM,
   MESSAGE_TYPES,
+  PLAYER_MAX_HP,
+  PLAYER_RESPAWN_DELAY_MS,
   PROTOCOL_VERSION,
+  WEAPON_COOLDOWN_MS,
+  WEAPON_DAMAGE,
+  obstacleColliders,
+  type Aabb,
+  type KillMessage,
   type PingMessage,
   type PongMessage,
 } from "@colyseus-fps/shared";
@@ -15,6 +22,7 @@ import {
 import { BattleState } from "../state/battle-state.js";
 import { Player } from "../state/player.js";
 import { createLogger } from "../utils/logger.js";
+import { computeShot } from "./combat.js";
 import { sanitizeTransform } from "./transform.js";
 
 export interface FPSBattleRoomOptions {
@@ -56,9 +64,12 @@ function nextSpawnPoint(index: number): { x: number; y: number; z: number } {
   };
 }
 
-/** FPS 对战房间：S1 先验证加入、离开、状态同步与消息往返。 */
+/** FPS 对战房间：S1 联机、S2 位置同步、S3 服务端权威战斗。 */
 export class FPSBattleRoom extends Room<BattleState> {
   private logger: Logger = createLogger("info");
+  private readonly obstacles: readonly Aabb[] = obstacleColliders();
+  /** 每玩家上次开火时间戳（服务端限流依据）。 */
+  private readonly lastFireAt = new Map<string, number>();
 
   public override onCreate(options: FPSBattleRoomOptions = {}): void {
     this.maxClients = options.maxClients ?? MAX_PLAYERS_PER_ROOM;
@@ -96,6 +107,31 @@ export class FPSBattleRoom extends Room<BattleState> {
       player.pitch = transform.pitch;
     });
 
+    // S3：开火。弹道完全由服务端状态计算，客户端无法伪造命中。
+    this.onMessage(MESSAGE_TYPES.FIRE, (client: Client) => {
+      const shooter = this.state.players.get(client.sessionId);
+      if (!shooter || !shooter.alive) {
+        return;
+      }
+
+      const now = Date.now();
+      const last = this.lastFireAt.get(client.sessionId) ?? 0;
+      if (now - last < WEAPON_COOLDOWN_MS) {
+        return;
+      }
+      this.lastFireAt.set(client.sessionId, now);
+
+      const shot = computeShot(this.state.players.values(), client.sessionId, this.obstacles);
+      if (shot === null) {
+        return;
+      }
+      this.broadcast(MESSAGE_TYPES.SHOT, shot);
+
+      if (shot.hitPlayerId !== null) {
+        this.applyDamage(client.sessionId, shot.hitPlayerId);
+      }
+    });
+
     this.logger.info({ maxClients: this.maxClients, patchRate: this.patchRate }, "房间已创建");
   }
 
@@ -124,8 +160,58 @@ export class FPSBattleRoom extends Room<BattleState> {
   }
 
   public override onLeave(client: Client): void {
+    this.lastFireAt.delete(client.sessionId);
     const removed: boolean = this.state.players.delete(client.sessionId);
     this.logger.info({ playerId: client.sessionId, removed, clients: this.clients.length }, "玩家已离开");
+  }
+
+  /** 结算伤害；致死时更新计分、广播击杀并安排重生。 */
+  private applyDamage(killerId: string, victimId: string): void {
+    const victim = this.state.players.get(victimId);
+    if (!victim || !victim.alive) {
+      return;
+    }
+
+    victim.hp = Math.max(0, victim.hp - WEAPON_DAMAGE);
+    if (victim.hp > 0) {
+      return;
+    }
+
+    victim.alive = false;
+    victim.deaths += 1;
+    victim.respawnAt = Date.now() + PLAYER_RESPAWN_DELAY_MS;
+
+    const killer = this.state.players.get(killerId);
+    if (killer) {
+      killer.kills += 1;
+    }
+
+    const killMessage: KillMessage = { killerId, victimId };
+    this.broadcast(MESSAGE_TYPES.KILL, killMessage);
+    this.logger.info({ killerId, victimId }, "玩家被击杀");
+
+    this.clock.setTimeout(() => {
+      this.respawn(victimId);
+    }, PLAYER_RESPAWN_DELAY_MS);
+  }
+
+  /** 重生：重置血量/位置，respawnSeq 自增驱动客户端吸附到出生点。 */
+  private respawn(sessionId: string): void {
+    const player = this.state.players.get(sessionId);
+    if (!player || player.alive) {
+      return;
+    }
+
+    const spawn = nextSpawnPoint(player.deaths + this.state.players.size);
+    player.x = spawn.x;
+    player.y = spawn.y;
+    player.z = spawn.z;
+    player.hp = PLAYER_MAX_HP;
+    player.alive = true;
+    player.respawnAt = 0;
+    player.respawnSeq += 1;
+
+    this.logger.info({ playerId: sessionId }, "玩家已重生");
   }
 
   public override onDispose(): void {

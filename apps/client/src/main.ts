@@ -6,6 +6,7 @@ import {
 import { Game } from "./game/game.js";
 import { LobbyConnection } from "./net/connection.js";
 import type { PlayerState } from "./net/types.js";
+import type { KillMessage, ShotMessage } from "@colyseus-fps/shared";
 import "./style.css";
 
 const defaultServerUrl: string = import.meta.env.VITE_COLYSEUS_URL ?? `ws://localhost:${DEFAULT_SERVER_PORT}`;
@@ -82,6 +83,12 @@ joinButton.addEventListener("click", () => {
       },
       onPong() {
         // S2 不再需要手动 ping，保留通道供调试
+      },
+      onShot(message: ShotMessage): void {
+        game?.handleShot(message);
+      },
+      onKill(message: KillMessage): void {
+        game?.handleKill(message);
       },
       onLeave(code: number): void {
         returnToLobby(`连接已关闭（代码 ${code}）`);

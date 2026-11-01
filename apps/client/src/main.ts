@@ -97,13 +97,19 @@ joinButton.addEventListener("click", () => {
 
       const spawn = await waitForSelfSpawn(selfId);
 
+      // 必须先显示容器再构造 Game：容器带 display:none 时 clientWidth/Height 为 0，
+      // 会导致 canvas 初始尺寸为 0，点击/指针锁定全部失效。
+      lobby.classList.add("hidden");
+      gameContainer.classList.remove("hidden");
+
       game = new Game(gameContainer, connection, selfId, spawn);
       game.start();
       game.onPlayersChanged(latestPlayers);
-
-      lobby.classList.add("hidden");
-      gameContainer.classList.remove("hidden");
     } catch (error: unknown) {
+      game?.dispose();
+      game = null;
+      gameContainer.classList.add("hidden");
+      lobby.classList.remove("hidden");
       connection = null;
       joinButton.disabled = false;
       setStatus(error instanceof Error ? `连接失败：${error.message}` : "连接失败", false);

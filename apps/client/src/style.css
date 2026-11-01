@@ -264,10 +264,13 @@ kbd {
   background: rgba(5, 9, 16, 0.55);
   opacity: 0;
   transition: opacity 0.15s ease;
+  pointer-events: none;
 }
 
 #lock-overlay.visible {
   opacity: 1;
+  cursor: pointer;
+  pointer-events: auto; /* 可见时由遮罩自身承接点击，不依赖命中 canvas */
 }
 
 #lock-overlay p {

@@ -59,6 +59,11 @@ export class Hud {
     this.lockOverlay.classList.toggle("visible", visible);
   }
 
+  /** 指针锁定引导遮罩（Game 需要在其上监听点击来请求锁定）。 */
+  public get lockOverlayElement(): HTMLElement {
+    return this.lockOverlay;
+  }
+
   public setPlayers(players: readonly { displayName: string; sessionId: string }[], selfId: string): void {
     this.playerList.replaceChildren();
     for (const player of players) {

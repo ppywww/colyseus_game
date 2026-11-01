@@ -43,9 +43,29 @@ export class InputController {
     return this.locked;
   }
 
-  /** 请求指针锁定（需在用户手势中调用）。 */
+  /** 请求指针锁定（需在用户手势中调用）。失败时触发 onLockError 回调而不是静默吞掉。 */
   public requestLock(): void {
-    this.element.requestPointerLock();
+    try {
+      // 新版浏览器返回 Promise，旧版返回 undefined；拒绝原因（如请求过于频繁）
+      // 必须被捕获，否则锁定失败时用户得不到任何反馈。
+      const result = this.element.requestPointerLock() as unknown;
+      if (result instanceof Promise) {
+        result.catch((error: unknown) => {
+          this.handleLockFailure(error);
+        });
+      }
+    } catch (error: unknown) {
+      this.handleLockFailure(error);
+    }
+  }
+
+  public onLockError: ((message: string) => void) | null = null;
+
+  private handleLockFailure(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    if (this.onLockError !== null) {
+      this.onLockError(message);
+    }
   }
 
   /** 读取并清零本帧累积的视角增量。 */

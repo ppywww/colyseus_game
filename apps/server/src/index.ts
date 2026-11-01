@@ -3,7 +3,9 @@ import { WebSocketTransport } from "@colyseus/ws-transport";
 
 import { loadConfig, type ServerConfig } from "./config/index.js";
 import { FPSBattleRoom } from "./rooms/fps-battle-room.js";
-import { createLogger } from "./utils/logger.js";
+import { createLogger, ensureConsoleUtf8 } from "./utils/logger.js";
+
+ensureConsoleUtf8();
 
 const config: ServerConfig = loadConfig();
 const logger = createLogger(config.LOG_LEVEL);

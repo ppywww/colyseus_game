@@ -16,7 +16,8 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
-    "monitoring:up": "docker compose -f monitoring/docker-compose.yml up -d"
+    "monitoring:up": "docker compose -f monitoring/docker-compose.yml up -d",
+    "play": "node scripts/dev-play.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

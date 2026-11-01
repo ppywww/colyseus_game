@@ -6,3 +6,4 @@ packages:
   - "packages/*"
 allowBuilds:
   esbuild: true
+  msgpackr-extract: true

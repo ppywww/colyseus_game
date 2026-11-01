@@ -2,23 +2,26 @@
   "name": "@colyseus-fps/client",
   "version": "0.1.0",
   "private": true,
-  "description": "客户端（渲染引擎方案在原型阶段确定后再引入）",
+  "description": "浏览器客户端：Vite 开发服务、Colyseus 联机大厅与后续 FPS 渲染",
   "type": "module",
-  "main": "dist/main.js",
   "scripts": {
-    "dev": "tsx watch src/main.ts",
-    "build": "tsc -p tsconfig.json",
-    "preview": "tsx src/main.ts",
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "node --import tsx --test \"tests/**/*.test.ts\""
   },
   "dependencies": {
-    "@colyseus-fps/shared": "workspace:*"
+    "@colyseus-fps/shared": "workspace:*",
+    "@types/three": "^0.186.0",
+    "colyseus.js": "^0.16.22",
+    "three": "^0.187.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "tsx": "^4.23.15",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
   },
   "engines": {
     "node": ">=24.0.0"

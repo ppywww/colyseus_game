@@ -13,10 +13,16 @@
     "test": "node --import tsx --test \"tests/**/*.test.ts\""
   },
   "dependencies": {
-    "@colyseus-fps/shared": "workspace:*"
+    "@colyseus-fps/shared": "workspace:*",
+    "@colyseus/core": "0.16.26",
+    "@colyseus/schema": "3.0.76",
+    "@colyseus/ws-transport": "0.16.5",
+    "pino": "^10.4.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "colyseus.js": "^0.16.22",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },

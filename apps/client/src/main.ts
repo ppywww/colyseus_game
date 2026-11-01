@@ -1,35 +1,118 @@
-/**
- * 客户端入口（骨架占位版本）。
- *
- * 当前阶段客户端渲染引擎尚未确定（候选：Three.js / Babylon.js / PlayCanvas），
- * 因此这里只做「常量可见性 + 目录规划」的占位验证，不创建画布、不建立网络连接。
- *
- * 后续实现顺序：
- *   1. src/net    ：Colyseus 客户端连接、房间状态订阅、消息发送
- *   2. src/input  ：键鼠输入采集与本地预测缓冲
- *   3. src/scenes ：场景、玩家实体、插值与外推渲染
- *   4. src/ui     ：HUD、计分板、结算界面
- */
+import {
+  DEFAULT_SERVER_PORT,
+  PROTOCOL_VERSION,
+} from "@colyseus-fps/shared";
 
-import { CLIENT_INTERPOLATION_DELAY_MS, GAME_TICK_RATE, PROJECT_NAME } from "@colyseus-fps/shared";
+import { Game } from "./game/game.js";
+import { LobbyConnection } from "./net/connection.js";
+import type { PlayerState } from "./net/types.js";
+import "./style.css";
 
-const placeholderInfo: string[] = [
-  `${PROJECT_NAME} - 客户端（骨架占位）`,
-  `逻辑帧率           : ${GAME_TICK_RATE} Hz`,
-  `客户端插值延迟     : ${CLIENT_INTERPOLATION_DELAY_MS} ms`,
-  "渲染引擎           : 原型阶段确定（Three.js / Babylon.js / PlayCanvas）",
-  "连接地址           : 由 src/net/connection.ts 读取环境变量后建立",
-];
+const defaultServerUrl: string = import.meta.env.VITE_COLYSEUS_URL ?? `ws://localhost:${DEFAULT_SERVER_PORT}`;
 
-console.log("=========================================================");
-for (const line of placeholderInfo) {
-  console.log(` ${line}`);
+function requiredElement<T extends HTMLElement>(id: string): T {
+  const element = document.getElementById(id);
+  if (element === null) {
+    throw new Error(`缺少页面元素 #${id}`);
+  }
+  return element as T;
 }
-console.log("---------------------------------------------------------");
-console.log(" 待实现位置：");
-console.log("   - src/net/connection.ts   ：Colyseus 客户端连接与重连");
-console.log("   - src/net/state-sync.ts   ：状态订阅与快照缓冲");
-console.log("   - src/input/keyboard-mouse.ts ：输入采集");
-console.log("   - src/scenes/battle-scene.ts  ：战斗场景与实体渲染");
-console.log("   - src/ui/hud.ts           ：HUD 与计分板");
-console.log("=========================================================");
+
+const lobby = requiredElement<HTMLElement>("lobby");
+const gameContainer = requiredElement<HTMLElement>("game-container");
+const serverUrlInput = requiredElement<HTMLInputElement>("server-url");
+const playerNameInput = requiredElement<HTMLInputElement>("player-name");
+const joinButton = requiredElement<HTMLButtonElement>("join-button");
+const statusBadge = requiredElement<HTMLElement>("join-status");
+const protocolVersionElement = requiredElement<HTMLElement>("protocol-version");
+
+let connection: LobbyConnection | null = null;
+let game: Game | null = null;
+/** 最新一次房间状态快照，供出生点查询与游戏初始化使用。 */
+let latestPlayers: readonly PlayerState[] = [];
+
+protocolVersionElement.textContent = String(PROTOCOL_VERSION);
+serverUrlInput.value = defaultServerUrl;
+playerNameInput.value = `玩家-${Math.floor(Math.random() * 900 + 100)}`;
+
+function setStatus(text: string, busy: boolean): void {
+  statusBadge.textContent = text;
+  statusBadge.classList.toggle("busy", busy);
+}
+
+function returnToLobby(message: string): void {
+  game?.dispose();
+  game = null;
+  connection = null;
+  latestPlayers = [];
+  lobby.classList.remove("hidden");
+  gameContainer.classList.add("hidden");
+  joinButton.disabled = false;
+  setStatus(message, false);
+  document.exitPointerLock?.();
+}
+
+/** 加入后从房间状态读取自己的出生点（首个状态补丁必达）。 */
+function waitForSelfSpawn(selfId: string): Promise<{ x: number; y: number; z: number }> {
+  return new Promise((resolve, reject) => {
+    const startedAt = performance.now();
+    const poll = (): void => {
+      const self = latestPlayers.find((player) => player.sessionId === selfId);
+      if (self) {
+        resolve({ x: self.x, y: self.y, z: self.z });
+      } else if (performance.now() - startedAt > 8000) {
+        reject(new Error("等待出生点超时"));
+      } else {
+        window.setTimeout(poll, 30);
+      }
+    };
+    poll();
+  });
+}
+
+joinButton.addEventListener("click", () => {
+  void (async () => {
+    joinButton.disabled = true;
+    setStatus("连接中…", true);
+
+    connection = new LobbyConnection(serverUrlInput.value, {
+      onPlayers(players: PlayerState[]): void {
+        latestPlayers = players;
+        game?.onPlayersChanged(players);
+      },
+      onPong() {
+        // S2 不再需要手动 ping，保留通道供调试
+      },
+      onLeave(code: number): void {
+        returnToLobby(`连接已关闭（代码 ${code}）`);
+      },
+    });
+
+    try {
+      await connection.join(playerNameInput.value);
+      const selfId = connection.sessionId;
+      if (selfId === null) {
+        throw new Error("会话未建立");
+      }
+
+      const spawn = await waitForSelfSpawn(selfId);
+
+      // 必须先显示容器再构造 Game：容器带 display:none 时 clientWidth/Height 为 0，
+      // 会导致 canvas 初始尺寸为 0，点击/指针锁定全部失效。
+      lobby.classList.add("hidden");
+      gameContainer.classList.remove("hidden");
+
+      game = new Game(gameContainer, connection, selfId, spawn);
+      game.start();
+      game.onPlayersChanged(latestPlayers);
+    } catch (error: unknown) {
+      game?.dispose();
+      game = null;
+      gameContainer.classList.add("hidden");
+      lobby.classList.remove("hidden");
+      connection = null;
+      joinButton.disabled = false;
+      setStatus(error instanceof Error ? `连接失败：${error.message}` : "连接失败", false);
+    }
+  })();
+});

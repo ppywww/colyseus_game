@@ -2,14 +2,10 @@
   "compilerOptions": {
     "target": "ES2023",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "types": [],
-
-    "rootDir": "src",
-    "outDir": "dist",
-    "declaration": false,
-    "sourceMap": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["vite/client"],
+    "noEmit": true,
 
     "strict": true,
     "noImplicitOverride": true,
@@ -25,6 +21,6 @@
     "skipLibCheck": true,
     "useDefineForClassFields": true
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "public"]
+  "include": ["src/**/*.ts", "vite.config.ts"],
+  "exclude": ["node_modules", "dist", "public", "tests"]
 }

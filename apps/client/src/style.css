@@ -171,8 +171,9 @@ kbd {
   user-select: none;
 }
 
-/* 准星 */
+/* 准星（--spread 由 Game 每帧写入，开火/移动时扩散） */
 #crosshair {
+  --spread: 3px;
   position: absolute;
   left: 50%;
   top: 50%;
@@ -185,12 +186,13 @@ kbd {
   position: absolute;
   background: rgba(230, 237, 243, 0.9);
   box-shadow: 0 0 3px rgba(0, 0, 0, 0.8);
+  transition: transform 0.06s linear;
 }
 
-#crosshair span:nth-child(1) { left: 10px; top: 0; width: 2px; height: 6px; }
-#crosshair span:nth-child(2) { left: 10px; bottom: 0; width: 2px; height: 6px; }
-#crosshair span:nth-child(3) { left: 0; top: 10px; width: 6px; height: 2px; }
-#crosshair span:nth-child(4) { right: 0; top: 10px; width: 6px; height: 2px; }
+#crosshair span:nth-child(1) { left: 10px; top: 0; width: 2px; height: 6px; transform: translateY(calc(-1 * var(--spread))); }
+#crosshair span:nth-child(2) { left: 10px; bottom: 0; width: 2px; height: 6px; transform: translateY(var(--spread)); }
+#crosshair span:nth-child(3) { left: 0; top: 10px; width: 6px; height: 2px; transform: translateX(calc(-1 * var(--spread))); }
+#crosshair span:nth-child(4) { right: 0; top: 10px; width: 6px; height: 2px; transform: translateX(var(--spread)); }
 
 /* 顶栏 */
 .hud-top {
@@ -404,4 +406,182 @@ kbd {
   font-size: 15px;
   font-weight: 400;
   color: #fca5a5;
+}
+
+/* ---------- S4：弹药 / 道具 / 受击与闪光反馈 ---------- */
+
+/* 弹药面板（右下） */
+.hud-ammo {
+  position: absolute;
+  right: 18px;
+  bottom: 52px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 8px 14px;
+  background: rgba(13, 20, 32, 0.78);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 8px;
+  min-width: 132px;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+
+.hud-ammo-current {
+  font-size: 26px;
+  font-weight: 700;
+  color: #e6edf5;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-ammo-current.empty {
+  color: #f87171;
+}
+
+.hud-ammo-reserve {
+  font-size: 13px;
+  color: #8b98a9;
+}
+
+.hud-ammo-reload {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  width: 0;
+  background: linear-gradient(90deg, #3b82f6, #7dd3fc);
+  transition: width 0.08s linear;
+}
+
+.hud-ammo-reload.active {
+  opacity: 1;
+}
+
+/* 道具栏（左下，血条上方） */
+.hud-slots {
+  position: absolute;
+  left: 16px;
+  bottom: 80px;
+  display: flex;
+  gap: 8px;
+}
+
+.hud-slot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  background: rgba(13, 20, 32, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 6px;
+  font-size: 12px;
+  color: #cbd5e1;
+}
+
+.hud-slot-frag { border-color: rgba(248, 113, 113, 0.45); }
+.hud-slot-flash { border-color: rgba(250, 204, 21, 0.45); }
+.hud-slot-smoke { border-color: rgba(148, 163, 184, 0.5); }
+
+.hud-slot.empty {
+  opacity: 0.38;
+}
+
+.hud-slot-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  background: #1a2333;
+  border: 1px solid #31405a;
+  border-radius: 3px;
+  font-size: 10px;
+  color: #9fb0c5;
+}
+
+.hud-slot-count {
+  font-weight: 700;
+  color: #f1f5f9;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 击杀横幅（屏幕中上） */
+#kill-banner {
+  position: absolute;
+  left: 50%;
+  top: 18%;
+  transform: translate(-50%, 0) scale(0.94);
+  padding: 8px 22px;
+  background: rgba(60, 18, 18, 0.82);
+  border: 1px solid rgba(248, 113, 113, 0.55);
+  border-radius: 8px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #fecaca;
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  white-space: nowrap;
+}
+
+#kill-banner.visible {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+}
+
+/* 闪光致盲全屏白幕 */
+#flash-overlay {
+  position: absolute;
+  inset: 0;
+  background: #f8fafc;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s linear;
+}
+
+/* 受击红色边缘 */
+#damage-overlay {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+  background: radial-gradient(ellipse at center, rgba(153, 27, 27, 0) 45%, rgba(153, 27, 27, 0.55) 100%);
+}
+
+#damage-overlay.visible {
+  opacity: 1;
+}
+
+/* 低血量持续红边呼吸 */
+#hud.low-hp #damage-overlay {
+  opacity: 1;
+  animation: low-hp-pulse 1.4s ease-in-out infinite;
+  background: radial-gradient(ellipse at center, rgba(153, 27, 27, 0) 40%, rgba(153, 27, 27, 0.42) 100%);
+}
+
+@keyframes low-hp-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+/* 受击方向弧形指示 */
+#damage-arc {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 190px;
+  height: 190px;
+  margin: -95px 0 0 -95px;
+  border-radius: 50%;
+  border-top: 4px solid rgba(248, 113, 113, 0.9);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  filter: drop-shadow(0 0 6px rgba(248, 113, 113, 0.6));
+}
+
+#damage-arc.visible {
+  opacity: 1;
 }

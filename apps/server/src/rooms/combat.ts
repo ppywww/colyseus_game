@@ -130,14 +130,20 @@ export function rayPlayerCylinder(
 
 /**
  * 计算一次开火的结果。shooter 必须存活；返回值为可直接广播的 ShotMessage。
+ *
+ * 注意：入参是 Iterable（调用方常直接传 Map.values()）。函数内部会先物化成数组，
+ * 否则第一次遍历找 shooter 就会耗尽一次性迭代器，导致后续遍历查不到任何目标
+ * （历史 Bug：后加入的玩家永远打不到先加入的玩家）。
  */
 export function computeShot(
   players: Iterable<CombatantView>,
   shooterId: string,
   obstacles: readonly Aabb[],
 ): ShotMessage | null {
+  const all: CombatantView[] = Array.from(players);
+
   let shooter: CombatantView | null = null;
-  for (const player of players) {
+  for (const player of all) {
     if (player.sessionId === shooterId) {
       shooter = player;
       break;
@@ -162,7 +168,7 @@ export function computeShot(
   // 最近被命中玩家（必须比掩体更近才算命中）
   let hitPlayerId: string | null = null;
   let hitT = wallT;
-  for (const player of players) {
+  for (const player of all) {
     if (player.sessionId === shooterId || !player.alive) {
       continue;
     }

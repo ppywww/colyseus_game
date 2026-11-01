@@ -1,6 +1,12 @@
 import { Schema, type } from "@colyseus/schema";
 
-/** 同步给客户端的玩家状态：身份 + 位置/视角 + 战斗状态（S3）。 */
+import {
+  THROWABLES,
+  WEAPON_MAG_SIZE,
+  WEAPON_RESERVE_AMMO,
+} from "@colyseus-fps/shared";
+
+/** 同步给客户端的玩家状态：身份 + 位置/视角 + 战斗状态（S3）+ 弹药/道具（S4）。 */
 export class Player extends Schema {
   @type("string")
   public sessionId: string = "";
@@ -48,4 +54,27 @@ export class Player extends Schema {
   /** 预计重生的服务端时间戳（Date.now()，毫秒）；0 表示存活或无需倒计时。 */
   @type("float64")
   public respawnAt: number = 0;
+
+  /* ---------------- S4：弹药与投掷物 ---------------- */
+
+  /** 当前弹匣内子弹数。 */
+  @type("uint8")
+  public ammo: number = WEAPON_MAG_SIZE;
+
+  /** 备弹数。 */
+  @type("uint16")
+  public reserve: number = WEAPON_RESERVE_AMMO;
+
+  /** 换弹完成时间戳（Date.now()，毫秒）；0 表示未在换弹。 */
+  @type("float64")
+  public reloadEndAt: number = 0;
+
+  @type("uint8")
+  public frags: number = THROWABLES.frag.initialCount;
+
+  @type("uint8")
+  public flashes: number = THROWABLES.flash.initialCount;
+
+  @type("uint8")
+  public smokes: number = THROWABLES.smoke.initialCount;
 }

@@ -6,7 +6,15 @@ import {
 import { Game } from "./game/game.js";
 import { LobbyConnection } from "./net/connection.js";
 import type { PlayerState } from "./net/types.js";
-import type { KillMessage, ShotMessage } from "@colyseus-fps/shared";
+import type {
+  DamageTakenMessage,
+  ExplosionMessage,
+  FlashEffectMessage,
+  GrenadeLaunchedMessage,
+  KillMessage,
+  ShotMessage,
+  SmokeCloudView,
+} from "@colyseus-fps/shared";
 import "./style.css";
 
 const defaultServerUrl: string = import.meta.env.VITE_COLYSEUS_URL ?? `ws://localhost:${DEFAULT_SERVER_PORT}`;
@@ -89,6 +97,21 @@ joinButton.addEventListener("click", () => {
       },
       onKill(message: KillMessage): void {
         game?.handleKill(message);
+      },
+      onClouds(clouds: SmokeCloudView[]): void {
+        game?.handleClouds(clouds);
+      },
+      onGrenade(message: GrenadeLaunchedMessage): void {
+        game?.handleGrenade(message);
+      },
+      onExplosion(message: ExplosionMessage): void {
+        game?.handleExplosion(message);
+      },
+      onFlash(message: FlashEffectMessage): void {
+        game?.handleFlash(message);
+      },
+      onDamaged(message: DamageTakenMessage): void {
+        game?.handleDamaged(message);
       },
       onLeave(code: number): void {
         returnToLobby(`连接已关闭（代码 ${code}）`);

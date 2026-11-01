@@ -50,6 +50,12 @@ export const MESSAGE_TYPES = {
   FIRE: "fire",
   SHOT: "shot",
   KILL: "kill",
+  RELOAD: "reload",
+  THROW: "throw",
+  GRENADE: "grenade_launched",
+  EXPLODE: "explode",
+  FLASH: "flash",
+  DAMAGED: "damaged",
 } as const;
 
 export type MessageType = (typeof MESSAGE_TYPES)[keyof typeof MESSAGE_TYPES];
@@ -204,4 +210,153 @@ export function obstacleColliders(): Aabb[] {
     minZ: obstacle.z - obstacle.depth / 2,
     maxZ: obstacle.z + obstacle.depth / 2,
   }));
+}
+
+/* ------------------------------------------------------------------ *
+ * S4：弹药与换弹（服务端权威，客户端只做表现）
+ * ------------------------------------------------------------------ */
+
+/** 弹匣容量。 */
+export const WEAPON_MAG_SIZE: number = 30;
+
+/** 初始备弹。 */
+export const WEAPON_RESERVE_AMMO: number = 120;
+
+/** 换弹耗时（毫秒）。 */
+export const WEAPON_RELOAD_MS: number = 1800;
+
+/* ------------------------------------------------------------------ *
+ * S4：投掷物（手雷 / 闪光弹 / 烟雾弹）
+ * ------------------------------------------------------------------ */
+
+export const THROWABLE_TYPES = {
+  FRAG: "frag",
+  FLASH: "flash",
+  SMOKE: "smoke",
+} as const;
+
+export type ThrowableType = (typeof THROWABLE_TYPES)[keyof typeof THROWABLE_TYPES];
+
+export interface ThrowableConfig {
+  /** 展示名。 */
+  label: string;
+  /** 出生携带数量。 */
+  initialCount: number;
+  /** 引信时长（毫秒，从投出到生效）。 */
+  fuseMs: number;
+  /** 生效半径（米）。 */
+  radius: number;
+  /** 客户端渲染颜色。 */
+  color: number;
+  /** 手雷：中心最大伤害与边缘最小伤害。 */
+  maxDamage?: number;
+  minDamage?: number;
+  /** 闪光弹：正面直视最大致盲时长。 */
+  maxBlindMs?: number;
+  /** 烟雾弹：云团持续时间。 */
+  cloudDurationMs?: number;
+}
+
+/** 三种投掷物的统一配置（客户端 HUD 与服务端结算共用）。 */
+export const THROWABLES: Record<ThrowableType, ThrowableConfig> = {
+  frag: {
+    label: "手雷",
+    initialCount: 2,
+    fuseMs: 2200,
+    radius: 6,
+    color: 0x4b5563,
+    maxDamage: 100,
+    minDamage: 20,
+  },
+  flash: {
+    label: "闪光弹",
+    initialCount: 2,
+    fuseMs: 1600,
+    radius: 12,
+    color: 0xd1d5db,
+    maxBlindMs: 2800,
+  },
+  smoke: {
+    label: "烟雾弹",
+    initialCount: 2,
+    fuseMs: 1400,
+    radius: 5,
+    color: 0x9ca3af,
+    cloudDurationMs: 15000,
+  },
+};
+
+/** 投掷初速度（米/秒）：约 14 m/s，配合 18 m/s² 重力形成自然抛物线。 */
+export const THROW_SPEED: number = 14;
+
+/** 两次投掷的最小间隔（毫秒）。 */
+export const THROW_COOLDOWN_MS: number = 700;
+
+/** 投掷方向的最大俯仰（弧度），防止垂直上抛。 */
+export const THROW_MAX_PITCH: number = 0.6;
+
+/** 手雷重力加速度（米/秒²）。 */
+export const GRENADE_GRAVITY: number = 18;
+
+/** 手雷落地弹性系数。 */
+export const GRENADE_BOUNCE: number = 0.35;
+
+/** 手雷碰撞半径（米）。 */
+export const GRENADE_RADIUS: number = 0.11;
+
+/** 手雷脱离手部的位置（相对眼睛）。 */
+export const THROW_ORIGIN_FORWARD: number = 0.45;
+
+/** 客户端上行：投掷请求。方向由客户端提供，位置与速度由服务端裁定。 */
+export interface ThrowMessage {
+  type: ThrowableType;
+  dirX: number;
+  dirY: number;
+  dirZ: number;
+}
+
+/** 服务端广播：手雷已投出（客户端据此本地模拟同一条抛物线）。 */
+export interface GrenadeLaunchedMessage {
+  id: number;
+  type: ThrowableType;
+  throwerId: string;
+  origin: { x: number; y: number; z: number };
+  velocity: { x: number; y: number; z: number };
+}
+
+/** 服务端广播：投掷物生效（爆炸 / 闪光 / 起烟）。 */
+export interface ExplosionMessage {
+  id: number;
+  type: ThrowableType;
+  throwerId: string;
+  x: number;
+  y: number;
+  z: number;
+  radius: number;
+}
+
+/** 服务端下发（仅致盲目标本人）：闪光效果强度与时长。 */
+export interface FlashEffectMessage {
+  intensity: number;
+  durationMs: number;
+  sourceX: number;
+  sourceZ: number;
+}
+
+/** 服务端下发（仅受伤者本人）：用于受击方向指示与血量反馈。 */
+export interface DamageTakenMessage {
+  attackerId: string;
+  amount: number;
+  hp: number;
+  fromX: number;
+  fromZ: number;
+}
+
+/** 烟雾云团（服务端状态同步，后进玩家也能看到）。 */
+export interface SmokeCloudView {
+  id: string;
+  x: number;
+  z: number;
+  radius: number;
+  expiresAt: number;
 }

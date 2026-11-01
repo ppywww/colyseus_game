@@ -1,10 +1,14 @@
 /**
- * 游戏编排器：Three.js 场景 + 本地物理 + 网络同步 + HUD。
+ * 游戏编排器：Three.js 场景 + 本地物理 + 网络同步 + HUD + 战斗表现。
  *
  * 数据流：
- *   键鼠 → 本地物理（客户端权威，S3 改服务端权威）
- *     → 15Hz 上报 transform → 服务端状态 → 其他客户端
- *   其他客户端状态 → 插值缓冲（延迟 CLIENT_INTERPOLATION_DELAY_MS）→ 远端化身
+ *   键鼠 → 本地物理 → 15Hz 上报 transform → 服务端状态 → 其他客户端
+ *   左键 → fire 意图 → 服务端弹道判定 → shot 广播（轨迹/命中）→ 表现
+ *   G/F/V → throw 意图 → 服务端抛物线/爆炸结算 → grenade/explode 广播 → 表现
+ *
+ * 枪感要点（对标 CS 的反馈密度）：
+ *   枪口火光 + 点光源照明、相机后坐（上抬 + 随机横移并回弹）、屏幕轻微抖动、
+ *   动态准星扩散、弹着火花与烟尘、命中/击杀音效、受击方向提示与低血量红边。
  */
 
 import * as THREE from "three";
@@ -14,14 +18,25 @@ import {
   CLIENT_INTERPOLATION_DELAY_MS,
   EYE_HEIGHT,
   PLAYER_TRANSFORM_RATE_HZ,
+  THROWABLES,
+  THROWABLE_TYPES,
   WEAPON_COOLDOWN_MS,
+  WEAPON_MAG_SIZE,
+  WEAPON_RELOAD_MS,
+  type DamageTakenMessage,
+  type ExplosionMessage,
+  type FlashEffectMessage,
+  type GrenadeLaunchedMessage,
   type KillMessage,
   type PlayerTransformMessage,
   type ShotMessage,
+  type SmokeCloudView,
+  type ThrowableType,
 } from "@colyseus-fps/shared";
 
 import type { LobbyConnection } from "../net/connection.js";
 import type { PlayerState } from "../net/types.js";
+import { GameAudio } from "./audio.js";
 import { CombatEffects } from "./effects.js";
 import { Hud } from "./hud.js";
 import { InputController } from "./input.js";
@@ -33,10 +48,21 @@ import {
   type MoveInput,
   type PlayerKinematics,
 } from "./player-physics.js";
+import { ThrowableSystem } from "./throwables.js";
 import { ViewModel } from "./viewmodel.js";
 
 const LOOK_SENSITIVITY = 0.0023;
 const MAX_PITCH = Math.PI / 2 - 0.02;
+
+/** 开火后坐强度（弧度）。 */
+const RECOIL_PITCH = 0.016;
+const RECOIL_YAW = 0.006;
+
+/** 准星扩散：基础值、每发增量、移动增量、回弹速度（像素/秒）。 */
+const SPREAD_BASE = 3;
+const SPREAD_PER_SHOT = 7;
+const SPREAD_MOVE = 4;
+const SPREAD_RECOVER_PER_SECOND = 26;
 
 export class Game {
   private readonly renderer: THREE.WebGLRenderer;
@@ -47,6 +73,8 @@ export class Game {
   private readonly remotePlayers: RemotePlayerManager;
   private readonly viewModel: ViewModel;
   private readonly effects: CombatEffects;
+  private readonly throwables: ThrowableSystem;
+  private readonly audio = new GameAudio();
   private readonly colliders = obstacleColliders();
 
   private readonly kinematics: PlayerKinematics;
@@ -58,12 +86,27 @@ export class Game {
   private latestPlayers: readonly PlayerState[] = [];
   private disposed = false;
 
-  // S3 战斗状态（全部以服务端下发为准）
+  // 战斗状态（全部以服务端下发为准）
   private lastFireAt = 0;
+  private lastThrowAt = 0;
   private lastRespawnSeq = 0;
   private selfAlive = true;
   private selfHp = 100;
   private selfRespawnAt = 0;
+  private ammo = WEAPON_MAG_SIZE;
+  private reserve = 0;
+  private reloadEndAt = 0;
+  private frags = 0;
+  private flashes = 0;
+  private smokes = 0;
+
+  // 表现状态（纯本地）
+  private recoilPitch = 0;
+  private recoilYaw = 0;
+  private shake = 0;
+  private spread = SPREAD_BASE;
+  private readonly pressed = new Set<string>();
+  private readonly previousPressed = new Set<string>();
 
   public constructor(
     private readonly container: HTMLElement,
@@ -97,7 +140,8 @@ export class Game {
     this.hud = new Hud(container);
     this.remotePlayers = new RemotePlayerManager(this.scene, CLIENT_INTERPOLATION_DELAY_MS);
     this.viewModel = new ViewModel(this.camera);
-    this.effects = new CombatEffects(this.scene);
+    this.effects = new CombatEffects(this.scene, this.camera);
+    this.throwables = new ThrowableSystem(this.scene, this.effects);
 
     this.kinematics = {
       x: spawn.x,
@@ -126,6 +170,8 @@ export class Game {
   }
 
   private readonly handleCanvasClick = (): void => {
+    // 首次点击同时解锁音频上下文（浏览器自动播放策略要求用户手势）
+    this.audio.unlock();
     if (!this.input.isPointerLocked()) {
       this.input.requestLock();
     }
@@ -137,31 +183,177 @@ export class Game {
 
   /** 左键开火：仅发送意图，弹道与伤害由服务端裁定。 */
   private readonly handleMouseDown = (event: MouseEvent): void => {
-    if (event.button !== 0 || !this.input.isPointerLocked() || !this.selfAlive) {
+    if (event.button !== 0 || !this.input.isPointerLocked()) {
       return;
     }
-    const now = performance.now();
-    if (now - this.lastFireAt < WEAPON_COOLDOWN_MS) {
-      return;
-    }
-    this.lastFireAt = now;
-    this.connection.sendFire();
-    this.viewModel.recoil();
+    this.tryFire(performance.now());
   };
 
-  /** 服务端弹道广播：渲染轨迹；自己命中时给命中反馈。 */
-  public handleShot(message: ShotMessage): void {
-    this.effects.addTracer(message.origin, message.hit);
-    if (message.shooterId === this.selfSessionId && message.hitPlayerId !== null) {
-      this.hud.flashHitmarker();
+  private tryFire(nowMs: number): void {
+    if (!this.selfAlive) {
+      return;
+    }
+    if (nowMs - this.lastFireAt < WEAPON_COOLDOWN_MS) {
+      return;
+    }
+    if (this.ammo <= 0) {
+      // 空仓：只播放一次"咔"声，避免连点噪音
+      if (nowMs - this.lastFireAt > 220) {
+        this.lastFireAt = nowMs;
+        this.audio.emptyClick();
+      }
+      return;
+    }
+    if (this.reloadEndAt > Date.now()) {
+      return;
+    }
+
+    this.lastFireAt = nowMs;
+    this.connection.sendFire();
+
+    // 本地即时反馈（不等服务端回包，才有"跟手"的开枪感）
+    this.ammo = Math.max(0, this.ammo - 1);
+    this.effects.muzzleFlash(nowMs);
+    this.audio.gunshot();
+    this.viewModel.recoil();
+    this.recoilPitch -= RECOIL_PITCH;
+    this.recoilYaw += (Math.random() - 0.5) * RECOIL_YAW * 2;
+    this.shake = Math.min(1, this.shake + 0.18);
+    this.spread = Math.min(26, this.spread + SPREAD_PER_SHOT);
+    if (this.ammo === 0 && this.reserve > 0) {
+      this.requestReload();
     }
   }
 
-  /** 击杀广播：写入击杀播报。 */
+  private requestReload(): void {
+    if (!this.selfAlive || this.ammo >= WEAPON_MAG_SIZE || this.reserve <= 0) {
+      return;
+    }
+    if (this.reloadEndAt > Date.now()) {
+      return;
+    }
+    this.reloadEndAt = Date.now() + WEAPON_RELOAD_MS;
+    this.connection.sendReload();
+    this.audio.reloadStart();
+    window.setTimeout(() => {
+      if (!this.disposed) {
+        this.audio.reloadEnd();
+      }
+    }, WEAPON_RELOAD_MS - 120);
+  }
+
+  /** 投掷道具：方向取当前视线（含俯仰），位置与速度由服务端裁定。 */
+  private tryThrow(type: ThrowableType, nowMs: number): void {
+    if (!this.selfAlive) {
+      return;
+    }
+    if (nowMs - this.lastThrowAt < 700) {
+      return;
+    }
+    const left = type === THROWABLE_TYPES.FRAG ? this.frags : type === THROWABLE_TYPES.FLASH ? this.flashes : this.smokes;
+    if (left <= 0) {
+      return;
+    }
+
+    this.lastThrowAt = nowMs;
+    const cosPitch = Math.cos(this.kinematics.pitch);
+    const dir = {
+      x: -Math.sin(this.kinematics.yaw) * cosPitch,
+      y: Math.sin(this.kinematics.pitch),
+      z: -Math.cos(this.kinematics.yaw) * cosPitch,
+    };
+    this.connection.sendThrow(type, dir);
+    this.audio.throwWhoosh();
+    if (type === THROWABLE_TYPES.FRAG) {
+      this.frags = Math.max(0, this.frags - 1);
+    } else if (type === THROWABLE_TYPES.FLASH) {
+      this.flashes = Math.max(0, this.flashes - 1);
+    } else {
+      this.smokes = Math.max(0, this.smokes - 1);
+    }
+  }
+
+  /** 服务端弹道广播：渲染轨迹；自己命中时给命中反馈，打空时出火花。 */
+  public handleShot(message: ShotMessage): void {
+    this.effects.addTracer(message.origin, message.hit);
+
+    if (message.hitPlayerId !== null) {
+      if (message.shooterId === this.selfSessionId) {
+        this.hud.flashHitmarker();
+        this.audio.hitmark();
+      }
+      return;
+    }
+
+    // 打空/打墙：命中点火花，法线近似取弹道反方向
+    const dx = message.hit.x - message.origin.x;
+    const dy = message.hit.y - message.origin.y;
+    const dz = message.hit.z - message.origin.z;
+    const length = Math.hypot(dx, dy, dz) || 1;
+    this.effects.impact(message.hit, { x: -dx / length, y: -dy / length, z: -dz / length });
+  }
+
+  /** 击杀广播：写入播报；自己击杀时给横幅与确认音。 */
   public handleKill(message: KillMessage): void {
     const nameOf = (id: string): string =>
       this.latestPlayers.find((player) => player.sessionId === id)?.displayName ?? id.slice(0, 6);
-    this.hud.pushKillFeed(`${nameOf(message.killerId)} 击杀了 ${nameOf(message.victimId)}`);
+    const killerName = nameOf(message.killerId);
+    const victimName = nameOf(message.victimId);
+    this.hud.pushKillFeed(`${killerName} 击杀了 ${victimName}`);
+
+    if (message.killerId === this.selfSessionId) {
+      this.hud.showKillBanner(`击杀 ${victimName}`);
+      this.audio.killConfirm();
+    } else if (message.victimId === this.selfSessionId) {
+      this.hud.showKillBanner(`被 ${killerName} 击杀`);
+    }
+  }
+
+  /** 投掷物已投出：本地预测同一条抛物线。 */
+  public handleGrenade(message: GrenadeLaunchedMessage): void {
+    this.throwables.spawnLaunched(message);
+  }
+
+  /** 投掷物生效：爆炸/闪光视觉 + 距离衰减的屏幕抖动与音效。 */
+  public handleExplosion(message: ExplosionMessage): void {
+    this.throwables.spawnExplosion(message);
+    const config = THROWABLES[message.type];
+    const distance = Math.hypot(message.x - this.kinematics.x, message.z - this.kinematics.z);
+    const falloff = Math.max(0, 1 - distance / (config.radius * 2.4));
+
+    if (message.type === THROWABLE_TYPES.FRAG) {
+      this.audio.explosion();
+      this.shake = Math.min(1, this.shake + 0.75 * falloff);
+    } else if (message.type === THROWABLE_TYPES.SMOKE) {
+      this.audio.smokePop();
+    }
+  }
+
+  /** 闪光致盲：全屏白幕 + 耳鸣音。 */
+  public handleFlash(message: FlashEffectMessage): void {
+    this.hud.blind(message.intensity, message.durationMs);
+    this.audio.flashbang();
+  }
+
+  /** 受击：红色边缘 + 指向攻击者的方向指示。 */
+  public handleDamaged(message: DamageTakenMessage): void {
+    const dx = message.fromX - this.kinematics.x;
+    const dz = message.fromZ - this.kinematics.z;
+    // 转到相机水平朝向的相对角度：0 表示正前方
+    const worldAngle = Math.atan2(dx, dz);
+    const playerYaw = this.kinematics.yaw;
+    const relative = Math.atan2(
+      Math.sin(worldAngle - playerYaw),
+      Math.cos(worldAngle - playerYaw),
+    );
+    this.hud.showDamage(relative);
+    this.audio.hurt();
+    this.shake = Math.min(1, this.shake + 0.35);
+  }
+
+  /** 烟雾云团状态同步。 */
+  public handleClouds(clouds: readonly SmokeCloudView[]): void {
+    this.throwables.syncClouds(clouds);
   }
 
   private readonly handlePointerLockChange = (): void => {
@@ -183,20 +375,39 @@ export class Game {
     this.hud.setPlayers(players, this.selfSessionId);
 
     const self = players.find((player) => player.sessionId === this.selfSessionId);
-    if (self) {
-      // 重生：服务端 respawnSeq 自增，本地位置吸附到新的出生点
-      if (self.respawnSeq !== this.lastRespawnSeq) {
-        this.lastRespawnSeq = self.respawnSeq;
-        this.kinematics.x = self.x;
-        this.kinematics.y = self.y;
-        this.kinematics.z = self.z;
-        this.kinematics.vy = 0;
-        this.kinematics.yaw = Math.atan2(-self.x, -self.z);
-        this.kinematics.pitch = 0;
-      }
-      this.selfAlive = self.alive;
-      this.selfHp = self.hp;
-      this.selfRespawnAt = self.respawnAt;
+    if (!self) {
+      return;
+    }
+
+    // 重生：服务端 respawnSeq 自增，本地位置吸附到新的出生点
+    if (self.respawnSeq !== this.lastRespawnSeq) {
+      this.lastRespawnSeq = self.respawnSeq;
+      this.kinematics.x = self.x;
+      this.kinematics.y = self.y;
+      this.kinematics.z = self.z;
+      this.kinematics.vy = 0;
+      this.kinematics.yaw = Math.atan2(-self.x, -self.z);
+      this.kinematics.pitch = 0;
+      this.recoilPitch = 0;
+      this.recoilYaw = 0;
+    }
+
+    this.selfAlive = self.alive;
+    this.selfHp = self.hp;
+    this.selfRespawnAt = self.respawnAt;
+
+    // 弹药/道具：本地已做乐观扣减，服务端状态更新更慢时会短暂"回跳"。
+    // 刚开火/投掷后的 300ms 内保留本地较小值，其余情况一律以服务端为准。
+    const now = performance.now();
+    if (now - this.lastFireAt > 300 || self.ammo <= this.ammo) {
+      this.ammo = self.ammo;
+    }
+    this.reserve = self.reserve;
+    this.reloadEndAt = self.reloadEndAt;
+    if (now - this.lastThrowAt > 300) {
+      this.frags = self.frags;
+      this.flashes = self.flashes;
+      this.smokes = self.smokes;
     }
   }
 
@@ -215,13 +426,23 @@ export class Game {
   }
 
   private tick(dtSeconds: number, nowMs: number): void {
-    // 视角
+    const locked = this.input.isPointerLocked();
+
+    // 视角（鼠标）+ 后坐偏移（自动回弹）
     const look = this.input.consumeLookDelta();
-    this.kinematics.yaw -= look.dx * LOOK_SENSITIVITY;
-    this.kinematics.pitch = Math.min(
-      MAX_PITCH,
-      Math.max(-MAX_PITCH, this.kinematics.pitch - look.dy * LOOK_SENSITIVITY),
-    );
+    if (locked) {
+      this.kinematics.yaw -= look.dx * LOOK_SENSITIVITY;
+      this.kinematics.pitch = Math.min(
+        MAX_PITCH,
+        Math.max(-MAX_PITCH, this.kinematics.pitch - look.dy * LOOK_SENSITIVITY),
+      );
+    }
+    this.recoilPitch *= Math.exp(-dtSeconds * 9);
+    this.recoilYaw *= Math.exp(-dtSeconds * 9);
+    const pitchWithRecoil = Math.min(MAX_PITCH, Math.max(-MAX_PITCH, this.kinematics.pitch + this.recoilPitch));
+    const yawWithRecoil = this.kinematics.yaw + this.recoilYaw;
+
+    this.handleActionKeys(nowMs);
 
     // 移动
     const moveInput: MoveInput = {
@@ -232,24 +453,33 @@ export class Game {
       sprint: this.input.isDown("ShiftLeft") || this.input.isDown("ShiftRight"),
       jump: this.input.isDown("Space"),
     };
-    const locked = this.input.isPointerLocked();
+    const idle: MoveInput = {
+      forward: false,
+      backward: false,
+      left: false,
+      right: false,
+      sprint: false,
+      jump: false,
+    };
     stepPlayer(
       this.kinematics,
-      locked ? moveInput : { forward: false, backward: false, left: false, right: false, sprint: false, jump: false },
+      locked && this.selfAlive ? moveInput : idle,
       dtSeconds,
       this.colliders,
       { ...DEFAULT_PHYSICS, arenaRadius: ARENA_RADIUS },
     );
 
-    // 相机
+    // 相机（含抖动）
+    this.shake *= Math.exp(-dtSeconds * 7);
+    const shakeAmount = this.shake * 0.06;
     this.camera.position.set(
-      this.kinematics.x,
-      this.kinematics.y + EYE_HEIGHT,
-      this.kinematics.z,
+      this.kinematics.x + (Math.random() - 0.5) * shakeAmount,
+      this.kinematics.y + EYE_HEIGHT + (Math.random() - 0.5) * shakeAmount,
+      this.kinematics.z + (Math.random() - 0.5) * shakeAmount,
     );
-    this.camera.rotation.set(this.kinematics.pitch, this.kinematics.yaw, 0);
+    this.camera.rotation.set(pitchWithRecoil, yawWithRecoil, 0);
 
-    // 网络上报（固定频率，与渲染帧率解耦）
+    // 网络上报（固定频率，与渲染帧率解耦）：上报含后坐的真实准心，保证"打哪中哪"
     this.transformAccumulatorMs += dtSeconds * 1000;
     const intervalMs = 1000 / PLAYER_TRANSFORM_RATE_HZ;
     if (this.transformAccumulatorMs >= intervalMs) {
@@ -260,24 +490,30 @@ export class Game {
         x: this.kinematics.x,
         y: this.kinematics.y,
         z: this.kinematics.z,
-        yaw: this.kinematics.yaw,
-        pitch: this.kinematics.pitch,
+        yaw: yawWithRecoil,
+        pitch: pitchWithRecoil,
       };
       this.connection.sendTransform(message);
     }
 
-    // 远端插值渲染（回退固定延迟，见 shared 常量）
-    this.remotePlayers.render(nowMs - 0); // sample 内部已减延迟
+    // 远端插值渲染
+    this.remotePlayers.render(nowMs);
+    this.throwables.update(dtSeconds, nowMs);
+    this.effects.update(nowMs);
 
-    // 视模型摆动与特效
+    // 视模型摆动/换弹动作
     const moving =
       locked &&
       (moveInput.forward || moveInput.backward || moveInput.left || moveInput.right) &&
       this.kinematics.grounded;
-    this.viewModel.update(dtSeconds, moving, this.kinematics.grounded);
-    this.effects.update(nowMs);
+    const reloadProgress =
+      this.reloadEndAt > Date.now() ? 1 - (this.reloadEndAt - Date.now()) / WEAPON_RELOAD_MS : 0;
+    this.viewModel.update(dtSeconds, moving, this.kinematics.grounded, reloadProgress);
 
-    // HUD
+    // 准星扩散回弹
+    const baseSpread = SPREAD_BASE + (moving ? SPREAD_MOVE : 0);
+    this.spread = Math.max(baseSpread, this.spread - SPREAD_RECOVER_PER_SECOND * dtSeconds);
+
     this.hud.update({
       position: { x: this.kinematics.x, y: this.kinematics.y, z: this.kinematics.z },
       playerCount: this.latestPlayers.length,
@@ -285,9 +521,51 @@ export class Game {
       selfHp: this.selfHp,
       selfAlive: this.selfAlive,
       selfRespawnAt: this.selfRespawnAt,
+      ammo: this.ammo,
+      reserve: this.reserve,
+      reloadProgress,
+      frags: this.frags,
+      flashes: this.flashes,
+      smokes: this.smokes,
+      spread: this.spread,
     });
 
     this.renderer.render(this.scene, this.camera);
+  }
+
+  /** 边沿触发的动作键：R 换弹、G/F/V 投掷。 */
+  private handleActionKeys(nowMs: number): void {
+    if (!this.input.isPointerLocked()) {
+      this.previousPressed.clear();
+      this.pressed.clear();
+      for (const code of ["KeyR", "KeyG", "KeyF", "KeyV"]) {
+        if (this.input.isDown(code)) {
+          this.previousPressed.add(code);
+        }
+      }
+      return;
+    }
+
+    for (const code of ["KeyR", "KeyG", "KeyF", "KeyV"]) {
+      const down = this.input.isDown(code);
+      const wasDown = this.previousPressed.has(code);
+      if (down && !wasDown) {
+        if (code === "KeyR") {
+          this.requestReload();
+        } else if (code === "KeyG") {
+          this.tryThrow(THROWABLE_TYPES.FRAG, nowMs);
+        } else if (code === "KeyF") {
+          this.tryThrow(THROWABLE_TYPES.FLASH, nowMs);
+        } else {
+          this.tryThrow(THROWABLE_TYPES.SMOKE, nowMs);
+        }
+      }
+      if (down) {
+        this.previousPressed.add(code);
+      } else {
+        this.previousPressed.delete(code);
+      }
+    }
   }
 
   public dispose(): void {
@@ -306,8 +584,10 @@ export class Game {
     this.input.dispose();
     this.hud.dispose();
     this.remotePlayers.dispose();
+    this.throwables.dispose();
     this.effects.dispose();
     this.viewModel.dispose(this.camera);
+    this.audio.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }

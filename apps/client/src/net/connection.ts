@@ -4,10 +4,16 @@ import {
   DEFAULT_ROOM_NAME,
   MESSAGE_TYPES,
   PROTOCOL_VERSION,
+  type DamageTakenMessage,
+  type ExplosionMessage,
+  type FlashEffectMessage,
+  type GrenadeLaunchedMessage,
   type KillMessage,
   type PlayerTransformMessage,
   type PongMessage,
   type ShotMessage,
+  type SmokeCloudView,
+  type ThrowableType,
 } from "@colyseus-fps/shared";
 
 import type { BattleRoomState, PlayerState } from "./types.js";
@@ -19,13 +25,18 @@ export interface ConnectionInfo {
 
 export interface ConnectionHandlers {
   onPlayers(players: PlayerState[]): void;
+  onClouds(clouds: SmokeCloudView[]): void;
   onPong(message: PongMessage): void;
   onLeave(code: number): void;
   onShot(message: ShotMessage): void;
   onKill(message: KillMessage): void;
+  onGrenade(message: GrenadeLaunchedMessage): void;
+  onExplosion(message: ExplosionMessage): void;
+  onFlash(message: FlashEffectMessage): void;
+  onDamaged(message: DamageTakenMessage): void;
 }
 
-/** 封装 S1 联机大厅的 Colyseus 连接、状态订阅和消息通道。 */
+/** 封装 Colyseus 连接、状态订阅与消息通道。 */
 export class LobbyConnection {
   private readonly client: Client;
   private room: Room<BattleRoomState> | null = null;
@@ -64,11 +75,24 @@ export class LobbyConnection {
           deaths: player.deaths,
           respawnSeq: player.respawnSeq,
           respawnAt: player.respawnAt,
+          ammo: player.ammo,
+          reserve: player.reserve,
+          reloadEndAt: player.reloadEndAt,
+          frags: player.frags,
+          flashes: player.flashes,
+          smokes: player.smokes,
         });
       });
       players.sort((left, right) => left.joinedAt - right.joinedAt);
       this.handlers.onPlayers(players);
+
+      const clouds: SmokeCloudView[] = [];
+      state.clouds.forEach((cloud: SmokeCloudView) => {
+        clouds.push({ id: cloud.id, x: cloud.x, z: cloud.z, radius: cloud.radius, expiresAt: cloud.expiresAt });
+      });
+      this.handlers.onClouds(clouds);
     });
+
     room.onMessage<PongMessage>(MESSAGE_TYPES.PONG, (message: PongMessage) => {
       this.handlers.onPong(message);
     });
@@ -77,6 +101,18 @@ export class LobbyConnection {
     });
     room.onMessage<KillMessage>(MESSAGE_TYPES.KILL, (message: KillMessage) => {
       this.handlers.onKill(message);
+    });
+    room.onMessage<GrenadeLaunchedMessage>(MESSAGE_TYPES.GRENADE, (message: GrenadeLaunchedMessage) => {
+      this.handlers.onGrenade(message);
+    });
+    room.onMessage<ExplosionMessage>(MESSAGE_TYPES.EXPLODE, (message: ExplosionMessage) => {
+      this.handlers.onExplosion(message);
+    });
+    room.onMessage<FlashEffectMessage>(MESSAGE_TYPES.FLASH, (message: FlashEffectMessage) => {
+      this.handlers.onFlash(message);
+    });
+    room.onMessage<DamageTakenMessage>(MESSAGE_TYPES.DAMAGED, (message: DamageTakenMessage) => {
+      this.handlers.onDamaged(message);
     });
     room.onLeave((code: number) => {
       this.room = null;
@@ -114,6 +150,22 @@ export class LobbyConnection {
       return;
     }
     this.room.send(MESSAGE_TYPES.FIRE);
+  }
+
+  /** 请求换弹；弹药结算由服务端完成。 */
+  public sendReload(): void {
+    if (this.room === null) {
+      return;
+    }
+    this.room.send(MESSAGE_TYPES.RELOAD);
+  }
+
+  /** 投掷道具：只上报方向，位置与速度由服务端裁定。 */
+  public sendThrow(type: ThrowableType, dir: { x: number; y: number; z: number }): void {
+    if (this.room === null) {
+      return;
+    }
+    this.room.send(MESSAGE_TYPES.THROW, { type, dirX: dir.x, dirY: dir.y, dirZ: dir.z });
   }
 
   public async leave(): Promise<void> {

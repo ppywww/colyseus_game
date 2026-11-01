@@ -8,15 +8,18 @@ import { PROJECT_NAME } from "@colyseus-fps/shared";
  * Windows 控制台默认 GBK 代码页，会把 UTF-8 日志渲染成乱码。
  * 启动时自动切到 65001（UTF-8）。
  *
- * 注意：不能依赖 process.stdout.isTTY 判断 —— pnpm run 会用管道转发
- * 脚本输出，此时 isTTY 为 false，但日志最终仍由控制台渲染，chcp 依然必要。
+ * 注意：
+ * - 不能依赖 process.stdout.isTTY 判断 —— pnpm run 以管道转发脚本输出，
+ *   此时 isTTY 为 false，但日志最终仍由控制台渲染，chcp 依然必要。
+ * - stdio 必须为 "inherit"：stdio: "ignore" 创建的子进程无法修改宿主
+ *   控制台代码页（实测无效）；">nul" 用于吞掉 chcp 自身的回显。
  */
 export function ensureConsoleUtf8(): void {
   if (process.platform !== "win32") {
     return;
   }
   try {
-    execSync("chcp 65001", { stdio: "ignore", windowsHide: true });
+    execSync("chcp 65001 >nul", { stdio: "inherit", windowsHide: true });
   } catch {
     // 无控制台或权限不足：保持原样，仅影响日志显示
   }

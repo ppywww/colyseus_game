@@ -45,6 +45,7 @@ export class Game {
   private readonly colliders = obstacleColliders();
 
   private readonly kinematics: PlayerKinematics;
+  private readonly resizeObserver: ResizeObserver;
   private animationFrameId = 0;
   private lastFrameTime = 0;
   private transformAccumulatorMs = 0;
@@ -97,14 +98,27 @@ export class Game {
 
     this.hud.setLockOverlayVisible(true);
     this.renderer.domElement.addEventListener("click", this.handleCanvasClick);
+    this.hud.lockOverlayElement.addEventListener("click", this.handleCanvasClick);
     document.addEventListener("pointerlockchange", this.handlePointerLockChange);
+    document.addEventListener("pointerlockerror", this.handlePointerLockError);
     window.addEventListener("resize", this.handleResize);
+
+    // 容器尺寸可能被 CSS/布局变化（而非 window resize）改变，主动监听
+    this.resizeObserver = new ResizeObserver(() => {
+      this.handleResize();
+    });
+    this.resizeObserver.observe(this.container);
+    this.handleResize();
   }
 
   private readonly handleCanvasClick = (): void => {
     if (!this.input.isPointerLocked()) {
       this.input.requestLock();
     }
+  };
+
+  private readonly handlePointerLockError = (): void => {
+    console.warn("指针锁定失败：请再次点击画面（浏览器可能限制了锁定频率）");
   };
 
   private readonly handlePointerLockChange = (): void => {
@@ -218,8 +232,11 @@ export class Game {
     }
     this.disposed = true;
     cancelAnimationFrame(this.animationFrameId);
+    this.resizeObserver.disconnect();
     this.renderer.domElement.removeEventListener("click", this.handleCanvasClick);
+    this.hud.lockOverlayElement.removeEventListener("click", this.handleCanvasClick);
     document.removeEventListener("pointerlockchange", this.handlePointerLockChange);
+    document.removeEventListener("pointerlockerror", this.handlePointerLockError);
     window.removeEventListener("resize", this.handleResize);
     this.input.dispose();
     this.hud.dispose();

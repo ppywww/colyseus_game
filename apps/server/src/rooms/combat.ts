@@ -1,21 +1,29 @@
 /**
  * 服务端权威弹道判定（纯函数，可单测）。
  *
- * 输入只使用服务端保存的玩家位置/朝向，不信任客户端上传的弹道：
+ * 输入只使用服务端保存的玩家位置/朝向（可被"开火视角快照"在 3° 内覆盖），
+ * 不信任客户端上传的弹道：
  *   客户端发 fire → 服务端取 shooter 的 x/y/z/yaw/pitch → 射线检测
  * 命中规则：
- *   1. 从眼睛位置沿 yaw/pitch 方向发射线（射程 WEAPON_RANGE）；
+ *   1. 判定射线从**眼睛**（y + EYE_HEIGHT）沿 yaw/pitch 出发（射程 WEAPON_RANGE）；
  *   2. 掩体箱（AABB）遮挡：先求最近遮挡距离 tWall；
- *   3. 其他存活玩家按圆柱体（半径 PLAYER_HIT_RADIUS，高 PLAYER_HEIGHT）求交，
- *      取 t < tWall 的最近目标。
+ *   3. 其他存活玩家按 6 段竖直圆柱（{@link PLAYER_HITBOXES}）求交，取 t < tWall 的最近目标，
+ *      并按命中段给出 {@link HitZone} 与 {@link ZONE_DAMAGE} 表里的整数伤害。
+ *
+ * 广播给客户端的 `origin` 是**视觉枪口**（眼睛 + {@link MUZZLE_OFFSET}），不是判定起点：
+ * 判定起点留在眼睛，是为了贴脸时不至于先打中自己枪口的模型/掩体边角；
+ * 而客户端画弹道线必须从枪口出发，否则线会从屏幕正中"凭空"出现（历史手感问题②）。
  */
 
 import {
   EYE_HEIGHT,
-  PLAYER_HEIGHT,
-  PLAYER_HIT_RADIUS,
+  MUZZLE_OFFSET,
+  PLAYER_HITBOXES,
   WEAPON_RANGE,
+  ZONE_DAMAGE,
+  ZONE_PRIORITY,
   type Aabb,
+  type HitZone,
   type ShotMessage,
 } from "@colyseus-fps/shared";
 
@@ -34,7 +42,32 @@ export interface CombatantView {
   yaw: number;
   pitch: number;
   alive: boolean;
+  /** 当前武器槽位；缺省按 0（步枪）处理，便于纯函数测试。 */
+  weaponSlot?: number;
 }
+
+/** 命中体求交目标：只需要位置与朝向（朝向用于把手臂圆柱按 yaw 旋转到世界坐标）。 */
+export interface HitboxTarget {
+  x: number;
+  y: number;
+  z: number;
+  yaw?: number;
+}
+
+/** 命中体求交结果：最近命中距离与命中部位。 */
+export interface HitboxHit {
+  t: number;
+  zone: HitZone;
+}
+
+/** 开火视角快照（客户端随 FIRE 上行）。 */
+export interface AimSnapshot {
+  yaw: number;
+  pitch: number;
+}
+
+/** 同一目标多个圆柱的 t 相差在 1cm 以内时，按 {@link ZONE_PRIORITY} 取优先部位。 */
+const ZONE_TIE_EPSILON: number = 0.01;
 
 /** 由 yaw/pitch 计算视线方向（与 three.js YXZ 相机一致：yaw=0 朝 -Z）。 */
 export function directionFromYawPitch(yaw: number, pitch: number): Vec3 {
@@ -44,6 +77,11 @@ export function directionFromYawPitch(yaw: number, pitch: number): Vec3 {
     y: Math.sin(pitch),
     z: -Math.cos(yaw) * cosPitch,
   };
+}
+
+/** 由 yaw 计算水平「右手方向」单位向量（yaw=0 朝 −Z 时右手边为 +X）。 */
+export function rightFromYaw(yaw: number): Vec3 {
+  return { x: Math.cos(yaw), y: 0, z: -Math.sin(yaw) };
 }
 
 /** 射线与 AABB 求交（slab 法），返回进入距离 t；不相交返回 null。 */
@@ -82,46 +120,58 @@ export function rayAabb(origin: Vec3, dir: Vec3, box: Aabb, maxT: number): numbe
 }
 
 /**
- * 射线与竖直圆柱求交（玩家命中体），返回最近命中距离 t。
- * 圆柱以 (target.x, target.y, target.z) 为底面圆心，高 PLAYER_HEIGHT。
+ * 射线与单个竖直圆柱求交，返回最近命中距离 t；不相交返回 null。
+ *
+ * @param centerX 圆柱轴的世界 X
+ * @param baseY 圆柱所在玩家的**脚底**世界 Y（yMin/yMax 是相对脚底的高度）
+ * @param centerZ 圆柱轴的世界 Z
+ * @param yMin 圆柱下沿（相对脚底）
+ * @param yMax 圆柱上沿（相对脚底）
+ * @param radius 圆柱半径
+ * @param maxT 射线上限（超过即视为未命中）
  */
-export function rayPlayerCylinder(
+export function rayVerticalCylinder(
   origin: Vec3,
   dir: Vec3,
-  target: { x: number; y: number; z: number },
+  centerX: number,
+  baseY: number,
+  centerZ: number,
+  yMin: number,
+  yMax: number,
+  radius: number,
   maxT: number,
 ): number | null {
-  const ox = origin.x - target.x;
-  const oz = origin.z - target.z;
+  const ox: number = origin.x - centerX;
+  const oz: number = origin.z - centerZ;
 
-  const a = dir.x * dir.x + dir.z * dir.z;
-  const b = 2 * (ox * dir.x + oz * dir.z);
-  const c = ox * ox + oz * oz - PLAYER_HIT_RADIUS * PLAYER_HIT_RADIUS;
+  const a: number = dir.x * dir.x + dir.z * dir.z;
+  const c: number = ox * ox + oz * oz - radius * radius;
 
-  // 视线接近竖直：退化为「头顶/脚下穿过圆盘」判定
+  // 视线接近竖直：退化为「穿过圆盘」判定（与旧实现同样的兜底分支）
   if (a < 1e-9) {
     if (c > 0) {
       return null;
     }
-    const t = dir.y > 0
-      ? (target.y - origin.y) / dir.y
-      : (target.y + PLAYER_HEIGHT - origin.y) / dir.y;
+    const targetY: number = dir.y > 0 ? baseY + yMin : baseY + yMax;
+    const t: number = (targetY - origin.y) / dir.y;
     return t >= 0 && t <= maxT ? t : null;
   }
 
-  const discriminant = b * b - 4 * a * c;
+  const b: number = 2 * (ox * dir.x + oz * dir.z);
+  const discriminant: number = b * b - 4 * a * c;
   if (discriminant < 0) {
     return null;
   }
-  const sqrtDisc = Math.sqrt(discriminant);
-  const candidates = [(-b - sqrtDisc) / (2 * a), (-b + sqrtDisc) / (2 * a)];
+
+  const sqrtDisc: number = Math.sqrt(discriminant);
+  const candidates: number[] = [(-b - sqrtDisc) / (2 * a), (-b + sqrtDisc) / (2 * a)];
 
   for (const t of candidates) {
     if (t < 0 || t > maxT) {
       continue;
     }
-    const y = origin.y + dir.y * t;
-    if (y >= target.y && y <= target.y + PLAYER_HEIGHT) {
+    const y: number = origin.y + dir.y * t;
+    if (y >= baseY + yMin && y <= baseY + yMax) {
       return t;
     }
   }
@@ -129,16 +179,62 @@ export function rayPlayerCylinder(
 }
 
 /**
- * 计算一次开火的结果。shooter 必须存活；返回值为可直接广播的 ShotMessage。
+ * 射线 vs 玩家 6 段判定体：返回最近的「命中距离 + 部位」。
  *
- * 注意：入参是 Iterable（调用方常直接传 Map.values()）。函数内部会先物化成数组，
- * 否则第一次遍历找 shooter 就会耗尽一次性迭代器，导致后续遍历查不到任何目标
- * （历史 Bug：后加入的玩家永远打不到先加入的玩家）。
+ * 同距离取舍：若多个圆柱的 t 相差 ≤1cm（擦边同时挂住头和胸），按 {@link ZONE_PRIORITY}
+ * 取高优先级者（头优先）——否则擦边球会按"更低伤害的部位"结算，玩家会觉得"打头不掉血"。
+ */
+export function rayPlayerHitboxes(
+  origin: Vec3,
+  dir: Vec3,
+  target: HitboxTarget,
+  maxT: number,
+): HitboxHit | null {
+  const yaw: number = target.yaw ?? 0;
+  const right: Vec3 = rightFromYaw(yaw);
+
+  let best: HitboxHit | null = null;
+  for (const box of PLAYER_HITBOXES) {
+    const centerX: number = target.x + right.x * box.offsetRight;
+    const centerZ: number = target.z + right.z * box.offsetRight;
+    const t: number | null = rayVerticalCylinder(
+      origin,
+      dir,
+      centerX,
+      target.y,
+      centerZ,
+      box.yMin,
+      box.yMax,
+      box.radius,
+      maxT,
+    );
+    if (t === null) {
+      continue;
+    }
+    if (best === null || t < best.t - ZONE_TIE_EPSILON) {
+      best = { t, zone: box.zone };
+      continue;
+    }
+    if (Math.abs(t - best.t) <= ZONE_TIE_EPSILON && ZONE_PRIORITY[box.zone] < ZONE_PRIORITY[best.zone]) {
+      best = { t, zone: box.zone };
+    }
+  }
+  return best;
+}
+
+/**
+ * 计算一次开火的完整结果（返回值可直接广播，也是 `ShotMessage` 结构）。
+ *
+ * @param players 房间内全部玩家（任意 Iterable，函数内部先物化，避免耗尽一次性迭代器）
+ * @param shooterId 开火者 sessionId
+ * @param obstacles 掩体 AABB 清单（64 条，来自 shared `obstacleColliders()`）
+ * @param aim 开火视角快照（已在调用方做过 3° 校验与归一化）；缺省用服务端已存视角
  */
 export function computeShot(
   players: Iterable<CombatantView>,
   shooterId: string,
   obstacles: readonly Aabb[],
+  aim?: AimSnapshot,
 ): ShotMessage | null {
   const all: CombatantView[] = Array.from(players);
 
@@ -153,13 +249,29 @@ export function computeShot(
     return null;
   }
 
-  const origin: Vec3 = { x: shooter.x, y: shooter.y + EYE_HEIGHT, z: shooter.z };
-  const dir = directionFromYawPitch(shooter.yaw, shooter.pitch);
+  const yaw: number = aim?.yaw ?? shooter.yaw;
+  const pitch: number = aim?.pitch ?? shooter.pitch;
+
+  const dir: Vec3 = directionFromYawPitch(yaw, pitch);
+  // 判定射线起点 = 眼睛（不能挪到枪口：贴脸时会先打中自己的枪口模型/掩体边角）
+  const rayOrigin: Vec3 = { x: shooter.x, y: shooter.y + EYE_HEIGHT, z: shooter.z };
+  // 广播用视觉枪口 = 眼睛 + 右向偏移 + 向下偏移 + 前向偏移（与第一人称视模型姿态对齐）
+  const right: Vec3 = rightFromYaw(yaw);
+  const up: Vec3 = {
+    x: right.y * dir.z - right.z * dir.y,
+    y: right.z * dir.x - right.x * dir.z,
+    z: right.x * dir.y - right.y * dir.x,
+  };
+  const muzzle: Vec3 = {
+    x: rayOrigin.x + right.x * MUZZLE_OFFSET.right + up.x * -MUZZLE_OFFSET.down + dir.x * MUZZLE_OFFSET.forward,
+    y: rayOrigin.y + right.y * MUZZLE_OFFSET.right + up.y * -MUZZLE_OFFSET.down + dir.y * MUZZLE_OFFSET.forward,
+    z: rayOrigin.z + right.z * MUZZLE_OFFSET.right + up.z * -MUZZLE_OFFSET.down + dir.z * MUZZLE_OFFSET.forward,
+  };
 
   // 最近掩体遮挡距离
-  let wallT = WEAPON_RANGE;
+  let wallT: number = WEAPON_RANGE;
   for (const box of obstacles) {
-    const t = rayAabb(origin, dir, box, wallT);
+    const t: number | null = rayAabb(rayOrigin, dir, box, wallT);
     if (t !== null && t < wallT) {
       wallT = t;
     }
@@ -167,27 +279,36 @@ export function computeShot(
 
   // 最近被命中玩家（必须比掩体更近才算命中）
   let hitPlayerId: string | null = null;
-  let hitT = wallT;
+  let hitZone: HitZone | null = null;
+  let hitT: number = wallT;
   for (const player of all) {
     if (player.sessionId === shooterId || !player.alive) {
       continue;
     }
-    const t = rayPlayerCylinder(origin, dir, player, hitT);
-    if (t !== null && t < hitT) {
-      hitT = t;
+    const hit: HitboxHit | null = rayPlayerHitboxes(rayOrigin, dir, player, hitT);
+    if (hit !== null && hit.t < hitT) {
+      hitT = hit.t;
       hitPlayerId = player.sessionId;
+      hitZone = hit.zone;
     }
   }
 
-  const endT = hitPlayerId === null ? wallT : hitT;
+  const damage: number = hitZone === null ? 0 : ZONE_DAMAGE[hitZone];
+  const endT: number = hitPlayerId === null ? wallT : hitT;
+
   return {
     shooterId,
-    origin,
+    origin: muzzle,
+    rayOrigin,
+    dir,
     hit: {
-      x: origin.x + dir.x * endT,
-      y: origin.y + dir.y * endT,
-      z: origin.z + dir.z * endT,
+      x: rayOrigin.x + dir.x * endT,
+      y: rayOrigin.y + dir.y * endT,
+      z: rayOrigin.z + dir.z * endT,
     },
     hitPlayerId,
+    hitZone,
+    damage,
+    weaponSlot: shooter.weaponSlot ?? 0,
   };
 }

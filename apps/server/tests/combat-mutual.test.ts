@@ -5,6 +5,10 @@
  * 本用例把双方摆在同一直线上互相面对，交替开火，验证两个方向都扣血。
  *
  * 场景：A(−1.5,0,7) yaw=0 朝 -Z；B(−1.5,0,1) yaw=π 朝 +Z；中间无掩体（中路空走廊）。
+ *
+ * 视角说明（协议 v2 分区伤害后新增）：眼高 1.60m 的水平射线打的是**头部**（1 枪 100 伤害），
+ * 本用例验证的是「对射对称性」，所以双方都把视线压低 `CHEST_PITCH`（6m 外正好落在 1.34m
+ * 的胸部中心），单发 25 伤害，双方各掉一发后都还活着。
  */
 
 import assert from "node:assert/strict";
@@ -19,7 +23,7 @@ import {
   PLAYER_MAX_HP,
   PROTOCOL_VERSION,
   WEAPON_COOLDOWN_MS,
-  WEAPON_DAMAGE,
+  ZONE_DAMAGE,
 } from "@colyseus-fps/shared";
 import { Client, type Room } from "colyseus.js";
 
@@ -28,6 +32,9 @@ import { FPSBattleRoom } from "../src/rooms/fps-battle-room.js";
 const HOST = "127.0.0.1";
 const WAIT_TIMEOUT_MS = 8000;
 const WAIT_POLL_MS = 25;
+
+/** 6m 距离上把视线从 1.60m 压到胸部中心 1.34m 所需的俯仰角。 */
+const CHEST_PITCH = -Math.atan(0.26 / 6);
 
 interface PlayerLike {
   hp: number;
@@ -65,8 +72,8 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function aim(room: Room, seq: number, x: number, z: number, yaw: number): void {
-  room.send(MESSAGE_TYPES.PLAYER_TRANSFORM, { seq, x, y: 0, z, yaw, pitch: 0 });
+function aim(room: Room, seq: number, x: number, z: number, yaw: number, pitch: number): void {
+  room.send(MESSAGE_TYPES.PLAYER_TRANSFORM, { seq, x, y: 0, z, yaw, pitch });
 }
 
 before(async () => {
@@ -100,33 +107,33 @@ describe("双向对射", () => {
     try {
       await waitFor(() => stateOf(roomA).players?.size === 2, "双方进入同一房间");
 
-      // 面对面：A 在 z=7 朝 -Z，B 在 z=1 朝 +Z
-      aim(roomA, 1, -1.5, 7, 0);
-      aim(roomB, 1, -1.5, 1, Math.PI);
+      // 面对面：A 在 z=7 朝 -Z，B 在 z=1 朝 +Z，双方视线都压在胸部高度
+      aim(roomA, 1, -1.5, 7, 0, CHEST_PITCH);
+      aim(roomB, 1, -1.5, 1, Math.PI, CHEST_PITCH);
       await waitFor(() => {
         const a = stateOf(roomB).players.get(roomA.sessionId);
         const b = stateOf(roomB).players.get(roomB.sessionId);
         return a !== undefined && b !== undefined && Math.abs(a.z - 7) < 0.01 && Math.abs(b.z - 1) < 0.01;
       }, "位置同步完成");
 
-      // 方向一：A 打 B
-      roomA.send(MESSAGE_TYPES.FIRE);
+      // 方向一：A 打 B（FIRE 带视角快照，协议 v2）
+      roomA.send(MESSAGE_TYPES.FIRE, { yaw: 0, pitch: CHEST_PITCH });
       await waitFor(
         () => stateOf(roomA).players.get(roomB.sessionId)!.hp < PLAYER_MAX_HP,
         "A 打 B 应扣血",
       );
       const bHp = stateOf(roomA).players.get(roomB.sessionId)!.hp;
-      assert.equal(bHp, PLAYER_MAX_HP - WEAPON_DAMAGE, "B 应掉一发伤害");
+      assert.equal(bHp, PLAYER_MAX_HP - ZONE_DAMAGE.chest, "B 应掉一发胸部伤害");
 
       // 方向二：B 打 A（等冷却窗口过去）
       await sleep(WEAPON_COOLDOWN_MS + 80);
-      roomB.send(MESSAGE_TYPES.FIRE);
+      roomB.send(MESSAGE_TYPES.FIRE, { yaw: Math.PI, pitch: CHEST_PITCH });
       await waitFor(
         () => stateOf(roomB).players.get(roomA.sessionId)!.hp < PLAYER_MAX_HP,
         "B 打 A 应扣血",
       );
       const aHp = stateOf(roomB).players.get(roomA.sessionId)!.hp;
-      assert.equal(aHp, PLAYER_MAX_HP - WEAPON_DAMAGE, "A 应掉一发伤害");
+      assert.equal(aHp, PLAYER_MAX_HP - ZONE_DAMAGE.chest, "A 应掉一发胸部伤害");
     } finally {
       await roomA.leave();
       await roomB.leave();

@@ -22,6 +22,10 @@ export interface PlayerState {
   frags: number;
   flashes: number;
   smokes: number;
+  /** 当前手持武器槽位（0=AK 1=手枪 2=小刀 3=手雷 4=闪光 5=烟雾），协议 v2 新增。 */
+  weaponSlot: number;
+  /** 队伍（"T" / "CT"）：远端模型配色与出生朝向共用，协议 v2 新增。 */
+  team: string;
 }
 
 /** 与 Colyseus MapSchema 结构兼容的最小只读接口。 */

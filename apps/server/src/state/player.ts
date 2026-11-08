@@ -77,4 +77,33 @@ export class Player extends Schema {
 
   @type("uint8")
   public smokes: number = THROWABLES.smoke.initialCount;
+
+  /* ---------------- S5：武器槽位与护甲（协议 v2） ---------------- */
+
+  /** 当前手持武器槽位：0=AK 1=手枪 2=小刀 3=手雷 4=闪光 5=烟雾。 */
+  @type("uint8")
+  public weaponSlot: number = 0;
+
+  /** 切枪结束时间戳（Date.now()，毫秒）；0 表示不在切枪中。 */
+  @type("float64")
+  public switchEndAt: number = 0;
+
+  /** 护甲值（本期恒 0，预留字段避免下期二次改协议）。 */
+  @type("uint8")
+  public armor: number = 0;
+
+  /**
+   * 队伍（"T" / "CT"）。
+   *
+   * 为什么进状态同步：出生点候选集（服务端）与下一批的人物模型配色（客户端，两队不同颜色、
+   * 禁止用 sessionId 哈希取色）都要用它。类型保持 `string` 而不是 `TeamId`，
+   * 是为了让 Colyseus 的 `@type("string")` 序列化不做额外假设。
+   */
+  @type("string")
+  public team: string = "T";
+
+  /* ---------------- 仅服务端使用（不同步） ---------------- */
+
+  /** 上次出生使用的队内下标（出生点"避免连续同点"用），-1 表示尚未出生。 */
+  public lastSpawnIndex: number = -1;
 }

@@ -234,7 +234,8 @@ export class Game {
     }
 
     this.lastFireAt = nowMs;
-    this.connection.sendFire();
+    // 携带开火瞬间的视角快照（与屏幕准星同源：含后坐偏移），服务端 ±3° 内采信
+    this.connection.sendFire(this.kinematics.yaw + this.recoilYaw, this.kinematics.pitch + this.recoilPitch);
 
     // 本地即时反馈（不等服务端回包，才有"跟手"的开枪感）
     this.ammo = Math.max(0, this.ammo - 1);

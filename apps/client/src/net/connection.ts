@@ -81,6 +81,8 @@ export class LobbyConnection {
           frags: player.frags,
           flashes: player.flashes,
           smokes: player.smokes,
+          weaponSlot: player.weaponSlot,
+          team: player.team,
         });
       });
       players.sort((left, right) => left.joinedAt - right.joinedAt);
@@ -144,12 +146,17 @@ export class LobbyConnection {
     this.room.send(MESSAGE_TYPES.PLAYER_TRANSFORM, message);
   }
 
-  /** 上报开火意图；弹道由服务端计算。 */
-  public sendFire(): void {
+  /**
+   * 上报开火意图；弹道由服务端计算。
+   *
+   * 携带开火瞬间的视角快照：服务端在 ±3° 内采信它，把"方向陈旧"从 ≤33ms 压到 ~0
+   * （协议 v2 的弹道一致性修复之一）。
+   */
+  public sendFire(yaw: number, pitch: number): void {
     if (this.room === null) {
       return;
     }
-    this.room.send(MESSAGE_TYPES.FIRE);
+    this.room.send(MESSAGE_TYPES.FIRE, { yaw, pitch });
   }
 
   /** 请求换弹；弹药结算由服务端完成。 */

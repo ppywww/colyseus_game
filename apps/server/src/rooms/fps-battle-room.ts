@@ -10,14 +10,12 @@ import {
   PLAYER_MAX_HP,
   PLAYER_RESPAWN_DELAY_MS,
   PROTOCOL_VERSION,
-  SPAWN_POINTS,
   THROWABLES,
   THROW_COOLDOWN_MS,
   THROW_ORIGIN_FORWARD,
   THROW_SPEED,
   THROWABLE_TYPES,
   WEAPON_COOLDOWN_MS,
-  WEAPON_DAMAGE,
   WEAPON_MAG_SIZE,
   WEAPON_RELOAD_MS,
   WEAPON_RESERVE_AMMO,
@@ -27,10 +25,10 @@ import {
   type ExplosionMessage,
   type FlashEffectMessage,
   type GrenadeLaunchedMessage,
+  type HitZone,
   type KillMessage,
   type PingMessage,
   type PongMessage,
-  type SpawnPoint,
   type TeamId,
   type ThrowableType,
   type ThrowMessage,
@@ -49,7 +47,8 @@ import {
   stepGrenade,
   type GrenadeState,
 } from "./grenades.js";
-import { sanitizeTransform } from "./transform.js";
+import { pickSpawnPoint, type SpawnSelection } from "./spawn.js";
+import { acceptAimSnapshot, overlapsObstacle, sanitizeTransform, type AimSnapshot } from "./transform.js";
 
 export interface FPSBattleRoomOptions {
   maxClients?: number;
@@ -93,24 +92,20 @@ function setCountOf(player: Player, type: ThrowableType, value: number): void {
   player[inventoryFieldOf(type)] = Math.max(0, Math.min(255, value));
 }
 
-/** 出生表异常时的兜底点位（正常不会用到，仅为避免非空断言）。 */
-const FALLBACK_SPAWN: SpawnPoint = { team: "T", x: 0, z: 25, yaw: 0 };
-
 /**
- * 按序号从固定出生表取点：偶数序号进 T 侧、奇数进 CT 侧，同队按 `floor(index/2) % 5` 取槽位。
+ * 由「加入序号」决定队伍：偶数进 T 侧、奇数进 CT 侧。
  *
- * 为什么不用旧的「黄金角绕中心撒点」：那张表假设场地是半径 30 的圆形空地，
- * 在沙漠迷城地图里会把玩家生成到市场建筑群（12×24 的实心块）或墙体内部，
- * 客户端物理的 MTA 推出会把人弹出来并产生橡皮筋。固定表每条都已按 0.35m 玩家半径校验过。
+ * 为什么队伍仍然按序号而不是让玩家自选：本期没有选边 UI，序号交替是最稳定的
+ * 4v4 切分方式；出生点本身已改为「每队 4 点随机」（见 `spawn.ts` 的 `pickSpawnPoint`），
+ * 所以队伍只决定候选点集合，不再决定具体站位。
  */
-export function nextSpawnPoint(index: number): SpawnPoint {
-  const team: TeamId = index % 2 === 0 ? "T" : "CT";
-  const slots: readonly SpawnPoint[] = SPAWN_POINTS.filter((point) => point.team === team);
-  if (slots.length === 0) {
-    return FALLBACK_SPAWN;
-  }
-  const slot: number = Math.floor(index / 2) % slots.length;
-  return slots[slot] ?? FALLBACK_SPAWN;
+export function teamOfJoinIndex(index: number): TeamId {
+  return index % 2 === 0 ? "T" : "CT";
+}
+
+/** 读回玩家的队伍（`Player.team` 是同步字段，非法值一律按 T 处理）。 */
+export function teamOfPlayer(player: { team: string }): TeamId {
+  return player.team === "CT" ? "CT" : "T";
 }
 
 /** FPS 对战房间：S1 联机、S2 位置同步、S3 服务端权威战斗、S4 弹药与投掷物。 */
@@ -124,7 +119,7 @@ export class FPSBattleRoom extends Room<BattleState> {
   /** 飞行中的投掷物（服务端权威模拟）。 */
   private readonly grenades = new Map<number, GrenadeState>();
   private nextGrenadeId = 1;
-  /** 出生点游标：加入与重生共用，保证前 10 次出生互不重叠（之后开始轮转）。 */
+  /** 加入序号游标：只用来交替分配队伍（出生位置由 `pickSpawnPoint` 随机决定）。 */
   private spawnCursor = 0;
 
   /** 投掷物模拟步长（毫秒）：比状态同步更密，保证抛物线平滑。 */
@@ -158,6 +153,17 @@ export class FPSBattleRoom extends Room<BattleState> {
         return;
       }
 
+      // 障碍物校验：脚底中心嵌在任何体块里 → 拒绝本次上报，保留上一合法位置。
+      // 之所以"拒绝"而不是"推出"：推出会和客户端物理互相打架（橡皮筋），
+      // 单向不采纳则客户端自己走出来的那一帧立刻就被接受。
+      if (overlapsObstacle(transform.x, transform.y, transform.z, this.obstacles)) {
+        this.logger.debug(
+          { playerId: client.sessionId, x: transform.x, y: transform.y, z: transform.z },
+          "位置上报嵌在障碍物内，已丢弃并保留上一合法位置",
+        );
+        return;
+      }
+
       player.seq = transform.seq;
       player.x = transform.x;
       player.y = transform.y;
@@ -167,13 +173,15 @@ export class FPSBattleRoom extends Room<BattleState> {
     });
 
     // S3：开火。弹道完全由服务端状态计算，客户端无法伪造命中。
-    this.onMessage(MESSAGE_TYPES.FIRE, (client: Client) => {
+    // v2：上行可携带视角快照 `{ yaw, pitch }`，服务端在 ±3° 内采信（把方向陈旧从 ≤66ms 压到 ~0），
+    //     超出 3° 或非法则回退到已存视角（防"瞬移视野爆头"）。
+    this.onMessage<unknown>(MESSAGE_TYPES.FIRE, (client: Client, raw: unknown) => {
       const shooter = this.state.players.get(client.sessionId);
       if (!shooter || !shooter.alive) {
         return;
       }
-      // 换弹中或弹匣空：忽略（客户端自行播放空仓音效）
-      if (shooter.reloadEndAt > Date.now() || shooter.ammo <= 0) {
+      // 换弹中、切枪中或弹匣空：忽略（客户端自行播放空仓音效）
+      if (shooter.reloadEndAt > Date.now() || shooter.switchEndAt > Date.now() || shooter.ammo <= 0) {
         return;
       }
 
@@ -185,14 +193,15 @@ export class FPSBattleRoom extends Room<BattleState> {
       this.lastFireAt.set(client.sessionId, now);
       shooter.ammo -= 1;
 
-      const shot = computeShot(this.state.players.values(), client.sessionId, this.obstacles);
+      const aim: AimSnapshot | null = acceptAimSnapshot(raw, { yaw: shooter.yaw, pitch: shooter.pitch });
+      const shot = computeShot(this.state.players.values(), client.sessionId, this.obstacles, aim ?? undefined);
       if (shot === null) {
         return;
       }
       this.broadcast(MESSAGE_TYPES.SHOT, shot);
 
       if (shot.hitPlayerId !== null) {
-        this.applyDamage(client.sessionId, shot.hitPlayerId, WEAPON_DAMAGE);
+        this.applyDamage(client.sessionId, shot.hitPlayerId, shot.damage, shot.hitZone);
       }
     });
 
@@ -224,20 +233,47 @@ export class FPSBattleRoom extends Room<BattleState> {
     player.displayName = sanitizeDisplayName(joinOptions.name, client.sessionId);
     player.joinedAt = Date.now();
 
-    const spawn = nextSpawnPoint(this.spawnCursor);
+    const team: TeamId = teamOfJoinIndex(this.spawnCursor);
     this.spawnCursor += 1;
-    player.x = spawn.x;
-    player.y = 0;
-    player.z = spawn.z;
-    // 朝向直接取出生表：T 面向 −Z、CT 面向 +Z，不再让所有人朝地图中心扎堆
-    player.yaw = spawn.yaw;
-
+    player.team = team;
     this.state.players.set(client.sessionId, player);
+    this.placeAtSpawn(player, team);
 
     this.logger.info(
-      { playerId: client.sessionId, displayName: player.displayName, clients: this.clients.length },
+      {
+        playerId: client.sessionId,
+        displayName: player.displayName,
+        team,
+        spawnIndex: player.lastSpawnIndex,
+        clients: this.clients.length,
+      },
       "玩家已加入",
     );
+  }
+
+  /**
+   * 把玩家放到一个新出生点（加入与重生共用）。
+   *
+   * 出生点由 `pickSpawnPoint` 在同队 4 点里随机，并做「占位 / 敌人视线 / 避免连续同点」三级过滤，
+   * 见 `spawn.ts` 的文件头注释。
+   */
+  private placeAtSpawn(player: Player, team: TeamId): void {
+    const selection: SpawnSelection = pickSpawnPoint({
+      team,
+      selfId: player.sessionId,
+      lastIndex: player.lastSpawnIndex,
+      players: this.state.players.values(),
+      obstacles: this.obstacles,
+    });
+    player.x = selection.point.x;
+    player.y = 0;
+    player.z = selection.point.z;
+    // 朝向直接取出生表：T 面向 −Z、CT 面向 +Z，不再让所有人朝地图中心扎堆
+    player.yaw = selection.point.yaw;
+    player.lastSpawnIndex = selection.index;
+    if (selection.overflow) {
+      this.logger.debug({ playerId: player.sessionId, team }, "同队 4 点全被占用，使用 +X 偏移兜底出生点");
+    }
   }
 
   public override onLeave(client: Client): void {
@@ -247,8 +283,12 @@ export class FPSBattleRoom extends Room<BattleState> {
     this.logger.info({ playerId: client.sessionId, removed, clients: this.clients.length }, "玩家已离开");
   }
 
-  /** 结算伤害；致死时更新计分、广播击杀并安排重生。 */
-  private applyDamage(killerId: string, victimId: string, amount: number): void {
+  /**
+   * 结算伤害；致死时更新计分、广播击杀并安排重生。
+   *
+   * @param zone 命中部位（枪械来自弹道判定）；手雷等"不吃部位倍率"的伤害传 null。
+   */
+  private applyDamage(killerId: string, victimId: string, amount: number, zone: HitZone | null): void {
     const victim = this.state.players.get(victimId);
     if (!victim || !victim.alive) {
       return;
@@ -266,6 +306,7 @@ export class FPSBattleRoom extends Room<BattleState> {
         hp: victim.hp,
         fromX: attacker?.x ?? victim.x,
         fromZ: attacker?.z ?? victim.z,
+        zone,
       };
       victimClient.send(MESSAGE_TYPES.DAMAGED, message);
     }
@@ -283,9 +324,14 @@ export class FPSBattleRoom extends Room<BattleState> {
       killer.kills += 1;
     }
 
-    const killMessage: KillMessage = { killerId, victimId };
+    const killMessage: KillMessage = {
+      killerId,
+      victimId,
+      weaponSlot: killer?.weaponSlot ?? 0,
+      headshot: zone === "head",
+    };
     this.broadcast(MESSAGE_TYPES.KILL, killMessage);
-    this.logger.info({ killerId, victimId, amount }, "玩家被击杀");
+    this.logger.info({ killerId, victimId, amount, zone, headshot: killMessage.headshot }, "玩家被击杀");
 
     this.clock.setTimeout(() => {
       this.respawn(victimId);
@@ -430,7 +476,8 @@ export class FPSBattleRoom extends Room<BattleState> {
         this.obstacles,
       );
       for (const victim of victims) {
-        this.applyDamage(grenade.throwerId, victim.sessionId, victim.damage);
+        // 手雷不吃部位倍率（按爆炸距离线性衰减，对全身生效），因此 zone 传 null
+        this.applyDamage(grenade.throwerId, victim.sessionId, victim.damage, null);
       }
       return;
     }
@@ -482,12 +529,7 @@ export class FPSBattleRoom extends Room<BattleState> {
       return;
     }
 
-    const spawn = nextSpawnPoint(this.spawnCursor);
-    this.spawnCursor += 1;
-    player.x = spawn.x;
-    player.y = 0;
-    player.z = spawn.z;
-    player.yaw = spawn.yaw;
+    this.placeAtSpawn(player, teamOfPlayer(player));
     player.hp = PLAYER_MAX_HP;
     player.alive = true;
     player.respawnAt = 0;
@@ -498,6 +540,9 @@ export class FPSBattleRoom extends Room<BattleState> {
     player.frags = THROWABLES.frag.initialCount;
     player.flashes = THROWABLES.flash.initialCount;
     player.smokes = THROWABLES.smoke.initialCount;
+    player.weaponSlot = 0;
+    player.switchEndAt = 0;
+    player.armor = 0;
 
     this.logger.info({ playerId: sessionId }, "玩家已重生");
   }

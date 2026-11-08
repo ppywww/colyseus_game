@@ -56,7 +56,7 @@ describe("共享常量在客户端可见", () => {
     assert.ok(CLIENT_INTERPOLATION_DELAY_MS <= 500);
   });
 
-  it("协议版本应为 1", () => {
-    assert.equal(PROTOCOL_VERSION, 1);
+  it("协议版本应为 2（与 shared 保持同步）", () => {
+    assert.equal(PROTOCOL_VERSION, 2);
   });
 });

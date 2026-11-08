@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { EYE_HEIGHT, WEAPON_RANGE, obstacleColliders } from "@colyseus-fps/shared";
+import {
+  EYE_HEIGHT,
+  WEAPON_RANGE,
+  ZONE_DAMAGE,
+  obstacleColliders,
+} from "@colyseus-fps/shared";
 
 import {
   computeShot,
   directionFromYawPitch,
   rayAabb,
-  rayPlayerCylinder,
   type CombatantView,
   type Vec3,
 } from "../src/rooms/combat.js";
@@ -49,34 +53,16 @@ describe("rayAabb", () => {
   });
 });
 
-describe("rayPlayerCylinder", () => {
-  it("正对胸口命中，距离为表面距离", () => {
-    const target = { x: 0, y: 0, z: -5 };
-    const t = rayPlayerCylinder(ORIGIN, { x: 0, y: 0, z: -1 }, target, 60);
-    // 表面距离 = 5 - 半径 0.35
-    assert.ok(t !== null && Math.abs(t - 4.65) < 1e-6);
-  });
-
-  it("瞄准头顶之上不命中", () => {
-    const target = { x: 0, y: 0, z: -5 };
-    const t = rayPlayerCylinder(ORIGIN, { x: 0, y: 1, z: -1 }, target, 60);
-    assert.equal(t, null);
-  });
-
-  it("侧向偏移超过半径不命中", () => {
-    const target = { x: 1, y: 0, z: -5 };
-    const t = rayPlayerCylinder(ORIGIN, { x: 0, y: 0, z: -1 }, target, 60);
-    assert.equal(t, null);
-  });
-});
-
 describe("computeShot", () => {
-  it("正对敌人命中并给出命中点", () => {
+  it("正对敌人命中头部（眼高水平射击 = 头部判定区）并给出命中点", () => {
     const players = [makePlayer("A", 0, 0), makePlayer("B", 0, -5)];
     const shot = computeShot(players, "A", []);
     assert.ok(shot !== null);
     assert.equal(shot.hitPlayerId, "B");
-    assert.ok(Math.abs(shot.hit.z + 4.65) < 1e-6);
+    assert.equal(shot.hitZone, "head");
+    assert.equal(shot.damage, ZONE_DAMAGE.head);
+    // 头部圆柱半径 0.14 → 表面距离 5 − 0.14
+    assert.ok(Math.abs(shot.hit.z + 4.86) < 1e-6, `命中点 z 应 −4.86，实际 ${shot.hit.z}`);
   });
 
   it("死亡玩家不可开火、不可被命中", () => {
@@ -93,6 +79,8 @@ describe("computeShot", () => {
     const shot = computeShot(players, "A", [centerBox]);
     assert.ok(shot !== null);
     assert.equal(shot.hitPlayerId, null);
+    assert.equal(shot.hitZone, null);
+    assert.equal(shot.damage, 0);
     // 弹道应止于掩体前表面 z=3
     assert.ok(Math.abs(shot.hit.z - 3) < 1e-6);
   });
@@ -115,8 +103,8 @@ describe("computeShot", () => {
     const shot = computeShot(players, "A", obstacleColliders());
     assert.ok(shot !== null);
     assert.equal(shot.hitPlayerId, "B", "空走廊内应命中目标");
-    // 命中点应在目标圆柱表面：z = −3 + 半径 0.35
-    assert.ok(Math.abs(shot.hit.z - (-3 + 0.35)) < 1e-6, `命中点 z 应约 −2.65，实际 ${shot.hit.z}`);
+    // 眼高水平射击打在头部圆柱表面：z = −3 + 0.14
+    assert.ok(Math.abs(shot.hit.z - (-3 + 0.14)) < 1e-6, `命中点 z 应约 −2.86，实际 ${shot.hit.z}`);
   });
 
   it("多名敌人时命中最近的一个", () => {
@@ -129,5 +117,21 @@ describe("computeShot", () => {
     const players = [makePlayer("A", 0, 0), makePlayer("B", 0, -(WEAPON_RANGE + 5))];
     const shot = computeShot(players, "A", []);
     assert.equal(shot?.hitPlayerId, null);
+  });
+
+  it("弹道字段应包含 rayOrigin / dir / hitZone / damage / weaponSlot（协议 v2）", () => {
+    const players = [makePlayer("A", 0, 0), makePlayer("B", 0, -5)];
+    const shot = computeShot(players, "A", []);
+    assert.ok(shot !== null);
+    assert.equal(typeof shot.rayOrigin.x, "number");
+    assert.equal(typeof shot.dir.z, "number");
+    assert.equal(typeof shot.weaponSlot, "number");
+    // 枪口必然与判定起点不同（否则又会画出"从屏幕正中射出"的弹道）
+    const offset: number = Math.hypot(
+      shot.origin.x - shot.rayOrigin.x,
+      shot.origin.y - shot.rayOrigin.y,
+      shot.origin.z - shot.rayOrigin.z,
+    );
+    assert.ok(offset > 0.3, `枪口与眼睛的距离应 > 0.3m，实际 ${offset.toFixed(3)}`);
   });
 });

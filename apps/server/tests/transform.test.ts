@@ -5,9 +5,17 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { ARENA_RADIUS, type PlayerTransformMessage } from "@colyseus-fps/shared";
+import { ARENA_RADIUS, type Aabb, type PlayerTransformMessage } from "@colyseus-fps/shared";
 
-import { sanitizeTransform } from "../src/rooms/transform.js";
+import {
+  AIM_SNAPSHOT_TOLERANCE_RAD,
+  acceptAimSnapshot,
+  overlapsObstacle,
+  sanitizeTransform,
+} from "../src/rooms/transform.js";
+
+/** 一块 4×1.1×1 的矮墙（对应地图 A6，脚底可站上去）。 */
+const CRATE: Aabb = { minX: -2, maxX: 2, minY: 0, maxY: 1.1, minZ: -0.5, maxZ: 0.5 };
 
 function validMessage(overrides: Partial<PlayerTransformMessage> = {}): PlayerTransformMessage {
   return { seq: 1, x: 1, y: 0, z: -2, yaw: 0.5, pitch: -0.2, ...overrides };
@@ -60,5 +68,68 @@ describe("sanitizeTransform 非法消息", () => {
   it("非有限数（NaN / Infinity）应返回 null", () => {
     assert.equal(sanitizeTransform(validMessage({ x: NaN })), null);
     assert.equal(sanitizeTransform(validMessage({ yaw: Infinity })), null);
+  });
+});
+
+describe("overlapsObstacle（服务端障碍物校验）", () => {
+  it("脚底中心落在 AABB 的 XZ 内且低于盒顶 → 视为非法", () => {
+    assert.equal(overlapsObstacle(0, 0, 0, [CRATE]), true);
+    assert.equal(overlapsObstacle(1.9, 0.4, -0.4, [CRATE]), true);
+  });
+
+  it("站在盒顶（footY ≥ maxY − 0.05，含 5cm 容差）→ 合法", () => {
+    assert.equal(overlapsObstacle(0, 1.1, 0, [CRATE]), false);
+    assert.equal(overlapsObstacle(0, 1.05, 0, [CRATE]), false);
+    assert.equal(overlapsObstacle(0, 1.1 - 0.05, 0, [CRATE]), false, "容差边界内合法");
+  });
+
+  it("跳到盒子上方 → 合法", () => {
+    assert.equal(overlapsObstacle(0, 1.28, 0, [CRATE]), false);
+  });
+
+  it("XZ 在盒外 → 合法（贴墙走不算穿模）", () => {
+    assert.equal(overlapsObstacle(2.01, 0, 0, [CRATE]), false);
+    assert.equal(overlapsObstacle(0, 0, 0.51, [CRATE]), false);
+  });
+
+  it("空障碍表永远合法", () => {
+    assert.equal(overlapsObstacle(0, 0, 0, []), false);
+  });
+});
+
+describe("acceptAimSnapshot（开火视角快照 3° 校验）", () => {
+  const stored = { yaw: 0, pitch: 0 };
+
+  it("缺失 / 非法 / 非有限数一律不采信", () => {
+    assert.equal(acceptAimSnapshot(undefined, stored), null);
+    assert.equal(acceptAimSnapshot({}, stored), null);
+    assert.equal(acceptAimSnapshot({ yaw: NaN, pitch: 0 }, stored), null);
+    assert.equal(acceptAimSnapshot({ yaw: 0, pitch: Infinity }, stored), null);
+    assert.equal(acceptAimSnapshot("x", stored), null);
+  });
+
+  it("3° 以内采信，并做过归一化 / 钳制", () => {
+    const inside = acceptAimSnapshot({ yaw: 0.05, pitch: -0.05 }, stored);
+    assert.ok(inside !== null);
+    assert.ok(Math.abs(inside.yaw - 0.05) < 1e-9);
+    assert.ok(Math.abs(inside.pitch + 0.05) < 1e-9);
+
+    const wrapped = acceptAimSnapshot({ yaw: Math.PI * 2, pitch: 9 }, { yaw: 0, pitch: Math.PI / 2 });
+    assert.ok(wrapped !== null, "yaw 回绕到 0、pitch 被钳到 π/2 后与已存值一致，应采信");
+    assert.ok(Math.abs(wrapped.yaw) < 1e-9);
+    assert.equal(wrapped.pitch, Math.PI / 2);
+  });
+
+  it("超过 3° 不采信（防瞬移视野爆头）", () => {
+    const tooMuch = AIM_SNAPSHOT_TOLERANCE_RAD + 0.01;
+    assert.equal(acceptAimSnapshot({ yaw: tooMuch, pitch: 0 }, stored), null);
+    assert.equal(acceptAimSnapshot({ yaw: 0, pitch: -tooMuch }, stored), null);
+    assert.equal(acceptAimSnapshot({ yaw: Math.PI, pitch: 0 }, stored), null);
+  });
+
+  it("负向回绕的 3° 也应被正确测量（不因 ±π 边界误判）", () => {
+    const nearPi = { yaw: Math.PI - 0.01, pitch: 0 };
+    const wrapped = acceptAimSnapshot({ yaw: -Math.PI + 0.005, pitch: 0 }, nearPi);
+    assert.ok(wrapped !== null, "相差 0.015 rad ≈ 0.86°，应采信");
   });
 });

@@ -21,17 +21,27 @@ export const GAME_TICK_RATE: number = 20;
 /** 单个逻辑帧时长（毫秒），由 GAME_TICK_RATE 推导，避免两处硬编码不一致。 */
 export const GAME_TICK_INTERVAL_MS: number = 1000 / GAME_TICK_RATE;
 
-/** 单个房间最大玩家数。 */
-export const MAX_PLAYERS_PER_ROOM: number = 10;
+/**
+ * 单个房间最大玩家数：4v4 = 8 人。
+ *
+ * 为什么是 8 而不是 10：出生点改为「每队 4 点随机」（见 {@link TEAM_SPAWN_COUNT}），
+ * 4 点 vs 每队 4 人一一对应，**永远不会有两人重叠出生**。
+ */
+export const MAX_PLAYERS_PER_ROOM: number = 8;
 
 /** 客户端状态插值延迟（毫秒）：约等于 2 个逻辑帧，用于平滑远端实体。 */
 export const CLIENT_INTERPOLATION_DELAY_MS: number = 100;
 
-/** 单玩家每秒允许发送的消息数量上限（防刷包，服务端据此限流）。 */
-export const MAX_MESSAGES_PER_SECOND: number = 30;
+/**
+ * 单玩家每秒允许发送的消息数量上限（防刷包，服务端据此限流）。
+ *
+ * 30 → 45 的原因：{@link PLAYER_TRANSFORM_RATE_HZ} 提到 30Hz 后，位置上报本身就会
+ * 卡满 30 msg/s，加上开火/换弹/切枪/投掷，30 的阈值会把玩家自己的合法上报限流丢弃。
+ */
+export const MAX_MESSAGES_PER_SECOND: number = 45;
 
-/** 协议版本号：客户端与服务端不一致时拒绝连接。 */
-export const PROTOCOL_VERSION: number = 1;
+/** 协议版本号：客户端与服务端不一致时拒绝连接。v2 = 分区伤害 + 武器槽 + 弹道字段扩展。 */
+export const PROTOCOL_VERSION: number = 2;
 
 /** 默认房间名：客户端与服务端必须保持一致。 */
 export const DEFAULT_ROOM_NAME: string = "fps_battle";
@@ -42,7 +52,7 @@ export const DEFAULT_SERVER_PORT: number = 2567;
 /** 玩家显示名最大长度（按字符截断，避免异常长名称刷爆状态同步）。 */
 export const MAX_DISPLAY_NAME_LENGTH: number = 24;
 
-/** S2/S3 阶段的客户端/服务端消息类型。 */
+/** S2/S3/S5 阶段的客户端/服务端消息类型。 */
 export const MESSAGE_TYPES = {
   PING: "ping",
   PONG: "pong",
@@ -56,6 +66,12 @@ export const MESSAGE_TYPES = {
   EXPLODE: "explode",
   FLASH: "flash",
   DAMAGED: "damaged",
+  /** v2 新增：切枪请求（客户端上行 `{ slot }`）。 */
+  WEAPON_SWITCH: "weapon_switch",
+  /** v2 新增：挥刀请求（客户端上行 `{ yaw, pitch }`，可省略）。 */
+  KNIFE: "knife",
+  /** v2 新增：挥刀结果广播。 */
+  KNIFE_RESULT: "knife_result",
 } as const;
 
 export type MessageType = (typeof MESSAGE_TYPES)[keyof typeof MESSAGE_TYPES];
@@ -121,8 +137,33 @@ export const EYE_HEIGHT: number = 1.6;
 /** 玩家身高（米）：远端模型与碰撞体的共同依据。 */
 export const PLAYER_HEIGHT: number = 1.8;
 
-/** 客户端上报自身位置/视角的频率（Hz）。 */
-export const PLAYER_TRANSFORM_RATE_HZ: number = 15;
+/**
+ * 客户端上报自身位置/视角的频率（Hz）。
+ *
+ * 15 → 30 的原因：服务端 `computeShot` 用的是「最后收到的」yaw/pitch，
+ * 15Hz 意味着最差 66ms 的陈旧方向，快速甩枪时在 30m 外交战点会偏 0.5–1.6m。
+ * 提到 30Hz 把陈旧压到 ≤33ms；配套把 {@link MAX_MESSAGES_PER_SECOND} 提到 45。
+ */
+export const PLAYER_TRANSFORM_RATE_HZ: number = 30;
+
+/** 客户端上行：开火请求（携带视角快照，服务端在 3° 内采用，超出则回退已存视角）。 */
+export interface FireMessage {
+  /** 开火瞬间的朝向（弧度）。可由服务端 `normalizeYaw` 归一化。 */
+  yaw: number;
+  /** 开火瞬间的俯仰（弧度）。可由服务端 `clampPitch` 钳制。 */
+  pitch: number;
+}
+
+/** 客户端上行：切枪请求（槽位见 {@link WEAPON_SLOTS}）。 */
+export interface WeaponSwitchMessage {
+  slot: number;
+}
+
+/** 客户端上行：挥刀请求。方向可选，缺省时服务端用自身保存的视角判定。 */
+export interface KnifeMessage {
+  yaw?: number;
+  pitch?: number;
+}
 
 /** 客户端上行位置/视角消息（seq 单调递增，服务端据此丢弃乱序包）。 */
 export interface PlayerTransformMessage {
@@ -159,7 +200,7 @@ export function clampPitch(pitch: number): number {
 /** 玩家最大血量。 */
 export const PLAYER_MAX_HP: number = 100;
 
-/** 单发伤害：4 发击杀。 */
+/** 单发基础伤害（胸部伤害）：4 发击杀。 */
 export const WEAPON_DAMAGE: number = 25;
 
 /** 开火最小间隔（毫秒），服务端据此限流，客户端据此做本地预冷却。 */
@@ -174,19 +215,198 @@ export const PLAYER_HIT_RADIUS: number = 0.35;
 /** 死亡后重生延迟（毫秒）。 */
 export const PLAYER_RESPAWN_DELAY_MS: number = 3000;
 
+/* ------------------------------------------------------------------ *
+ * S5：分区伤害（CS2 口径：头 1 枪 / 胸 4 枪 / 腹·臂·腿 6 枪）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 命中部位。数组顺序即「同距离时的优先级」（头部优先，避免擦边球掉血）。
+ */
+export const HIT_ZONES = ["head", "chest", "belly", "arm", "leg"] as const;
+
+export type HitZone = (typeof HIT_ZONES)[number];
+
+/**
+ * 权威单发伤害（整数，直接写进 `Player.hp`，**禁止用倍率现算**）。
+ *
+ * 为什么必须是整数表而不是 `Math.round(25 × 倍率)`：`Player.hp` 是 Colyseus `uint8`，
+ * 写入 `18.75` 会被序列化截断成 `18`，客户端 HUD 与服务端算的致死枪数可能差 1 发。
+ * HP=100 时：头 1 枪（100）/ 胸 4 枪（25×4）/ 腹·臂 6 枪（19×6=114）/ 腿 6 枪（18×6=108）。
+ */
+export const ZONE_DAMAGE: Record<HitZone, number> = {
+  head: 100,
+  chest: 25,
+  belly: 19,
+  arm: 19,
+  leg: 18,
+};
+
+/** 文档口径的倍率（= ZONE_DAMAGE / WEAPON_DAMAGE），仅用于 HUD 文案与文档，不参与结算。 */
+export const ZONE_MULTIPLIER: Record<HitZone, number> = {
+  head: 4.0,
+  chest: 1.0,
+  belly: 0.76,
+  arm: 0.76,
+  leg: 0.72,
+};
+
+/** 同 t（相差 ≤1cm）时的部位优先级，数字越小越优先。 */
+export const ZONE_PRIORITY: Record<HitZone, number> = {
+  head: 0,
+  chest: 1,
+  belly: 2,
+  arm: 3,
+  leg: 4,
+};
+
+/** HUD / 击杀播报文案。 */
+export const ZONE_LABEL: Record<HitZone, string> = {
+  head: "头部",
+  chest: "胸部",
+  belly: "腹部",
+  arm: "手臂",
+  leg: "腿部",
+};
+
+/** 单个判定圆柱。 */
+export interface HitCylinder {
+  zone: HitZone;
+  /** 圆柱轴相对角色中心、沿「右手方向」的水平偏移（米，左臂为负）。 */
+  offsetRight: number;
+  /** 圆柱下沿相对**脚底**的高度（米）。 */
+  yMin: number;
+  /** 圆柱上沿相对**脚底**的高度（米）。 */
+  yMax: number;
+  radius: number;
+}
+
+/**
+ * 玩家判定体：6 个竖直圆柱，总高 0.02 → 1.80，与 {@link PLAYER_HEIGHT} 一致。
+ *
+ * 站立时（y=0）各段世界高度：
+ *   头 [1.54, 1.80]  胸 [1.14, 1.54]  腹 [0.90, 1.14]  臂 [0.98, 1.52]  腿 [0.02, 0.90]
+ *
+ * 硬约束：
+ *   1. 躯干三段（腿→腹→胸→头）必须**首尾相接**（不留缝），缝隙会让垂直下压的子弹从两段之间漏判；
+ *   2. 最高段 `yMax` === {@link PLAYER_HEIGHT}，客户端人形模型总高必须与它逐项相等（同源）；
+ *   3. 判定体只比模型宽 1–3cm（网络容错方向：宁可判中，不可判漏）。
+ */
+export const PLAYER_HITBOXES: readonly HitCylinder[] = [
+  { zone: "head", offsetRight: 0, yMin: 1.54, yMax: 1.8, radius: 0.14 },
+  { zone: "chest", offsetRight: 0, yMin: 1.14, yMax: 1.54, radius: 0.27 },
+  { zone: "belly", offsetRight: 0, yMin: 0.9, yMax: 1.14, radius: 0.25 },
+  { zone: "arm", offsetRight: 0.3, yMin: 0.98, yMax: 1.52, radius: 0.1 },
+  { zone: "arm", offsetRight: -0.3, yMin: 0.98, yMax: 1.52, radius: 0.1 },
+  { zone: "leg", offsetRight: 0, yMin: 0.02, yMax: 0.9, radius: 0.2 },
+];
+
+/**
+ * 视觉枪口相对**眼睛**的偏移（世界坐标系，按 yaw/pitch 旋转后叠加）。
+ *
+ * `origin = eye + right * right + up * (−down) + dir * forward`
+ * 数值与第一人称视模型姿态换算一致（相机 x=+0.239、y=−0.228，枪口在枪身 −0.6 处）。
+ */
+export const MUZZLE_OFFSET = {
+  /** 沿玩家右手方向的偏移。 */
+  right: 0.29,
+  /** 沿玩家上方向向下的偏移（取正数表示"向下多少"）。 */
+  down: 0.2,
+  /** 沿视线方向的偏移（视模型是缩放过的假透视，世界尺度取 0.35）。 */
+  forward: 0.35,
+} as const;
+
+/* ------------------------------------------------------------------ *
+ * S5：武器槽位与小刀（本批只定义常量，切枪/挥刀逻辑见下一批）
+ * ------------------------------------------------------------------ */
+
+/** 武器槽位：0=AK 1=手枪 2=小刀 3=手雷 4=闪光 5=烟雾。 */
+export const WEAPON_SLOTS = {
+  RIFLE: 0,
+  PISTOL: 1,
+  KNIFE: 2,
+  FRAG: 3,
+  FLASH: 4,
+  SMOKE: 5,
+} as const;
+
+export type WeaponSlot = (typeof WEAPON_SLOTS)[keyof typeof WEAPON_SLOTS];
+
+/** 滚轮/数字键的槽位顺序（也是 HUD 从左到右的顺序）。 */
+export const SLOT_ORDER: readonly WeaponSlot[] = [0, 1, 2, 3, 4, 5];
+
+/** 各槽位是否已实现（手枪本期做，故 PISTOL 为 true；未实现槽位滚轮跳过）。 */
+export const SLOT_ENABLED: Record<WeaponSlot, boolean> = {
+  0: true,
+  1: true,
+  2: true,
+  3: true,
+  4: true,
+  5: true,
+};
+
+/** 切枪耗时（毫秒）：枪↔枪 350、到近战 300、到投掷物 250。 */
+export const SWITCH_DURATION_MS: Record<WeaponSlot, number> = {
+  0: 350,
+  1: 350,
+  2: 300,
+  3: 250,
+  4: 250,
+  5: 250,
+};
+
+/** 小刀正面伤害（满血 2 刀）。 */
+export const MELEE_DAMAGE_FRONT: number = 55;
+
+/** 小刀背刺伤害（= 满血上限，数字上不越界）。 */
+export const MELEE_DAMAGE_BACK: number = 100;
+
+/** 小刀有效距离（米，水平）：含 0.35m 半径容差 + 陈旧位置延迟预算。 */
+export const MELEE_RANGE: number = 2.0;
+
+/** 小刀冷却（毫秒）：DPS 恰为步枪的一半，定位是"没子弹时的应急"。 */
+export const MELEE_COOLDOWN_MS: number = 650;
+
+/** 小刀扇形半角（弧度，共 70°）：避免"背后路过被砍到"。 */
+export const MELEE_ARC: number = (35 * Math.PI) / 180;
+
+/** 小刀垂直容差（米）：`|Δy|` 上限。 */
+export const MELEE_VERTICAL_TOLERANCE: number = 1.6;
+
+/** 背刺判定：目标朝向与"目标→攻击者"方向的夹角超过该值（110°）即视为背刺。 */
+export const MELEE_BACKSTAB_ANGLE: number = (110 * Math.PI) / 180;
+
 /** 服务端广播的弹道结果：所有客户端据此渲染轨迹与命中反馈。 */
 export interface ShotMessage {
   shooterId: string;
+  /**
+   * **视觉枪口**（世界坐标）：判定射线其实从眼睛出发（见 rayOrigin），
+   * 客户端画弹道线必须用它，否则线会从屏幕正中"凭空"出现。
+   */
   origin: { x: number; y: number; z: number };
+  /** 判定射线起点（= 眼睛），仅供调试与法线计算，客户端不要拿它画线。 */
+  rayOrigin: { x: number; y: number; z: number };
+  /** 单位方向向量（= normalize(hit − rayOrigin)）。 */
+  dir: { x: number; y: number; z: number };
+  /** 弹道终点：命中玩家 / 掩体 / 最大射程处。 */
   hit: { x: number; y: number; z: number };
   /** 被命中的玩家 sessionId；未命中玩家（打空或打在掩体上）为 null。 */
   hitPlayerId: string | null;
+  /** 命中部位；未命中玩家为 null。 */
+  hitZone: HitZone | null;
+  /** 实际扣血量（整数，已按 {@link ZONE_DAMAGE} 查表）；未命中为 0。 */
+  damage: number;
+  /** 开火时使用的武器槽位（{@link WEAPON_SLOTS}）。 */
+  weaponSlot: number;
 }
 
 /** 服务端广播的击杀事件。 */
 export interface KillMessage {
   killerId: string;
   victimId: string;
+  /** 致命一击使用的武器槽位（{@link WEAPON_SLOTS}）。 */
+  weaponSlot: number;
+  /** 致命一击是否爆头。 */
+  headshot: boolean;
 }
 
 /* ------------------------------------------------------------------ *
@@ -389,6 +609,20 @@ export const SPAWN_POINTS: readonly SpawnPoint[] = [
   { team: "CT", x: 0, z: -28.5, yaw: Math.PI },
 ];
 
+/**
+ * 服务端随机出生时每队使用的点数：4。
+ *
+ * 与 {@link MAX_PLAYERS_PER_ROOM} = 8（4v4）一一对应，因此"每队 4 点 + 每队 4 人"
+ * 天然不会出现两人重叠出生。取点顺序 = 下面 {@link SPAWN_POINTS} 中该队的前 4 条，
+ * 即文档 5.2 的 8 个坐标（第 5 条 (0, ±29) 因为贴外墙、视野过窄被排除，数据保留不删）。
+ */
+export const TEAM_SPAWN_COUNT: number = 4;
+
+/** 取某队参与随机的那几个出生点（前 {@link TEAM_SPAWN_COUNT} 条，坐标原样）。 */
+export function teamSpawnPoints(team: TeamId): readonly SpawnPoint[] {
+  return SPAWN_POINTS.filter((point) => point.team === team).slice(0, TEAM_SPAWN_COUNT);
+}
+
 /** 由障碍数据推导碰撞 AABB。 */
 export function obstacleColliders(): Aabb[] {
   return OBSTACLES.map((obstacle) => ({
@@ -539,6 +773,8 @@ export interface DamageTakenMessage {
   hp: number;
   fromX: number;
   fromZ: number;
+  /** 命中部位；手雷等"不吃部位倍率"的伤害为 null。 */
+  zone: HitZone | null;
 }
 
 /** 烟雾云团（服务端状态同步，后进玩家也能看到）。 */

@@ -25,6 +25,7 @@ import {
   WEAPON_COOLDOWN_MS,
   WEAPON_MAG_SIZE,
   WEAPON_RELOAD_MS,
+  ZONE_LABEL,
   type DamageTakenMessage,
   type ExplosionMessage,
   type FlashEffectMessage,
@@ -299,13 +300,22 @@ export class Game {
     }
   }
 
-  /** 服务端弹道广播：渲染轨迹；自己命中时给命中反馈，打空时出火花。 */
+  /**
+   * 服务端弹道广播：渲染轨迹；命中玩家播血雾 + 分级命中反馈，打空/打墙播火花。
+   *
+   * 反馈分级（协议 v2 的 `hitZone` / `damage` 都是服务端权威值）：
+   *   爆头 → 红色大 ✕ + 部位读数「头部 −100」；身体 → 白色 ✕ + 部位读数；击杀 → 由 KILL 触发放大版。
+   */
   public handleShot(message: ShotMessage): void {
     this.effects.addTracer(message.origin, message.hit);
 
     if (message.hitPlayerId !== null) {
+      this.effects.bloodBurst(message.hit);
       if (message.shooterId === this.selfSessionId) {
-        this.hud.flashHitmarker();
+        this.hud.flashHitmarker(message.hitZone === "head" ? "head" : "body");
+        if (message.hitZone !== null) {
+          this.hud.showZoneDamage(ZONE_LABEL[message.hitZone], message.damage);
+        }
         this.audio.hitmark();
       }
       return;
@@ -319,16 +329,18 @@ export class Game {
     this.effects.impact(message.hit, { x: -dx / length, y: -dy / length, z: -dz / length });
   }
 
-  /** 击杀广播：写入播报；自己击杀时给横幅与确认音。 */
+  /** 击杀广播：写入播报；自己击杀时给横幅、放大的击杀标记与确认音。 */
   public handleKill(message: KillMessage): void {
     const nameOf = (id: string): string =>
       this.latestPlayers.find((player) => player.sessionId === id)?.displayName ?? id.slice(0, 6);
     const killerName = nameOf(message.killerId);
     const victimName = nameOf(message.victimId);
-    this.hud.pushKillFeed(`${killerName} 击杀了 ${victimName}`);
+    const headshotMark = message.headshot ? " ⌖爆头" : "";
+    this.hud.pushKillFeed(`${killerName} 击杀了 ${victimName}${headshotMark}`);
 
     if (message.killerId === this.selfSessionId) {
-      this.hud.showKillBanner(`击杀 ${victimName}`);
+      this.hud.showKillBanner(`击杀 ${victimName}${headshotMark}`);
+      this.hud.flashHitmarker("kill");
       this.audio.killConfirm();
     } else if (message.victimId === this.selfSessionId) {
       this.hud.showKillBanner(`被 ${killerName} 击杀`);

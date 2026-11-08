@@ -13,6 +13,9 @@ export interface HudPlayerRow {
   alive: boolean;
 }
 
+/** 命中标记种类：普通命中 / 爆头 / 击杀。 */
+export type HitmarkerKind = "body" | "head" | "kill";
+
 export interface HudSnapshot {
   position: { x: number; y: number; z: number };
   playerCount: number;
@@ -33,6 +36,7 @@ export class Hud {
   private readonly root: HTMLElement;
   private readonly crosshair: HTMLElement;
   private readonly hitmarker: HTMLElement;
+  private readonly zoneDamage: HTMLElement;
   private readonly statusLine: HTMLElement;
   private readonly playerList: HTMLElement;
   private readonly killFeed: HTMLElement;
@@ -53,6 +57,7 @@ export class Hud {
   private readonly damageOverlay: HTMLElement;
   private readonly damageArc: HTMLElement;
   private hitmarkerTimer = 0;
+  private zoneDamageTimer = 0;
   private killBannerTimer = 0;
   private damageTimer = 0;
   private flashUntil = 0;
@@ -70,6 +75,10 @@ export class Hud {
     this.hitmarker = document.createElement("div");
     this.hitmarker.id = "hitmarker";
     this.hitmarker.textContent = "✕";
+
+    // 部位伤害提示：准星下方 40px，显示「头部 −100」500ms
+    this.zoneDamage = document.createElement("div");
+    this.zoneDamage.id = "zone-damage";
 
     const topBar = document.createElement("div");
     topBar.className = "hud-top";
@@ -155,6 +164,7 @@ export class Hud {
       this.damageOverlay,
       this.crosshair,
       this.hitmarker,
+      this.zoneDamage,
       this.killBanner,
       topBar,
       hpWrap,
@@ -233,13 +243,43 @@ export class Hud {
     }, 1200);
   }
 
-  /** 命中反馈：准星旁短暂显示 ✕。 */
-  public flashHitmarker(): void {
+  /**
+   * 命中反馈（三级）：
+   *   body = 白色小 ✕（140ms）
+   *   head = 红色大 ✕ + 更长的停留（220ms）—— 爆头必须有"手感差异"
+   *   kill = 红色大 ✕ 放大 1.6 倍（320ms），由击杀广播驱动
+   */
+  public flashHitmarker(kind: HitmarkerKind = "body"): void {
     window.clearTimeout(this.hitmarkerTimer);
+    this.hitmarker.classList.remove("visible", "hitmarker-head", "hitmarker-kill");
+    // 强制回流，让同一种 kind 连续命中也能重新触发 CSS 过渡
+    void this.hitmarker.offsetWidth;
+    if (kind === "head") {
+      this.hitmarker.classList.add("hitmarker-head");
+    } else if (kind === "kill") {
+      this.hitmarker.classList.add("hitmarker-kill");
+    }
     this.hitmarker.classList.add("visible");
+    const durationMs = kind === "kill" ? 320 : kind === "head" ? 220 : 140;
     this.hitmarkerTimer = window.setTimeout(() => {
-      this.hitmarker.classList.remove("visible");
-    }, 140);
+      this.hitmarker.classList.remove("visible", "hitmarker-head", "hitmarker-kill");
+    }, durationMs);
+  }
+
+  /**
+   * 部位伤害提示：`头部 −100` / `腿部 −18`（只有自己开火命中时才调用）。
+   *
+   * 数值来自服务端 `SHOT.damage`（权威整数），客户端不重新查表，避免两边口径漂移。
+   */
+  public showZoneDamage(label: string, damage: number): void {
+    window.clearTimeout(this.zoneDamageTimer);
+    this.zoneDamage.textContent = `${label} −${Math.round(damage)}`;
+    this.zoneDamage.classList.remove("visible");
+    void this.zoneDamage.offsetWidth;
+    this.zoneDamage.classList.add("visible");
+    this.zoneDamageTimer = window.setTimeout(() => {
+      this.zoneDamage.classList.remove("visible");
+    }, 500);
   }
 
   /** 闪光致盲：白色遮罩按强度峰值出现，再按时长缓慢消退。 */
@@ -315,6 +355,7 @@ export class Hud {
 
   public dispose(): void {
     window.clearTimeout(this.hitmarkerTimer);
+    window.clearTimeout(this.zoneDamageTimer);
     window.clearTimeout(this.killBannerTimer);
     window.clearTimeout(this.damageTimer);
     this.root.remove();

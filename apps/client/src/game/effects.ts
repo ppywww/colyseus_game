@@ -62,6 +62,7 @@ export class CombatEffects {
   private readonly sparkTexture: THREE.Texture;
   private readonly smokeTexture: THREE.Texture;
   private readonly flashTexture: THREE.Texture;
+  private readonly bloodTexture: THREE.Texture;
   private readonly muzzle: THREE.Sprite;
   private readonly muzzleLight: THREE.PointLight;
   private muzzleUntil = 0;
@@ -70,6 +71,7 @@ export class CombatEffects {
     this.sparkTexture = radialTexture("rgba(255,236,180,1)", "rgba(255,150,40,0)");
     this.smokeTexture = radialTexture("rgba(210,214,222,0.95)", "rgba(150,156,168,0)");
     this.flashTexture = radialTexture("rgba(255,246,214,1)", "rgba(255,170,60,0)");
+    this.bloodTexture = radialTexture("rgba(214,38,38,1)", "rgba(110,8,8,0)");
 
     this.muzzle = new THREE.Sprite(
       new THREE.SpriteMaterial({
@@ -197,8 +199,80 @@ export class CombatEffects {
     });
   }
 
-  /** 手雷爆炸：火光、冲击波圆环、上扬烟团。 */
-  public explosion(point: { x: number; y: number; z: number }, radius: number): void {
+  /**
+   * 命中玩家：血雾（0.25s，红色粒子向后上方溅开）。
+   *
+   * 与 {@link impact} 的区别：血雾**不反弹**、不受重力主导，而是从命中点沿弹道方向
+   * 继续向前扩散并快速淡出 —— 这是玩家判断"打中了身体"而不是"打在墙上"的关键反馈。
+   */
+  public bloodBurst(point: { x: number; y: number; z: number }): void {
+    const now = performance.now();
+    const group = new THREE.Group();
+    group.position.set(point.x, point.y, point.z);
+
+    const count = 14;
+    const positions = new Float32Array(count * 3);
+    const velocities: THREE.Vector3[] = [];
+    for (let i = 0; i < count; i += 1) {
+      velocities.push(
+        new THREE.Vector3(
+          (Math.random() - 0.5) * 1.8,
+          (Math.random() - 0.2) * 1.4,
+          (Math.random() - 0.5) * 1.8,
+        ).multiplyScalar(1.6 + Math.random() * 1.9),
+      );
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const material = new THREE.PointsMaterial({
+      map: this.bloodTexture,
+      size: 0.13,
+      transparent: true,
+      depthWrite: false,
+      color: 0xc41f1f,
+    });
+    const particles = new THREE.Points(geometry, material);
+    group.add(particles);
+
+    const mist = new THREE.Sprite(
+      new THREE.SpriteMaterial({ map: this.bloodTexture, transparent: true, opacity: 0.65, depthWrite: false }),
+    );
+    mist.scale.setScalar(0.32);
+    group.add(mist);
+
+    this.scene.add(group);
+
+    const lifeMs = 250;
+    this.effects.push({
+      object: group,
+      bornAt: now,
+      lifeMs,
+      update: (progress: number) => {
+        const attribute = geometry.getAttribute("position") as THREE.BufferAttribute;
+        for (let i = 0; i < count; i += 1) {
+          const velocity = velocities[i] as THREE.Vector3;
+          attribute.setXYZ(
+            i,
+            velocity.x * progress * 0.22,
+            velocity.y * progress * 0.22 - 1.1 * progress * progress * 0.22,
+            velocity.z * progress * 0.22,
+          );
+        }
+        attribute.needsUpdate = true;
+        material.opacity = 1 - progress;
+        mist.scale.setScalar(0.32 + progress * 0.5);
+        mist.material.opacity = 0.65 * (1 - progress);
+      },
+      dispose: () => {
+        geometry.dispose();
+        material.dispose();
+        mist.material.dispose();
+      },
+    });
+  }
+
+  /** 手雷爆炸：火光、冲击波圆环、上扬烟团。 */  public explosion(point: { x: number; y: number; z: number }, radius: number): void {
     const now = performance.now();
     const group = new THREE.Group();
     group.position.set(point.x, Math.max(0.2, point.y), point.z);
@@ -370,5 +444,6 @@ export class CombatEffects {
     this.sparkTexture.dispose();
     this.smokeTexture.dispose();
     this.flashTexture.dispose();
+    this.bloodTexture.dispose();
   }
 }

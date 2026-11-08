@@ -229,12 +229,14 @@ export function rayPlayerHitboxes(
  * @param shooterId 开火者 sessionId
  * @param obstacles 掩体 AABB 清单（64 条，来自 shared `obstacleColliders()`）
  * @param aim 开火视角快照（已在调用方做过 3° 校验与归一化）；缺省用服务端已存视角
+ * @param maxRange 本次开火的射程上限（米）；缺省 {@link WEAPON_RANGE}（步枪）
  */
 export function computeShot(
   players: Iterable<CombatantView>,
   shooterId: string,
   obstacles: readonly Aabb[],
   aim?: AimSnapshot,
+  maxRange: number = WEAPON_RANGE,
 ): ShotMessage | null {
   const all: CombatantView[] = Array.from(players);
 
@@ -269,7 +271,7 @@ export function computeShot(
   };
 
   // 最近掩体遮挡距离
-  let wallT: number = WEAPON_RANGE;
+  let wallT: number = maxRange;
   for (const box of obstacles) {
     const t: number | null = rayAabb(rayOrigin, dir, box, wallT);
     if (t !== null && t < wallT) {

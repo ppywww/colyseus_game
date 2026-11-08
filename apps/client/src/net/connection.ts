@@ -78,10 +78,13 @@ export class LobbyConnection {
           ammo: player.ammo,
           reserve: player.reserve,
           reloadEndAt: player.reloadEndAt,
+          pistolAmmo: player.pistolAmmo,
+          pistolReserve: player.pistolReserve,
           frags: player.frags,
           flashes: player.flashes,
           smokes: player.smokes,
           weaponSlot: player.weaponSlot,
+          switchEndAt: player.switchEndAt,
           team: player.team,
         });
       });
@@ -165,6 +168,19 @@ export class LobbyConnection {
       return;
     }
     this.room.send(MESSAGE_TYPES.RELOAD);
+  }
+
+  /**
+   * 请求切换武器槽（滚轮 / 数字键 / 快捷投掷共用）。
+   *
+   * 只发意图：是否允许切（切枪中、槽位为空、未启用）由服务端裁定，
+   * 客户端本地只做乐观高亮，收到状态同步后以服务端 `weaponSlot` 为准。
+   */
+  public sendWeaponSwitch(slot: number): void {
+    if (this.room === null) {
+      return;
+    }
+    this.room.send(MESSAGE_TYPES.WEAPON_SWITCH, { slot });
   }
 
   /** 投掷道具：只上报方向，位置与速度由服务端裁定。 */

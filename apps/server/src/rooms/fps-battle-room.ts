@@ -7,6 +7,8 @@ import {
   MAX_DISPLAY_NAME_LENGTH,
   MAX_PLAYERS_PER_ROOM,
   MESSAGE_TYPES,
+  PISTOL_MAG_SIZE,
+  PISTOL_RESERVE_AMMO,
   PLAYER_MAX_HP,
   PLAYER_RESPAWN_DELAY_MS,
   PROTOCOL_VERSION,
@@ -15,11 +17,15 @@ import {
   THROW_ORIGIN_FORWARD,
   THROW_SPEED,
   THROWABLE_TYPES,
-  WEAPON_COOLDOWN_MS,
   WEAPON_MAG_SIZE,
   WEAPON_RELOAD_MS,
   WEAPON_RESERVE_AMMO,
+  fireProfileOf,
+  isSlotEnabled,
   obstacleColliders,
+  slotOfThrowable,
+  switchDurationOf,
+  throwableTypeOfSlot,
   type Aabb,
   type DamageTakenMessage,
   type ExplosionMessage,
@@ -90,6 +96,29 @@ function countOf(player: Player, type: ThrowableType): number {
 
 function setCountOf(player: Player, type: ThrowableType, value: number): void {
   player[inventoryFieldOf(type)] = Math.max(0, Math.min(255, value));
+}
+
+/**
+ * 槽位 → `Player` 上的弹匣/备弹字段名。
+ *
+ * 步枪与手枪各有一套完全独立的弹药（协议 v2 的硬要求：手枪打完步枪仍有 30 发），
+ * 把字段名收敛到一个函数里，`FIRE` / `RELOAD` / 重生三处就不会各写一遍分支。
+ */
+interface SlotAmmoFields {
+  mag: "ammo" | "pistolAmmo";
+  reserve: "reserve" | "pistolReserve";
+}
+
+function ammoFieldsOf(slot: number): SlotAmmoFields {
+  return slot === 1
+    ? { mag: "pistolAmmo", reserve: "pistolReserve" }
+    : { mag: "ammo", reserve: "reserve" };
+}
+
+/** 读该槽位的剩余投掷物数量（枪 / 刀返回 −1，表示"不适用"）。 */
+function throwableCountOf(player: Player, slot: number): number {
+  const type = throwableTypeOfSlot(slot);
+  return type === null ? -1 : countOf(player, type);
 }
 
 /**
@@ -175,26 +204,46 @@ export class FPSBattleRoom extends Room<BattleState> {
     // S3：开火。弹道完全由服务端状态计算，客户端无法伪造命中。
     // v2：上行可携带视角快照 `{ yaw, pitch }`，服务端在 ±3° 内采信（把方向陈旧从 ≤66ms 压到 ~0），
     //     超出 3° 或非法则回退到已存视角（防"瞬移视野爆头"）。
+    // v3（本批）：按 `weaponSlot` 取手感参数——只有 0/1 走弹道，刀与投掷物由各自的 handler 处理。
     this.onMessage<unknown>(MESSAGE_TYPES.FIRE, (client: Client, raw: unknown) => {
       const shooter = this.state.players.get(client.sessionId);
       if (!shooter || !shooter.alive) {
         return;
       }
-      // 换弹中、切枪中或弹匣空：忽略（客户端自行播放空仓音效）
-      if (shooter.reloadEndAt > Date.now() || shooter.switchEndAt > Date.now() || shooter.ammo <= 0) {
+
+      const profile = fireProfileOf(shooter.weaponSlot);
+      // 刀（2）与投掷物（3/4/5）没有弹道：左键那一下由 KNIFE / THROW handler 负责
+      if (profile === null) {
         return;
       }
 
       const now = Date.now();
+      // 换弹中、切枪中或弹匣空：忽略（客户端自行播放空仓音效）
+      if (shooter.reloadEndAt > now || shooter.switchEndAt > now) {
+        return;
+      }
+
+      const fields: SlotAmmoFields = ammoFieldsOf(shooter.weaponSlot);
+      if (shooter[fields.mag] <= 0) {
+        return;
+      }
+
+      // 冷却按武器各自的口径（步枪 150ms / 手枪 300ms），不能共用一张表
       const last = this.lastFireAt.get(client.sessionId) ?? 0;
-      if (now - last < WEAPON_COOLDOWN_MS) {
+      if (now - last < profile.cooldownMs) {
         return;
       }
       this.lastFireAt.set(client.sessionId, now);
-      shooter.ammo -= 1;
+      shooter[fields.mag] -= 1;
 
       const aim: AimSnapshot | null = acceptAimSnapshot(raw, { yaw: shooter.yaw, pitch: shooter.pitch });
-      const shot = computeShot(this.state.players.values(), client.sessionId, this.obstacles, aim ?? undefined);
+      const shot = computeShot(
+        this.state.players.values(),
+        client.sessionId,
+        this.obstacles,
+        aim ?? undefined,
+        profile.range,
+      );
       if (shot === null) {
         return;
       }
@@ -203,6 +252,40 @@ export class FPSBattleRoom extends Room<BattleState> {
       if (shot.hitPlayerId !== null) {
         this.applyDamage(client.sessionId, shot.hitPlayerId, shot.damage, shot.hitZone);
       }
+    });
+
+    // v3：切枪（滚轮 / 数字键）。服务端权威——客户端只发"我想切到第几号槽"。
+    this.onMessage<unknown>(MESSAGE_TYPES.WEAPON_SWITCH, (client: Client, raw: unknown) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player || !player.alive) {
+        return;
+      }
+
+      const requested: number = Number((raw as { slot?: unknown } | null)?.slot);
+      // 1) 槽位必须是 0..5 的整数，且本期已实现（SLOT_ENABLED）
+      if (!isSlotEnabled(requested)) {
+        return;
+      }
+      // 2) 已经在这个槽位上：不用再切（避免重复播切枪动画）
+      if (requested === player.weaponSlot) {
+        return;
+      }
+      const now = Date.now();
+      // 3) 上一次切枪还没结束：拒绝（这是"连滚三格瞬间到位"的唯一防线）
+      if (player.switchEndAt > now) {
+        return;
+      }
+      // 4) 数量为 0 的投掷物槽不可切（枪 / 刀恒可用，throwableCountOf 返回 −1）
+      if (throwableCountOf(player, requested) === 0) {
+        return;
+      }
+
+      player.weaponSlot = requested;
+      player.switchEndAt = now + switchDurationOf(requested);
+      this.logger.debug(
+        { playerId: client.sessionId, slot: requested, switchEndAt: player.switchEndAt },
+        "玩家切换武器槽",
+      );
     });
 
     // S4：换弹（服务端结算弹药，客户端只做动画与提示）
@@ -338,29 +421,43 @@ export class FPSBattleRoom extends Room<BattleState> {
     }, PLAYER_RESPAWN_DELAY_MS);
   }
 
-  /** 换弹：校验后延迟补满弹匣（子弹从备弹扣除）。 */
+  /**
+   * 换弹：校验后延迟补满**当前槽位**的弹匣（子弹从该枪自己的备弹扣除）。
+   *
+   * 为什么按槽位而不是按 `ammo` 字段：手枪换弹时步枪的 30 发必须保持不动，
+   * 否则玩家切回 AK 会发现弹匣莫名其妙被填满了（等于无限子弹）。
+   */
   private handleReload(client: Client): void {
     const player = this.state.players.get(client.sessionId);
     if (!player || !player.alive) {
       return;
     }
-    if (player.ammo >= WEAPON_MAG_SIZE || player.reserve <= 0) {
+
+    const profile = fireProfileOf(player.weaponSlot);
+    if (profile === null) {
+      // 刀 / 投掷物没有弹匣，R 键无效
+      return;
+    }
+    const fields: SlotAmmoFields = ammoFieldsOf(player.weaponSlot);
+    if (player[fields.mag] >= profile.magSize || player[fields.reserve] <= 0) {
       return;
     }
     if (player.reloadEndAt > Date.now()) {
       return;
     }
 
+    const slot: number = player.weaponSlot;
     player.reloadEndAt = Date.now() + WEAPON_RELOAD_MS;
     this.clock.setTimeout(() => {
       const current = this.state.players.get(client.sessionId);
       if (!current || !current.alive) {
         return;
       }
-      const need = WEAPON_MAG_SIZE - current.ammo;
-      const take = Math.min(need, current.reserve);
-      current.ammo += take;
-      current.reserve -= take;
+      const target: SlotAmmoFields = ammoFieldsOf(slot);
+      const need: number = profile.magSize - current[target.mag];
+      const take: number = Math.min(need, current[target.reserve]);
+      current[target.mag] += take;
+      current[target.reserve] -= take;
       current.reloadEndAt = 0;
     }, WEAPON_RELOAD_MS);
   }
@@ -401,6 +498,12 @@ export class FPSBattleRoom extends Room<BattleState> {
 
     this.lastThrowAt.set(client.sessionId, now);
     setCountOf(player, type, remaining - 1);
+
+    // 快捷投掷（G/F/V）自动切到该投掷物槽位：远端玩家才能看到"他手里拿着手雷"，
+    // 而不是"空着手凭空飞出一颗雷"。switchEndAt 置 0 表示这次切槽不参与切枪拦截
+    // （客户端同一帧就发出了 THROW，不能被自己刚设的 250ms 冷却吞掉）。
+    player.weaponSlot = slotOfThrowable(type);
+    player.switchEndAt = 0;
 
     const origin = {
       x: player.x + dir.x * THROW_ORIGIN_FORWARD,
@@ -536,6 +639,8 @@ export class FPSBattleRoom extends Room<BattleState> {
     player.respawnSeq += 1;
     player.ammo = WEAPON_MAG_SIZE;
     player.reserve = WEAPON_RESERVE_AMMO;
+    player.pistolAmmo = PISTOL_MAG_SIZE;
+    player.pistolReserve = PISTOL_RESERVE_AMMO;
     player.reloadEndAt = 0;
     player.frags = THROWABLES.frag.initialCount;
     player.flashes = THROWABLES.flash.initialCount;

@@ -20,7 +20,11 @@
 
 import * as THREE from "three";
 
-import { THROW_COOLDOWN_MS } from "@colyseus-fps/shared";
+import {
+  THROW_COOLDOWN_MS,
+  WEAPON_SLOTS,
+  throwableTypeOfSlot,
+} from "@colyseus-fps/shared";
 
 /* ------------------------------------------------------------------ *
  * 静态姿态与枪口挂点（数值来自参考文档 2.3.1 / 2.6.1，不要随手改）
@@ -71,6 +75,20 @@ const RELOAD_CHARGE_END = 0.8;
 const THROW_SWING_END_MS = 180;
 const THROW_HOLD_END_MS = 420;
 
+/* ---------------- 切枪（下压再抬回） ---------------- */
+
+/**
+ * 切枪时枪身的下沉量（米）与抬头角（弧度）。
+ *
+ * 数值取"看得见但不挡准心"：0.22m 大约等于屏幕高度的 1/5，
+ * 配合 0.25rad（14°）的抬头，滚动切枪时玩家能明确感到"换了一把"，
+ * 但准心位置始终可见（不会被枪身遮住，否则切枪过程中完全没法对枪）。
+ */
+const SWITCH_DIP_POS = 0.22;
+const SWITCH_DIP_ROT = 0.25;
+/** 切枪时向后收的位移（米），避免枪身下沉时穿进画面下边缘。 */
+const SWITCH_DIP_BACK = 0.04;
+
 /* ------------------------------------------------------------------ *
  * 纯函数：构图与动画曲线（不依赖 three.js）
  * ------------------------------------------------------------------ */
@@ -103,6 +121,8 @@ export interface ViewmodelPoseState {
   recoilRoll: number;
   /** 落地冲击的垂直位移（负值 = 下沉），由外部按 τ=130ms 回弹。 */
   landing: number;
+  /** 切枪归一化进度 0→1（0 / 1 都是零增量，只有中途下压）。 */
+  switchProgress?: number;
 }
 
 export interface ViewmodelPose {
@@ -177,9 +197,20 @@ function throwPoseEase(progress: number): number {
 }
 
 /**
+ * 切枪姿态包络：`sin(πp)`，p=0 / p=1 时都是 0，中途升到 1。
+ *
+ * 为什么用正弦而不是 smoothstep：切枪必须是"下压 → 抬回"的往返，
+ * smoothstep 单调递增只能做"压下去不动"，回位会在 p=1 处突跳。
+ */
+export function switchPoseEase(progress: number): number {
+  const p = Math.min(1, Math.max(0, progress));
+  return Math.sin(Math.PI * p);
+}
+
+/**
  * 求某一时刻的视模型姿态（枪根在相机空间的位置与欧拉角）。
  *
- * @param state 累加量快照（bob 相位/幅度、后坐、落地冲击、换弹/投掷进度）。
+ * @param state 累加量快照（bob 相位/幅度、后坐、落地冲击、换弹/投掷/切枪进度）。
  * @param tSeconds 动画累计时间（秒），只驱动 idle 呼吸这一项。
  * @returns 最终 position / rotation，已包含 BASE 静态姿态。
  */
@@ -239,6 +270,15 @@ export function computeViewmodelPose(state: ViewmodelPoseState, tSeconds: number
   }
 
   // ---- 未落地时摆幅折半已在上面的 airDamp 里处理 ----
+
+  // ---- 切枪：整枪下沉 + 抬头（0→1→0 往返，首尾零增量） ----
+  const switchEase = switchPoseEase(state.switchProgress ?? 0);
+  if (switchEase > 0) {
+    dy += -SWITCH_DIP_POS * switchEase;
+    rx += SWITCH_DIP_ROT * switchEase;
+    dz += SWITCH_DIP_BACK * switchEase;
+    rz += 0.06 * switchEase;
+  }
 
   return {
     position: {
@@ -330,15 +370,26 @@ export interface ViewmodelUpdateState {
   throwing: boolean;
   /** 最近一次开火的时间戳（performance.now）；用于兜底去重，避免重复叠加后坐。 */
   firingAt: number;
+  /** 切枪归一化进度 0→1（由 Game 按 `switchEndAt − now` 与槽位时长算出）。 */
+  switchProgress?: number;
 }
 
 export class ViewModel {
   private readonly holder: THREE.Group;
   private readonly gunGroup: THREE.Group;
+  private readonly pistolGroup: THREE.Group;
+  private readonly knifeGroup: THREE.Group;
+  private readonly throwableGroup: THREE.Group;
   private readonly muzzleAnchor: THREE.Object3D;
+  private readonly pistolMuzzle: THREE.Object3D;
+  /** 投掷物球体：出手瞬间（t≈45%）会隐藏，切回该槽位时复位。 */
+  private readonly throwableBall: THREE.Mesh;
   private readonly magazineGroup: THREE.Group;
   private readonly charging: THREE.Mesh;
   private readonly materials: ViewmodelMaterials;
+
+  /** 当前显示的武器槽位（0–5）。 */
+  private currentSlot = -1;
 
   /** idle / 投掷抖动共用的动画时钟（秒）。 */
   private clock = 0;
@@ -456,6 +507,31 @@ export class ViewModel {
     );
     this.gunGroup.add(this.muzzleAnchor);
 
+    // ---- 手枪（槽位 1）：与步枪同一坐标系，只是部件不同 ----
+    this.pistolGroup = new THREE.Group();
+    this.pistolGroup.name = "viewmodel-pistol";
+    this.holder.add(this.pistolGroup);
+    this.buildPistol(this.pistolGroup);
+    this.pistolMuzzle = new THREE.Object3D();
+    this.pistolMuzzle.name = "viewmodel-pistol-muzzle";
+    this.pistolMuzzle.position.set(0, 0.022, -0.252);
+    this.pistolGroup.add(this.pistolMuzzle);
+
+    // ---- 小刀（槽位 2）----
+    this.knifeGroup = new THREE.Group();
+    this.knifeGroup.name = "viewmodel-knife";
+    this.holder.add(this.knifeGroup);
+    this.buildKnife(this.knifeGroup);
+
+    // ---- 投掷物（槽位 3/4/5）：持握手 + 道具球 ----
+    this.throwableGroup = new THREE.Group();
+    this.throwableGroup.name = "viewmodel-throwable";
+    this.holder.add(this.throwableGroup);
+    this.throwableBall = this.buildThrowable(this.throwableGroup);
+
+    // 默认拿步枪（与服务端 `weaponSlot = 0` 一致）
+    this.setWeaponSlot(WEAPON_SLOTS.RIFLE);
+
     // 视模型不参与阴影，也不应被主相机 near 平面裁切（最近点 z ≈ −0.32，near = 0.1）
     this.holder.traverse((object) => {
       object.castShadow = false;
@@ -463,6 +539,101 @@ export class ViewModel {
     });
 
     this.camera.add(this.holder);
+  }
+
+  /**
+   * 手枪视模型（槽位 1）。
+   *
+   * 构图取「右手单持、滑套略高于准心线」：部件直接摆在 holder 坐标系里，
+   * 这样 idle / walk / 后坐 / 切枪全部复用同一套动画，不需要第二套骨骼。
+   */
+  private buildPistol(group: THREE.Group): void {
+    // 滑套 + 套筒座
+    group.add(this.box(0.046, 0.05, 0.2, this.materials.gunmetal, 0, 0.022, -0.142));
+    group.add(this.box(0.04, 0.028, 0.15, this.materials.mag, 0, -0.014, -0.1));
+    // 枪管口（露出滑套前端 1.2cm，枪口火光挂在这里）
+    group.add(this.cylinder(0.011, 0.03, this.materials.goldHi, 0, 0.022, -0.252, Math.PI / 2));
+    // 握把 + 弹匣底板
+    group.add(this.box(0.042, 0.11, 0.052, this.materials.wood, 0, -0.082, 0, 0.3));
+    group.add(this.box(0.046, 0.012, 0.056, this.materials.gunmetal, 0, -0.138, 0.014));
+    // 扳机护圈
+    group.add(this.box(0.006, 0.026, 0.05, this.materials.gunmetal, 0, -0.044, -0.038));
+    // 持握手（掌背 + 四指）与右前臂
+    group.add(this.box(0.062, 0.072, 0.082, this.materials.glove, 0.004, -0.082, 0.006, 0.3, 0, 0.1));
+    group.add(this.box(0.056, 0.046, 0.03, this.materials.gloveHi, 0, -0.094, -0.036, 0.3, 0, 0.06));
+    group.add(
+      this.limb(new THREE.Vector3(0.02, -0.11, 0.06), new THREE.Vector3(0.1, -0.28, 0.3), 0.042, this.materials.sleeve),
+    );
+    // 左手托握（双手持枪姿态，画面里更稳）
+    group.add(this.box(0.058, 0.062, 0.07, this.materials.glove, -0.032, -0.078, 0, 0.2, 0, -0.15));
+    group.add(
+      this.limb(new THREE.Vector3(-0.04, -0.1, 0.02), new THREE.Vector3(-0.16, -0.25, 0.24), 0.04, this.materials.sleeve),
+    );
+  }
+
+  /** 小刀视模型（槽位 2）：刀身 + 刀尖 + 护手 + 刀柄 + 持刀手。 */
+  private buildKnife(group: THREE.Group): void {
+    // 刀身（−Z 为刀尖方向）：主段 + 收窄的刀尖
+    group.add(this.box(0.009, 0.038, 0.2, this.materials.goldHi, 0, 0.012, -0.235));
+    group.add(this.box(0.007, 0.022, 0.06, this.materials.goldHi, 0, 0.008, -0.352));
+    // 护手
+    group.add(this.box(0.055, 0.014, 0.02, this.materials.gunmetal, 0, 0.01, -0.132));
+    // 刀柄
+    group.add(this.cylinder(0.015, 0.1, this.materials.mag, 0, 0.004, -0.075, Math.PI / 2));
+    // 持刀手 + 右前臂
+    group.add(this.box(0.06, 0.07, 0.08, this.materials.glove, 0.004, 0, -0.07, 0.2, 0, 0.1));
+    group.add(this.box(0.054, 0.044, 0.028, this.materials.gloveHi, 0, -0.012, -0.108, 0.2, 0, 0.06));
+    group.add(
+      this.limb(new THREE.Vector3(0.02, -0.03, 0), new THREE.Vector3(0.12, -0.24, 0.28), 0.042, this.materials.sleeve),
+    );
+  }
+
+  /**
+   * 投掷物视模型（槽位 3/4/5）：持握手 + 道具球。
+   *
+   * 手部挂点按规格取 `(0.02, −0.14, −0.28)`；球略微偏前偏上，出手时看起来是"从手心甩出"。
+   *
+   * @returns 道具球（出手瞬间隐藏，见 {@link ViewModel#setThrowableBallVisible}）
+   */
+  private buildThrowable(group: THREE.Group): THREE.Mesh {
+    group.add(this.box(0.07, 0.07, 0.09, this.materials.glove, 0.02, -0.14, -0.28, 0.1, 0, -0.1));
+    group.add(this.box(0.064, 0.03, 0.086, this.materials.gloveHi, 0.022, -0.1, -0.29, 0.1, 0, -0.08));
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(0.05, 14, 10), this.materials.gunmetal);
+    ball.position.set(0.02, -0.122, -0.35);
+    group.add(ball);
+    group.add(
+      this.limb(new THREE.Vector3(0.02, -0.17, -0.24), new THREE.Vector3(0.12, -0.32, 0.06), 0.04, this.materials.sleeve),
+    );
+    return ball;
+  }
+
+  /**
+   * 切换手持武器：只切 `visible`，不做淡入（切枪动画由 `switchProgress` 负责掩盖）。
+   *
+   * @param slot 槽位 0–5；非法值按步枪处理
+   */
+  public setWeaponSlot(slot: number): void {
+    const index: number = Math.max(WEAPON_SLOTS.RIFLE, Math.min(WEAPON_SLOTS.SMOKE, Math.trunc(slot)));
+    if (index === this.currentSlot) {
+      return;
+    }
+    this.currentSlot = index;
+    this.gunGroup.visible = index === WEAPON_SLOTS.RIFLE;
+    this.pistolGroup.visible = index === WEAPON_SLOTS.PISTOL;
+    this.knifeGroup.visible = index === WEAPON_SLOTS.KNIFE;
+    this.throwableGroup.visible = throwableTypeOfSlot(index) !== null;
+    // 切回投掷物时道具球必须回到手上（上一次投掷可能已经把它藏了）
+    this.throwableBall.visible = true;
+  }
+
+  /** 当前显示的武器槽位。 */
+  public get weaponSlot(): number {
+    return this.currentSlot;
+  }
+
+  /** 投掷出手后隐藏道具球（`visible=false`），切回该槽位时自动复位。 */
+  public setThrowableBallVisible(visible: boolean): void {
+    this.throwableBall.visible = visible;
   }
 
   /** 开火后坐：枪身后顶 45mm + 上跳 3.15°，指数回弹（连发累加有上限）。 */
@@ -474,11 +645,14 @@ export class ViewModel {
   }
 
   /**
-   * 枪口在**相机坐标系**中的位置（跟随后坐/换弹/投掷动画）。
+   * 枪口在**相机坐标系**中的位置（跟随后坐/换弹/投掷/切枪动画）。
    * 供 {@link CombatEffects} 摆放火光 sprite 与点光源，保证「火光永远在枪口帽正前方」。
+   *
+   * 手枪用自己那根枪管口的挂点；刀与投掷物返回步枪挂点（调用方按槽位决定要不要画火光）。
    */
   public getMuzzleWorldOffset(): Vec3Like {
-    const world = this.muzzleAnchor.getWorldPosition(new THREE.Vector3());
+    const anchor: THREE.Object3D = this.currentSlot === WEAPON_SLOTS.PISTOL ? this.pistolMuzzle : this.muzzleAnchor;
+    const world = anchor.getWorldPosition(new THREE.Vector3());
     const local = this.camera.worldToLocal(world);
     return { x: local.x, y: local.y, z: local.z };
   }
@@ -541,6 +715,7 @@ export class ViewModel {
         recoilRot: this.recoilRot,
         recoilRoll: this.recoilRoll,
         landing: this.landing,
+        switchProgress: Math.min(1, Math.max(0, state.switchProgress ?? 0)),
       },
       this.clock,
     );

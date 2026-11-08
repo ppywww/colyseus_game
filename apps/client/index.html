@@ -34,16 +34,26 @@
       </section>
 
       <section class="panel">
+        <details class="settings" id="settings">
+          <summary>设置</summary>
+          <!-- 灵敏度滑块由 src/ui/settings.ts 的 mountSensitivitySlider 注入
+               （与游戏内 Esc 遮罩共用同一个组件与同一个 SettingsStore） -->
+          <div id="settings-body" class="settings-body"></div>
+        </details>
+      </section>
+
+      <section class="panel">
         <h2>操作说明</h2>
         <ul class="help-list">
           <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移动</li>
           <li><kbd>Shift</kbd> 冲刺</li>
           <li><kbd>空格</kbd> 跳跃</li>
-          <li><kbd>左键</kbd> 开火（服务端判定命中）</li>
+          <li><kbd>左键</kbd> 开火 / 投掷 / 挥刀（服务端判定命中）</li>
+          <li><kbd>滚轮</kbd> 或 <kbd>1</kbd>–<kbd>6</kbd> 切换武器</li>
           <li><kbd>R</kbd> 换弹</li>
-          <li><kbd>G</kbd> 手雷 · <kbd>F</kbd> 闪光弹 · <kbd>V</kbd> 烟雾弹</li>
+          <li><kbd>G</kbd> 手雷 · <kbd>F</kbd> 闪光弹 · <kbd>V</kbd> 烟雾弹（自动切槽并立即投出）</li>
           <li><kbd>鼠标</kbd> 视角（点击画面锁定指针）</li>
-          <li><kbd>Esc</kbd> 释放鼠标</li>
+          <li><kbd>Esc</kbd> 释放鼠标 / 打开设置</li>
         </ul>
       </section>
     </main>

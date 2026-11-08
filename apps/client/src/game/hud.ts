@@ -1,9 +1,20 @@
 /**
- * HUD：准星（动态扩散）、命中标记、血量、弹药与换弹进度、道具栏、
- * 击杀播报与击杀横幅、死亡遮罩、闪光致盲遮罩、受击方向提示、指针锁定引导。
+ * HUD：准星（动态扩散）、命中标记、部位伤害读数、血量、弹药与换弹进度、
+ * 6 格武器栏、击杀播报与击杀横幅、死亡遮罩、闪光致盲遮罩、受击方向提示、
+ * 指针锁定引导（含设置面板）。
  *
  * 全部用 DOM 实现，避免额外渲染库；每帧只更新变化的文本/样式。
  */
+
+import {
+  SLOT_KEY,
+  SLOT_LABEL,
+  SLOT_ORDER,
+  THROWABLE_TYPES,
+  WEAPON_SLOTS,
+  throwableTypeOfSlot,
+  type WeaponSlot,
+} from "@colyseus-fps/shared";
 
 export interface HudPlayerRow {
   sessionId: string;
@@ -23,14 +34,25 @@ export interface HudSnapshot {
   selfHp: number;
   selfAlive: boolean;
   selfRespawnAt: number;
+  /** 当前武器槽位（0–5）：决定武器栏高亮与右下弹药面板显示哪把枪的弹药。 */
+  weaponSlot: number;
   ammo: number;
   reserve: number;
+  pistolAmmo: number;
+  pistolReserve: number;
   reloadProgress: number;
   frags: number;
   flashes: number;
   smokes: number;
   spread: number;
 }
+
+/** 操作提示（大厅与游戏内共用同一句，改一处即可）。 */
+export const HUD_HINT_TEXT =
+  "WASD 移动 · Shift 冲刺 · 空格 跳跃 · 左键 开火/投掷/挥刀 · 滚轮/123456 切武器 · R 换弹 · G/F/V 快捷投掷 · Esc 设置";
+
+/** 武器栏格子数（= 槽位数量，顺序与 `SLOT_ORDER` 一致）。 */
+const WEAPON_CELL_COUNT: number = SLOT_ORDER.length;
 
 export class Hud {
   private readonly root: HTMLElement;
@@ -42,15 +64,16 @@ export class Hud {
   private readonly killFeed: HTMLElement;
   private readonly killBanner: HTMLElement;
   private readonly lockOverlay: HTMLElement;
+  private readonly lockSettings: HTMLElement;
   private readonly positionLine: HTMLElement;
   private readonly hpBar: HTMLElement;
   private readonly hpText: HTMLElement;
   private readonly ammoText: HTMLElement;
   private readonly reserveText: HTMLElement;
   private readonly reloadBar: HTMLElement;
-  private readonly slotFrag: HTMLElement;
-  private readonly slotFlash: HTMLElement;
-  private readonly slotSmoke: HTMLElement;
+  private readonly weaponCells: HTMLElement[] = [];
+  private readonly weaponCounts: HTMLElement[] = [];
+  private readonly lastWeaponCountText: string[] = [];
   private readonly deathOverlay: HTMLElement;
   private readonly deathCountdown: HTMLElement;
   private readonly flashOverlay: HTMLElement;
@@ -60,9 +83,11 @@ export class Hud {
   private zoneDamageTimer = 0;
   private killBannerTimer = 0;
   private damageTimer = 0;
+  private weaponPulseTimer = 0;
   private flashUntil = 0;
   private flashPeak = 0;
   private lastSpread = -1;
+  private lastWeaponSlot = -1;
 
   public constructor(container: HTMLElement) {
     this.root = document.createElement("div");
@@ -103,8 +128,7 @@ export class Hud {
     this.positionLine.className = "hud-position";
     const hint = document.createElement("div");
     hint.className = "hud-hint";
-    hint.textContent =
-      "WASD 移动 · Shift 冲刺 · 空格 跳跃 · 左键 开火 · R 换弹 · G 手雷 · F 闪光 · V 烟雾 · Esc 释放鼠标";
+    hint.textContent = HUD_HINT_TEXT;
     bottomBar.append(this.positionLine, hint);
 
     // 血量
@@ -116,15 +140,18 @@ export class Hud {
     this.hpText.className = "hud-hp-text";
     hpWrap.append(this.hpBar, this.hpText);
 
-    // 道具栏
-    const slots = document.createElement("div");
-    slots.className = "hud-slots";
-    this.slotFrag = this.createSlot("G", "手雷", "frag");
-    this.slotFlash = this.createSlot("F", "闪光", "flash");
-    this.slotSmoke = this.createSlot("V", "烟雾", "smoke");
-    slots.append(this.slotFrag, this.slotFlash, this.slotSmoke);
+    // 武器栏（底部中央 6 格）
+    const weaponBar = document.createElement("div");
+    weaponBar.className = "hud-weaponbar";
+    for (const slot of SLOT_ORDER) {
+      const cell: HTMLElement = this.createWeaponCell(slot);
+      this.weaponCells.push(cell);
+      this.weaponCounts.push(cell.querySelector(".hud-weapon-count") as HTMLElement);
+      this.lastWeaponCountText.push("");
+      weaponBar.append(cell);
+    }
 
-    // 弹药
+    // 弹药（右下，显示当前武器）
     const ammoPanel = document.createElement("div");
     ammoPanel.className = "hud-ammo";
     this.ammoText = document.createElement("span");
@@ -154,11 +181,21 @@ export class Hud {
     this.damageArc = document.createElement("div");
     this.damageArc.id = "damage-arc";
 
+    // 指针锁定引导（Esc 后出现）：战斗提示 + 设置面板
     this.lockOverlay = document.createElement("div");
     this.lockOverlay.id = "lock-overlay";
+    const lockPanel = document.createElement("div");
+    lockPanel.className = "lock-panel";
     const lockText = document.createElement("p");
     lockText.textContent = "点击进入战斗";
-    this.lockOverlay.append(lockText);
+    lockText.className = "lock-title";
+    const lockHint = document.createElement("p");
+    lockHint.className = "lock-hint";
+    lockHint.textContent = HUD_HINT_TEXT;
+    this.lockSettings = document.createElement("div");
+    this.lockSettings.id = "lock-settings";
+    lockPanel.append(lockText, lockHint, this.lockSettings);
+    this.lockOverlay.append(lockPanel);
 
     this.root.append(
       this.damageOverlay,
@@ -168,7 +205,7 @@ export class Hud {
       this.killBanner,
       topBar,
       hpWrap,
-      slots,
+      weaponBar,
       ammoPanel,
       bottomBar,
       this.deathOverlay,
@@ -179,20 +216,26 @@ export class Hud {
     container.append(this.root);
   }
 
-  private createSlot(key: string, label: string, kind: string): HTMLElement {
-    const slot = document.createElement("div");
-    slot.className = `hud-slot hud-slot-${kind}`;
-    const keyBadge = document.createElement("span");
-    keyBadge.className = "hud-slot-key";
-    keyBadge.textContent = key;
-    const name = document.createElement("span");
-    name.className = "hud-slot-label";
-    name.textContent = label;
+  /** 武器栏单格：键盘角标 + 图标文字 + 数量角标。 */
+  private createWeaponCell(slot: WeaponSlot): HTMLElement {
+    const cell = document.createElement("div");
+    cell.className = "hud-weapon";
+    cell.dataset.slot = String(slot);
+
+    const key = document.createElement("span");
+    key.className = "hud-weapon-key";
+    key.textContent = SLOT_KEY[slot];
+
+    const icon = document.createElement("span");
+    icon.className = "hud-weapon-icon";
+    icon.textContent = SLOT_LABEL[slot];
+
     const count = document.createElement("span");
-    count.className = "hud-slot-count";
-    count.textContent = "0";
-    slot.append(keyBadge, name, count);
-    return slot;
+    count.className = "hud-weapon-count";
+    count.textContent = "—";
+
+    cell.append(key, icon, count);
+    return cell;
   }
 
   public setLockOverlayVisible(visible: boolean): void {
@@ -202,6 +245,16 @@ export class Hud {
   /** 指针锁定引导遮罩（Game 需要在其上监听点击来请求锁定）。 */
   public get lockOverlayElement(): HTMLElement {
     return this.lockOverlay;
+  }
+
+  /**
+   * 游戏内设置面板的挂载点（Esc 遮罩里）。
+   *
+   * 与大厅设置共用 `mountSensitivitySlider` 与同一个 `SettingsStore`，
+   * 因此在大厅拖动的值进游戏后立刻生效，反之亦然。
+   */
+  public get settingsContainer(): HTMLElement {
+    return this.lockSettings;
   }
 
   public setPlayers(players: readonly HudPlayerRow[], selfId: string): void {
@@ -303,6 +356,38 @@ export class Hud {
     }, 700);
   }
 
+  /** 某个槽位当前显示的数量文本（枪 = `弹匣/备弹`，投掷物 = 剩余数，刀 = `—`）。 */
+  private static weaponCountTextOf(snapshot: HudSnapshot, slot: WeaponSlot): string {
+    if (slot === WEAPON_SLOTS.RIFLE) {
+      return `${snapshot.ammo}/${snapshot.reserve}`;
+    }
+    if (slot === WEAPON_SLOTS.PISTOL) {
+      return `${snapshot.pistolAmmo}/${snapshot.pistolReserve}`;
+    }
+    if (slot === WEAPON_SLOTS.KNIFE) {
+      return "—";
+    }
+    if (slot === WEAPON_SLOTS.FRAG) {
+      return String(snapshot.frags);
+    }
+    if (slot === WEAPON_SLOTS.FLASH) {
+      return String(snapshot.flashes);
+    }
+    return String(snapshot.smokes);
+  }
+
+  /** 投掷物槽当前是否有货（枪 / 刀恒为 true）。 */
+  private static slotHasStock(snapshot: HudSnapshot, slot: WeaponSlot): boolean {
+    const type = throwableTypeOfSlot(slot);
+    if (type === null) {
+      return true;
+    }
+    if (type === THROWABLE_TYPES.FRAG) {
+      return snapshot.frags > 0;
+    }
+    return type === THROWABLE_TYPES.FLASH ? snapshot.flashes > 0 : snapshot.smokes > 0;
+  }
+
   public update(snapshot: HudSnapshot): void {
     const { x, y, z } = snapshot.position;
     this.positionLine.textContent = `位置 (${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)})`;
@@ -314,18 +399,47 @@ export class Hud {
     this.hpBar.classList.toggle("low", hp <= 30);
     this.root.classList.toggle("low-hp", hp <= 30 && snapshot.selfAlive);
 
-    this.ammoText.textContent = String(snapshot.ammo);
-    this.reserveText.textContent = `/ ${snapshot.reserve}`;
-    this.ammoText.classList.toggle("empty", snapshot.ammo <= 0);
-    this.reloadBar.style.width = `${Math.round(snapshot.reloadProgress * 100)}%`;
-    this.reloadBar.classList.toggle("active", snapshot.reloadProgress > 0);
+    // ---- 武器栏：数量 + 当前槽高亮（切换瞬间 120ms 脉冲）----
+    for (let slot = 0; slot < WEAPON_CELL_COUNT; slot += 1) {
+      const typed: WeaponSlot = slot as WeaponSlot;
+      const text: string = Hud.weaponCountTextOf(snapshot, typed);
+      if (this.lastWeaponCountText[slot] !== text) {
+        this.lastWeaponCountText[slot] = text;
+        (this.weaponCounts[slot] as HTMLElement).textContent = text;
+      }
+      const cell = this.weaponCells[slot] as HTMLElement;
+      cell.classList.toggle("active", slot === snapshot.weaponSlot);
+      cell.classList.toggle("empty", !Hud.slotHasStock(snapshot, typed));
+    }
+    if (snapshot.weaponSlot !== this.lastWeaponSlot) {
+      this.lastWeaponSlot = snapshot.weaponSlot;
+      this.pulseWeaponCell(snapshot.weaponSlot);
+    }
 
-    this.slotFrag.querySelector(".hud-slot-count")!.textContent = String(snapshot.frags);
-    this.slotFlash.querySelector(".hud-slot-count")!.textContent = String(snapshot.flashes);
-    this.slotSmoke.querySelector(".hud-slot-count")!.textContent = String(snapshot.smokes);
-    this.slotFrag.classList.toggle("empty", snapshot.frags <= 0);
-    this.slotFlash.classList.toggle("empty", snapshot.flashes <= 0);
-    this.slotSmoke.classList.toggle("empty", snapshot.smokes <= 0);
+    // ---- 右下弹药面板：跟随当前武器 ----
+    const current: WeaponSlot = (snapshot.weaponSlot as WeaponSlot) ?? WEAPON_SLOTS.RIFLE;
+    if (current === WEAPON_SLOTS.RIFLE || current === WEAPON_SLOTS.PISTOL) {
+      const mag: number = current === WEAPON_SLOTS.PISTOL ? snapshot.pistolAmmo : snapshot.ammo;
+      const reserve: number = current === WEAPON_SLOTS.PISTOL ? snapshot.pistolReserve : snapshot.reserve;
+      this.ammoText.textContent = String(mag);
+      this.reserveText.textContent = `/ ${reserve}`;
+      this.ammoText.classList.toggle("empty", mag <= 0);
+      this.reloadBar.style.width = `${Math.round(snapshot.reloadProgress * 100)}%`;
+      this.reloadBar.classList.toggle("active", snapshot.reloadProgress > 0);
+    } else if (current === WEAPON_SLOTS.KNIFE) {
+      this.ammoText.textContent = "—";
+      this.reserveText.textContent = "近战";
+      this.ammoText.classList.remove("empty");
+      this.reloadBar.style.width = "0";
+      this.reloadBar.classList.remove("active");
+    } else {
+      const text: string = Hud.weaponCountTextOf(snapshot, current);
+      this.ammoText.textContent = text;
+      this.reserveText.textContent = SLOT_LABEL[current] ?? "";
+      this.ammoText.classList.toggle("empty", text === "0");
+      this.reloadBar.style.width = "0";
+      this.reloadBar.classList.remove("active");
+    }
 
     // 动态准星扩散（只在不同值时写样式，避免每帧重排）
     const spread = Math.round(snapshot.spread);
@@ -353,11 +467,27 @@ export class Hud {
     }
   }
 
+  /** 切槽脉冲：120ms 的 scale(1.12) → 1（先移除再回流，连续切枪也能重播）。 */
+  private pulseWeaponCell(slot: number): void {
+    const cell = this.weaponCells[slot];
+    if (cell === undefined) {
+      return;
+    }
+    window.clearTimeout(this.weaponPulseTimer);
+    cell.classList.remove("pulse");
+    void cell.offsetWidth;
+    cell.classList.add("pulse");
+    this.weaponPulseTimer = window.setTimeout(() => {
+      cell.classList.remove("pulse");
+    }, 140);
+  }
+
   public dispose(): void {
     window.clearTimeout(this.hitmarkerTimer);
     window.clearTimeout(this.zoneDamageTimer);
     window.clearTimeout(this.killBannerTimer);
     window.clearTimeout(this.damageTimer);
+    window.clearTimeout(this.weaponPulseTimer);
     this.root.remove();
   }
 }

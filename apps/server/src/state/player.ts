@@ -1,6 +1,8 @@
 import { Schema, type } from "@colyseus/schema";
 
 import {
+  PISTOL_MAG_SIZE,
+  PISTOL_RESERVE_AMMO,
   THROWABLES,
   WEAPON_MAG_SIZE,
   WEAPON_RESERVE_AMMO,
@@ -68,6 +70,19 @@ export class Player extends Schema {
   /** 换弹完成时间戳（Date.now()，毫秒）；0 表示未在换弹。 */
   @type("float64")
   public reloadEndAt: number = 0;
+
+  /**
+   * 手枪弹匣内子弹数（槽位 1，与步枪的 {@link ammo} 完全独立）。
+   *
+   * 为什么单独两个字段而不是一个 `ammo[2]` 数组：Colyseus 的数组类型要额外建 ArraySchema，
+   * 为了 2 个数字不值得；独立字段还能让客户端 HUD 直接读，不需要再解析索引。
+   */
+  @type("uint8")
+  public pistolAmmo: number = PISTOL_MAG_SIZE;
+
+  /** 手枪备弹数。 */
+  @type("uint16")
+  public pistolReserve: number = PISTOL_RESERVE_AMMO;
 
   @type("uint8")
   public frags: number = THROWABLES.frag.initialCount;

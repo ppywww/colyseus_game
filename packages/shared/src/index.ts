@@ -361,6 +361,70 @@ export const SWITCH_DURATION_MS: Record<WeaponSlot, number> = {
   5: 250,
 };
 
+/** HUD 武器栏的图标文字（6 格，顺序 = {@link SLOT_ORDER}）。 */
+export const SLOT_LABEL: Record<WeaponSlot, string> = {
+  0: "AK",
+  1: "手枪",
+  2: "刀",
+  3: "手雷",
+  4: "闪光",
+  5: "烟雾",
+};
+
+/** HUD 武器栏左上角的按键角标（数字键 1–6 直达）。 */
+export const SLOT_KEY: Record<WeaponSlot, string> = {
+  0: "1",
+  1: "2",
+  2: "3",
+  3: "4",
+  4: "5",
+  5: "6",
+};
+
+/** 槽位是否可用：必须是 0..5 的整数，且 {@link SLOT_ENABLED} 为真。 */
+export function isSlotEnabled(slot: number): boolean {
+  return Number.isInteger(slot) && slot >= 0 && slot < SLOT_ORDER.length && SLOT_ENABLED[slot as WeaponSlot] === true;
+}
+
+/** 切到该槽位的耗时（毫秒）；非法槽位回退到最长的 350ms（宁可慢一拍，不要瞬切）。 */
+export function switchDurationOf(slot: number): number {
+  if (!Number.isInteger(slot) || slot < 0 || slot >= SLOT_ORDER.length) {
+    return 350;
+  }
+  return SWITCH_DURATION_MS[slot as WeaponSlot];
+}
+
+/**
+ * 环形取「下一个可用槽位」。
+ *
+ * @param current 当前槽位（非法值按第一个槽位处理）
+ * @param direction +1 向后滚（下一把）/ −1 向前滚（上一把）
+ * @param isAvailable 该槽位当前是否可切（数量为 0 的投掷物返回 false）
+ * @returns 下一个可用槽位；整圈都不可用时返回 `current`（不变）
+ *
+ * 为什么要「整圈不可用就返回原值」而不是随便挑一个：满弹耗尽时滚轮不该把玩家
+ * 甩到某个空槽上，保持不动比乱跳更可控。
+ */
+export function nextSlot(
+  current: number,
+  direction: 1 | -1,
+  isAvailable: (slot: WeaponSlot) => boolean,
+): WeaponSlot {
+  const total: number = SLOT_ORDER.length;
+  const safeCurrent: number = Number.isInteger(current) && current >= 0 && current < total ? current : 0;
+  const start: number = SLOT_ORDER.indexOf(safeCurrent as WeaponSlot);
+  const from: number = start < 0 ? 0 : start;
+
+  for (let step = 1; step <= total; step += 1) {
+    const index: number = (((from + direction * step) % total) + total) % total;
+    const candidate: WeaponSlot = SLOT_ORDER[index] as WeaponSlot;
+    if (candidate !== safeCurrent && isAvailable(candidate)) {
+      return candidate;
+    }
+  }
+  return safeCurrent as WeaponSlot;
+}
+
 /** 小刀正面伤害（满血 2 刀）。 */
 export const MELEE_DAMAGE_FRONT: number = 55;
 
@@ -414,6 +478,30 @@ export interface KillMessage {
   weaponSlot: number;
   /** 致命一击是否爆头。 */
   headshot: boolean;
+}
+
+/**
+ * 服务端广播的挥刀结果（`KNIFE_RESULT`）。
+ *
+ * 小刀不做圆柱求交（刀是"扫过一片空间"而不是"射出一条线"），所以没有 `dir` / `hitZone`：
+ * 判定依据是「扇形 + 距离」，服务端把所有参数都摊平在消息里，客户端只负责播表现，
+ * 不需要自己再算一遍几何（避免两边口径漂移）。
+ */
+export interface KnifeResultMessage {
+  /** 挥刀者 sessionId。 */
+  attackerId: string;
+  /** 被砍中的玩家 sessionId；挥空为 null。 */
+  hitPlayerId: string | null;
+  /** 实际扣血（正面 {@link MELEE_DAMAGE_FRONT} / 背刺 {@link MELEE_DAMAGE_BACK}）；挥空为 0。 */
+  damage: number;
+  /** 是否背刺：命中客户端据此播更重的音效与更大的准心反馈。 */
+  backstab: boolean;
+  /** 挥刀者当时的**手部**世界坐标（客户端从这里画刀光，不用自己算位置）。 */
+  x: number;
+  y: number;
+  z: number;
+  /** 挥刀者当时的朝向（弧度）：客户端据此决定刀光是"从右向左"还是"从左向右"。 */
+  yaw: number;
 }
 
 /* ------------------------------------------------------------------ *
@@ -656,6 +744,74 @@ export const WEAPON_RESERVE_AMMO: number = 120;
 export const WEAPON_RELOAD_MS: number = 1800;
 
 /* ------------------------------------------------------------------ *
+ * S6：手枪（槽位 1）—— 独立弹药与独立手感参数
+ * ------------------------------------------------------------------ */
+
+/** 手枪弹匣容量（= 12 发，比步枪少一半多，逼玩家打点射）。 */
+export const PISTOL_MAG_SIZE: number = 12;
+
+/** 手枪初始备弹（3 个弹匣）。 */
+export const PISTOL_RESERVE_AMMO: number = 36;
+
+/**
+ * 手枪开火间隔（毫秒）：300ms。
+ *
+ * 为什么是步枪（150ms）的两倍：手枪伤害走同一张 {@link ZONE_DAMAGE}（胸 25），
+ * 若射速与步枪相同，手枪就成了"弹匣更小的步枪"，AK 完全没有存在意义。
+ * 300ms 让手枪的 DPS 掉到步枪的一半，定位变成"远程点射 / 主武器没子弹时的过渡"。
+ */
+export const PISTOL_COOLDOWN_MS: number = 300;
+
+/** 手枪射程（米）：35m，约为步枪（60m）的 58%，中门这种 31m 长枪线刚好够用。 */
+export const PISTOL_RANGE: number = 35;
+
+/** 单把枪的完整手感参数（服务端结算与客户端本地预测共用同一份，杜绝两端漂移）。 */
+export interface WeaponFireProfile {
+  /** 槽位（{@link WEAPON_SLOTS}）。 */
+  slot: WeaponSlot;
+  /** 开火最小间隔（毫秒）。 */
+  cooldownMs: number;
+  /** 射程（米）。 */
+  range: number;
+  /** 弹匣容量。 */
+  magSize: number;
+  /** 初始备弹。 */
+  reserveAmmo: number;
+  /** 展示名（HUD 用）。 */
+  label: string;
+}
+
+/** 有弹道（走射线判定）的槽位参数；刀与投掷物不在表内。 */
+export const WEAPON_FIRE_PROFILES: Record<number, WeaponFireProfile> = {
+  0: {
+    slot: 0,
+    cooldownMs: WEAPON_COOLDOWN_MS,
+    range: WEAPON_RANGE,
+    magSize: WEAPON_MAG_SIZE,
+    reserveAmmo: WEAPON_RESERVE_AMMO,
+    label: "AK",
+  },
+  1: {
+    slot: 1,
+    cooldownMs: PISTOL_COOLDOWN_MS,
+    range: PISTOL_RANGE,
+    magSize: PISTOL_MAG_SIZE,
+    reserveAmmo: PISTOL_RESERVE_AMMO,
+    label: "手枪",
+  },
+};
+
+/** 该槽位是否走枪械弹道（只有 AK 与手枪）。 */
+export function isGunSlot(slot: number): boolean {
+  return slot === WEAPON_SLOTS.RIFLE || slot === WEAPON_SLOTS.PISTOL;
+}
+
+/** 取该槽位的弹道参数；刀 / 投掷物返回 null（它们各有各的 handler）。 */
+export function fireProfileOf(slot: number): WeaponFireProfile | null {
+  return isGunSlot(slot) ? WEAPON_FIRE_PROFILES[slot] ?? null : null;
+}
+
+/* ------------------------------------------------------------------ *
  * S4：投掷物（手雷 / 闪光弹 / 烟雾弹）
  * ------------------------------------------------------------------ */
 
@@ -721,6 +877,28 @@ export const THROW_SPEED: number = 14;
 
 /** 两次投掷的最小间隔（毫秒）。 */
 export const THROW_COOLDOWN_MS: number = 700;
+
+/** 投掷物类型 → 武器槽位（G/F/V 快捷投掷与滚轮都靠它对齐）。 */
+export function slotOfThrowable(type: ThrowableType): WeaponSlot {
+  if (type === THROWABLE_TYPES.FRAG) {
+    return WEAPON_SLOTS.FRAG;
+  }
+  return type === THROWABLE_TYPES.FLASH ? WEAPON_SLOTS.FLASH : WEAPON_SLOTS.SMOKE;
+}
+
+/** 武器槽位 → 投掷物类型；枪 / 刀返回 null。 */
+export function throwableTypeOfSlot(slot: number): ThrowableType | null {
+  if (slot === WEAPON_SLOTS.FRAG) {
+    return THROWABLE_TYPES.FRAG;
+  }
+  if (slot === WEAPON_SLOTS.FLASH) {
+    return THROWABLE_TYPES.FLASH;
+  }
+  if (slot === WEAPON_SLOTS.SMOKE) {
+    return THROWABLE_TYPES.SMOKE;
+  }
+  return null;
+}
 
 /** 投掷方向的最大俯仰（弧度），防止垂直上抛。 */
 export const THROW_MAX_PITCH: number = 0.6;
@@ -791,4 +969,84 @@ export interface SmokeCloudView {
   z: number;
   radius: number;
   expiresAt: number;
+}
+
+/* ------------------------------------------------------------------ *
+ * S6：设置（鼠标灵敏度）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 基础灵敏度：`yaw -= movementX * BASE_SENS * sensitivity`。
+ *
+ * 这就是旧版写死在 `game.ts` 里的 `LOOK_SENSITIVITY = 0.0023`。
+ * **默认灵敏度 1.0 必须与旧手感逐位相等**——所以这个常数只允许搬家，不允许调值，
+ * 否则所有老玩家的肌肉记忆会被一次性改写。
+ */
+export const BASE_SENSITIVITY: number = 0.0023;
+
+/** 灵敏度下限：再低就完全转不动视角（0.2 × 0.0023 ≈ 0.46 mrad/px）。 */
+export const SENSITIVITY_MIN: number = 0.2;
+
+/** 灵敏度上限：3.0 是 180° 甩枪能在 ~140px 内完成的档位。 */
+export const SENSITIVITY_MAX: number = 3.0;
+
+/** 滑块步进。 */
+export const SENSITIVITY_STEP: number = 0.05;
+
+/** 默认灵敏度（= 旧版手感）。 */
+export const SENSITIVITY_DEFAULT: number = 1.0;
+
+/** localStorage 键名：整包设置放在同一个 JSON 里，后续加音量/画质不用再开新键。 */
+export const SETTINGS_STORAGE_KEY: string = "fps.settings.v1";
+
+/**
+ * 把任意输入钳制/对齐成合法灵敏度。
+ *
+ * 规则（与 UI 的 range 完全一致，防止"滑块显示 3.0 但实际生效 2.9999"）：
+ *   1. 非数字 / NaN / Infinity → 默认值 1.0；
+ *   2. 夹到 [{@link SENSITIVITY_MIN}, {@link SENSITIVITY_MAX}]；
+ *   3. 对齐到 {@link SENSITIVITY_STEP} 的整数倍，并保留两位小数（消除 0.30000000000000004）。
+ */
+export function clampSensitivity(raw: unknown): number {
+  const value: number = typeof raw === "string" ? Number(raw) : typeof raw === "number" ? raw : Number.NaN;
+  if (!Number.isFinite(value)) {
+    return SENSITIVITY_DEFAULT;
+  }
+  const clamped: number = Math.min(SENSITIVITY_MAX, Math.max(SENSITIVITY_MIN, value));
+  const steps: number = Math.round(clamped / SENSITIVITY_STEP);
+  return Math.round(steps * SENSITIVITY_STEP * 100) / 100;
+}
+
+/**
+ * 从原始 JSON 文本解析灵敏度；任何异常都回退到默认值，**不抛错、不清除原记录**。
+ *
+ * 为什么强调"不清除原记录"：用户可能手改过 localStorage，或者旧版本存了别的结构。
+ * 直接 `localStorage.clear()` 或 `removeItem` 会连带删掉他还没升级的其他设置，
+ * 只读不写才是安全的降级方式。
+ */
+export function parseSensitivity(raw: string | null | undefined): number {
+  if (raw === null || raw === undefined || raw.length === 0) {
+    return SENSITIVITY_DEFAULT;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return SENSITIVITY_DEFAULT;
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return SENSITIVITY_DEFAULT;
+  }
+  const value: unknown = (parsed as { sensitivity?: unknown }).sensitivity;
+  return value === undefined ? SENSITIVITY_DEFAULT : clampSensitivity(value);
+}
+
+/** 序列化成要写进 localStorage 的字符串（固定两位小数，便于人眼核对）。 */
+export function serializeSensitivity(sensitivity: number): string {
+  return JSON.stringify({ sensitivity: clampSensitivity(sensitivity) });
+}
+
+/** 灵敏度 → 滑块可用的字符串（`1.00` / `0.35`）。 */
+export function formatSensitivity(sensitivity: number): string {
+  return clampSensitivity(sensitivity).toFixed(2);
 }

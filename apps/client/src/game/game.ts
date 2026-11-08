@@ -14,18 +14,25 @@
 import * as THREE from "three";
 
 import {
+  BASE_SENSITIVITY,
   CLIENT_INTERPOLATION_DELAY_MS,
   EYE_HEIGHT,
   MAP_BOUNDS,
   PLAYER_TRANSFORM_RATE_HZ,
+  SLOT_ORDER,
   SPAWN_POINTS,
   THROWABLES,
   THROWABLE_TYPES,
   THROW_COOLDOWN_MS,
-  WEAPON_COOLDOWN_MS,
-  WEAPON_MAG_SIZE,
   WEAPON_RELOAD_MS,
+  WEAPON_SLOTS,
   ZONE_LABEL,
+  fireProfileOf,
+  isGunSlot,
+  nextSlot,
+  slotOfThrowable,
+  switchDurationOf,
+  throwableTypeOfSlot,
   type DamageTakenMessage,
   type ExplosionMessage,
   type FlashEffectMessage,
@@ -35,10 +42,12 @@ import {
   type ShotMessage,
   type SmokeCloudView,
   type ThrowableType,
+  type WeaponSlot,
 } from "@colyseus-fps/shared";
 
 import type { LobbyConnection } from "../net/connection.js";
 import type { PlayerState } from "../net/types.js";
+import { getSettingsStore, mountSensitivitySlider, type SettingsStore } from "../ui/settings.js";
 import { GameAudio } from "./audio.js";
 import { CombatEffects } from "./effects.js";
 import { Hud } from "./hud.js";
@@ -54,7 +63,6 @@ import {
 import { ThrowableSystem } from "./throwables.js";
 import { ViewModel } from "./viewmodel.js";
 
-const LOOK_SENSITIVITY = 0.0023;
 const MAX_PITCH = Math.PI / 2 - 0.02;
 
 /** 开火后坐强度（弧度）。 */
@@ -66,6 +74,31 @@ const SPREAD_BASE = 3;
 const SPREAD_PER_SHOT = 7;
 const SPREAD_MOVE = 4;
 const SPREAD_RECOVER_PER_SECOND = 26;
+
+/**
+ * 需要「边沿触发」的动作键。
+ *
+ * 数字键 1–6 与滚轮一起构成武器切换的两条通道：数字键直达（快、可预期），
+ * 滚轮环形（顺）。两者最终都走 `selectSlot`，所以校验规则只有一份。
+ */
+const ACTION_KEYS: readonly string[] = [
+  "KeyR",
+  "KeyG",
+  "KeyF",
+  "KeyV",
+  "Digit1",
+  "Digit2",
+  "Digit3",
+  "Digit4",
+  "Digit5",
+  "Digit6",
+  "Numpad1",
+  "Numpad2",
+  "Numpad3",
+  "Numpad4",
+  "Numpad5",
+  "Numpad6",
+];
 
 /**
  * 用最近的固定出生点决定出生朝向。
@@ -115,19 +148,37 @@ export class Game {
   private selfAlive = true;
   private selfHp = 100;
   private selfRespawnAt = 0;
-  private ammo = WEAPON_MAG_SIZE;
+  private ammo = 0;
   private reserve = 0;
+  private pistolAmmo = 0;
+  private pistolReserve = 0;
   private reloadEndAt = 0;
   private frags = 0;
   private flashes = 0;
   private smokes = 0;
+
+  // 武器槽与切枪（本地乐观 + 服务端权威）
+  private weaponSlot: WeaponSlot = WEAPON_SLOTS.RIFLE;
+  /** 切枪结束时刻（本机时钟，毫秒）：期间禁止开火与再次切枪。 */
+  private switchEndAt = 0;
+  /** 本次切枪的起点（performance.now）与总时长，用于算 `switchProgress`。 */
+  private switchStartAt = 0;
+  private switchDurationMs = 0;
+  /** 快捷投掷前的槽位：投掷动作结束后自动切回，避免"扔完手里空着"。 */
+  private slotBeforeThrow: WeaponSlot = WEAPON_SLOTS.RIFLE;
+  /** 快捷投掷的自动回切定时器。 */
+  private throwReturnTimer = 0;
+
+  // 设置（灵敏度）
+  private readonly settings: SettingsStore = getSettingsStore();
+  private unmountSettings: (() => void) | null = null;
+  private unsubscribeSettings: (() => void) | null = null;
 
   // 表现状态（纯本地）
   private recoilPitch = 0;
   private recoilYaw = 0;
   private shake = 0;
   private spread = SPREAD_BASE;
-  private readonly pressed = new Set<string>();
   private readonly previousPressed = new Set<string>();
 
   public constructor(
@@ -187,6 +238,14 @@ export class Game {
     document.addEventListener("mousedown", this.handleMouseDown);
     window.addEventListener("resize", this.handleResize);
 
+    // ---- 设置：把持久化的灵敏度喂给输入层，并把滑块挂进 Esc 遮罩 ----
+    // 大厅与游戏内共用同一个 SettingsStore，因此这里既读既同步。
+    this.input.setSensitivity(this.settings.getSensitivity());
+    this.unsubscribeSettings = this.settings.subscribe((snapshot) => {
+      this.input.setSensitivity(snapshot.sensitivity);
+    });
+    this.unmountSettings = mountSensitivitySlider(this.hud.settingsContainer, this.settings);
+
     // 容器尺寸可能被 CSS/布局变化（而非 window resize）改变，主动监听
     this.resizeObserver = new ResizeObserver(() => {
       this.handleResize();
@@ -207,30 +266,77 @@ export class Game {
     console.warn("指针锁定失败：请再次点击画面（浏览器可能限制了锁定频率）");
   };
 
-  /** 左键开火：仅发送意图，弹道与伤害由服务端裁定。 */
+  /** 左键：枪 → 开火、投掷物 → 投出。弹道与伤害由服务端裁定。 */
   private readonly handleMouseDown = (event: MouseEvent): void => {
     if (event.button !== 0 || !this.input.isPointerLocked()) {
+      return;
+    }
+    const throwable = throwableTypeOfSlot(this.weaponSlot);
+    if (throwable !== null) {
+      this.tryThrow(throwable, performance.now());
       return;
     }
     this.tryFire(performance.now());
   };
 
+  /** 当前槽位的弹匣剩余（刀 / 投掷物返回 −1，表示"没有弹匣"）。 */
+  private currentMag(): number {
+    if (this.weaponSlot === WEAPON_SLOTS.PISTOL) {
+      return this.pistolAmmo;
+    }
+    return this.weaponSlot === WEAPON_SLOTS.RIFLE ? this.ammo : -1;
+  }
+
+  /** 当前槽位的备弹（刀 / 投掷物返回 0）。 */
+  private currentReserve(): number {
+    if (this.weaponSlot === WEAPON_SLOTS.PISTOL) {
+      return this.pistolReserve;
+    }
+    return this.weaponSlot === WEAPON_SLOTS.RIFLE ? this.reserve : 0;
+  }
+
+  /** 写入当前槽位的弹匣剩余（本地乐观扣减；刀 / 投掷物忽略）。 */
+  private setCurrentMag(value: number): void {
+    const next: number = Math.max(0, value);
+    if (this.weaponSlot === WEAPON_SLOTS.PISTOL) {
+      this.pistolAmmo = next;
+    } else if (this.weaponSlot === WEAPON_SLOTS.RIFLE) {
+      this.ammo = next;
+    }
+  }
+
   private tryFire(nowMs: number): void {
     if (!this.selfAlive) {
       return;
     }
-    if (nowMs - this.lastFireAt < WEAPON_COOLDOWN_MS) {
+    // 刀（2）与投掷物（3/4/5）的左键不是"开枪"：由挥刀 / 投掷链路处理
+    if (!isGunSlot(this.weaponSlot)) {
       return;
     }
-    if (this.ammo <= 0) {
+    // 切枪中不能开火（与服务端 `switchEndAt` 校验同口径，避免本地先响一枪再被丢弃）
+    if (Date.now() < this.switchEndAt) {
+      return;
+    }
+    if (this.reloadEndAt > Date.now()) {
+      return;
+    }
+
+    const profile = fireProfileOf(this.weaponSlot);
+    if (profile === null) {
+      return;
+    }
+    // 冷却按武器各自口径：步枪 150ms / 手枪 300ms
+    if (nowMs - this.lastFireAt < profile.cooldownMs) {
+      return;
+    }
+
+    const mag: number = this.currentMag();
+    if (mag <= 0) {
       // 空仓：只播放一次"咔"声，避免连点噪音
       if (nowMs - this.lastFireAt > 220) {
         this.lastFireAt = nowMs;
         this.audio.emptyClick();
       }
-      return;
-    }
-    if (this.reloadEndAt > Date.now()) {
       return;
     }
 
@@ -239,7 +345,7 @@ export class Game {
     this.connection.sendFire(this.kinematics.yaw + this.recoilYaw, this.kinematics.pitch + this.recoilPitch);
 
     // 本地即时反馈（不等服务端回包，才有"跟手"的开枪感）
-    this.ammo = Math.max(0, this.ammo - 1);
+    this.setCurrentMag(mag - 1);
     this.effects.muzzleFlash(nowMs);
     this.audio.gunshot();
     this.viewModel.recoil(nowMs);
@@ -247,13 +353,18 @@ export class Game {
     this.recoilYaw += (Math.random() - 0.5) * RECOIL_YAW * 2;
     this.shake = Math.min(1, this.shake + 0.18);
     this.spread = Math.min(26, this.spread + SPREAD_PER_SHOT);
-    if (this.ammo === 0 && this.reserve > 0) {
+    if (this.currentMag() === 0 && this.currentReserve() > 0) {
       this.requestReload();
     }
   }
 
   private requestReload(): void {
-    if (!this.selfAlive || this.ammo >= WEAPON_MAG_SIZE || this.reserve <= 0) {
+    const profile = fireProfileOf(this.weaponSlot);
+    // 刀 / 投掷物没有弹匣，R 键无效
+    if (!this.selfAlive || profile === null) {
+      return;
+    }
+    if (this.currentMag() >= profile.magSize || this.currentReserve() <= 0) {
       return;
     }
     if (this.reloadEndAt > Date.now()) {
@@ -269,18 +380,95 @@ export class Game {
     }, WEAPON_RELOAD_MS - 120);
   }
 
+  /** 本地是否允许切到该槽位（与服务端校验同口径，唯一区别是不发网络包）。 */
+  private isSlotSelectable(slot: WeaponSlot): boolean {
+    if (slot === this.weaponSlot) {
+      return false;
+    }
+    const throwable = throwableTypeOfSlot(slot);
+    if (throwable === null) {
+      return true; // 枪 / 刀恒可用
+    }
+    return this.throwableCount(throwable) > 0;
+  }
+
+  /** 本地记着的该投掷物剩余数量（与服务端状态同步，乐观扣减过）。 */
+  private throwableCount(type: ThrowableType): number {
+    if (type === THROWABLE_TYPES.FRAG) {
+      return this.frags;
+    }
+    return type === THROWABLE_TYPES.FLASH ? this.flashes : this.smokes;
+  }
+
+  /**
+   * 切到指定槽位（数字键直达 / 滚轮最终都走这里）。
+   *
+   * @param slot 目标槽位
+   * @param options.instant true = 不播切枪动画、不设冷却（快捷投掷用）
+   * @param options.quiet true = 不可切时不播「咔」声（滚轮连滚时避免噪音）
+   * @returns 是否真的切换了
+   */
+  private selectSlot(slot: WeaponSlot, options: { instant?: boolean; quiet?: boolean } = {}): boolean {
+    if (!this.selfAlive || slot === this.weaponSlot) {
+      return false;
+    }
+    if (Date.now() < this.switchEndAt) {
+      return false; // 上一次切枪还没结束（与服务端拒绝条件一致）
+    }
+    if (!this.isSlotSelectable(slot)) {
+      if (options.quiet !== true) {
+        this.audio.emptyClick();
+      }
+      return false;
+    }
+
+    this.connection.sendWeaponSwitch(slot);
+    this.applySlotLocally(slot, options.instant === true ? 0 : switchDurationOf(slot));
+    return true;
+  }
+
+  /** 本地立即生效的槽位切换（不动网络、不校验）——由 {@link selectSlot} 与状态同步共用。 */
+  private applySlotLocally(slot: WeaponSlot, durationMs: number): void {
+    this.weaponSlot = slot;
+    this.viewModel.setWeaponSlot(slot);
+    this.switchDurationMs = durationMs;
+    this.switchStartAt = performance.now();
+    this.switchEndAt = durationMs <= 0 ? 0 : Date.now() + durationMs;
+  }
+
+  /**
+   * 滚轮切枪：环形找下一个**可用**槽位（跳过空投掷物槽）。
+   *
+   * @param direction +1 = 向后滚（AK → 手枪 → 刀 …）、−1 = 向前滚
+   */
+  private cycleSlot(direction: 1 | -1): void {
+    const picked: WeaponSlot = nextSlot(this.weaponSlot, direction, (candidate) => this.isSlotSelectable(candidate));
+    if (picked === this.weaponSlot) {
+      // 整圈没有可切的槽位（弹药全打光且道具用完）：保持不动，不要乱跳
+      return;
+    }
+    this.selectSlot(picked, { quiet: true });
+  }
+
   /** 投掷道具：方向取当前视线（含俯仰），位置与速度由服务端裁定。 */
   private tryThrow(type: ThrowableType, nowMs: number): void {
     if (!this.selfAlive) {
       return;
     }
-    if (nowMs - this.lastThrowAt < 700) {
+    if (nowMs - this.lastThrowAt < THROW_COOLDOWN_MS) {
       return;
     }
-    const left = type === THROWABLE_TYPES.FRAG ? this.frags : type === THROWABLE_TYPES.FLASH ? this.flashes : this.smokes;
+    const left: number = this.throwableCount(type);
     if (left <= 0) {
+      this.audio.emptyClick();
       return;
     }
+
+    // 快捷投掷（G/F/V）：先把手里的东西换成本次投掷物（不播切枪动画、不设冷却），
+    // 这样第一人称立刻出现"握着道具"的姿态；服务端会在 THROW 处理里做同样的切槽。
+    const throwSlot: WeaponSlot = slotOfThrowable(type);
+    this.slotBeforeThrow = this.weaponSlot;
+    this.applySlotLocally(throwSlot, 0);
 
     this.lastThrowAt = nowMs;
     const cosPitch = Math.cos(this.kinematics.pitch);
@@ -291,6 +479,8 @@ export class Game {
     };
     this.connection.sendThrow(type, dir);
     this.audio.throwWhoosh();
+    // 球离手（切回投掷物槽位时 setWeaponSlot 会自动复位）
+    this.viewModel.setThrowableBallVisible(false);
     if (type === THROWABLE_TYPES.FRAG) {
       this.frags = Math.max(0, this.frags - 1);
     } else if (type === THROWABLE_TYPES.FLASH) {
@@ -298,6 +488,23 @@ export class Game {
     } else {
       this.smokes = Math.max(0, this.smokes - 1);
     }
+
+    // 投掷动作结束（= 投掷冷却）后自动切回投掷前的武器，避免"扔完手里空着"
+    window.clearTimeout(this.throwReturnTimer);
+    this.throwReturnTimer = window.setTimeout(() => {
+      if (this.disposed || !this.selfAlive) {
+        return;
+      }
+      if (this.weaponSlot !== throwSlot) {
+        return;
+      }
+      const back: WeaponSlot = this.slotBeforeThrow;
+      if (back === throwSlot) {
+        return;
+      }
+      this.connection.sendWeaponSwitch(back);
+      this.applySlotLocally(back, 0);
+    }, THROW_COOLDOWN_MS + 50);
   }
 
   /**
@@ -434,6 +641,15 @@ export class Game {
     this.selfHp = self.hp;
     this.selfRespawnAt = self.respawnAt;
 
+    // ---- 武器槽：以服务端为准 ----
+    // 正常情况下两边一致（本地乐观切换 + 服务端回显）。不一致只有两种可能：
+    //   ① 本地那次被拒（切枪中 / 投掷物已用完）——回退到服务端槽位；
+    //   ② 快捷投掷后服务端把槽位改成了投掷物——同样跟随。
+    // 两种情况都**不播切枪动画**：本地已经播过了，再播一次会像卡了一下。
+    if (self.weaponSlot !== this.weaponSlot) {
+      this.applySlotLocally(self.weaponSlot as WeaponSlot, 0);
+    }
+
     // 弹药/道具：本地已做乐观扣减，服务端状态更新更慢时会短暂"回跳"。
     // 刚开火/投掷后的 300ms 内保留本地较小值，其余情况一律以服务端为准。
     const now = performance.now();
@@ -441,6 +657,10 @@ export class Game {
       this.ammo = self.ammo;
     }
     this.reserve = self.reserve;
+    if (now - this.lastFireAt > 300 || self.pistolAmmo <= this.pistolAmmo) {
+      this.pistolAmmo = self.pistolAmmo;
+    }
+    this.pistolReserve = self.pistolReserve;
     this.reloadEndAt = self.reloadEndAt;
     if (now - this.lastThrowAt > 300) {
       this.frags = self.frags;
@@ -467,12 +687,14 @@ export class Game {
     const locked = this.input.isPointerLocked();
 
     // 视角（鼠标）+ 后坐偏移（自动回弹）
+    // `look.dx` 已经乘过灵敏度倍率（InputController 负责），这里只乘基础系数。
+    // 默认灵敏度 1.0 时 `BASE_SENSITIVITY` = 旧版的 LOOK_SENSITIVITY，手感逐位不变。
     const look = this.input.consumeLookDelta();
     if (locked) {
-      this.kinematics.yaw -= look.dx * LOOK_SENSITIVITY;
+      this.kinematics.yaw -= look.dx * BASE_SENSITIVITY;
       this.kinematics.pitch = Math.min(
         MAX_PITCH,
-        Math.max(-MAX_PITCH, this.kinematics.pitch - look.dy * LOOK_SENSITIVITY),
+        Math.max(-MAX_PITCH, this.kinematics.pitch - look.dy * BASE_SENSITIVITY),
       );
     }
     this.recoilPitch *= Math.exp(-dtSeconds * 9);
@@ -546,7 +768,7 @@ export class Game {
       this.kinematics.grounded;
     const reloadProgress =
       this.reloadEndAt > Date.now() ? 1 - (this.reloadEndAt - Date.now()) / WEAPON_RELOAD_MS : 0;
-    // 视模型：五态动画（idle / walk / fire / reload / throw）全部由这里驱动
+    // 视模型：五态动画（idle / walk / fire / reload / throw）+ 切枪下压，全部由这里驱动
     this.viewModel.update(dtSeconds, {
       moving,
       sprinting: moveInput.sprint,
@@ -555,6 +777,7 @@ export class Game {
       reloadProgress,
       throwing: nowMs - this.lastThrowAt < THROW_COOLDOWN_MS,
       firingAt: this.lastFireAt,
+      switchProgress: this.switchProgress(),
     });
     // 让枪口火光贴着枪口帽走（后坐/换弹/投掷时一起位移）
     this.effects.setMuzzleOffset(this.viewModel.getMuzzleWorldOffset());
@@ -570,8 +793,11 @@ export class Game {
       selfHp: this.selfHp,
       selfAlive: this.selfAlive,
       selfRespawnAt: this.selfRespawnAt,
+      weaponSlot: this.weaponSlot,
       ammo: this.ammo,
       reserve: this.reserve,
+      pistolAmmo: this.pistolAmmo,
+      pistolReserve: this.pistolReserve,
       reloadProgress,
       frags: this.frags,
       flashes: this.flashes,
@@ -582,12 +808,13 @@ export class Game {
     this.renderer.render(this.scene, this.camera);
   }
 
-  /** 边沿触发的动作键：R 换弹、G/F/V 投掷。 */
+  /** 边沿触发的动作键：R 换弹、G/F/V 快捷投掷、1–6 直达、滚轮环形。 */
   private handleActionKeys(nowMs: number): void {
     if (!this.input.isPointerLocked()) {
+      // 未锁定时不消费边沿：把当前按住的键记为"已按下"，
+      // 否则重新锁定那一刻会立刻触发一次换弹/投掷（很莫名其妙）。
       this.previousPressed.clear();
-      this.pressed.clear();
-      for (const code of ["KeyR", "KeyG", "KeyF", "KeyV"]) {
+      for (const code of ACTION_KEYS) {
         if (this.input.isDown(code)) {
           this.previousPressed.add(code);
         }
@@ -595,19 +822,17 @@ export class Game {
       return;
     }
 
-    for (const code of ["KeyR", "KeyG", "KeyF", "KeyV"]) {
-      const down = this.input.isDown(code);
-      const wasDown = this.previousPressed.has(code);
+    // 滚轮：已按 80ms 合并成单向脉冲（触控板惯性不会连续切）
+    const wheel: -1 | 0 | 1 = this.input.consumeWheelStep();
+    if (wheel !== 0) {
+      this.cycleSlot(wheel);
+    }
+
+    for (const code of ACTION_KEYS) {
+      const down: boolean = this.input.isDown(code);
+      const wasDown: boolean = this.previousPressed.has(code);
       if (down && !wasDown) {
-        if (code === "KeyR") {
-          this.requestReload();
-        } else if (code === "KeyG") {
-          this.tryThrow(THROWABLE_TYPES.FRAG, nowMs);
-        } else if (code === "KeyF") {
-          this.tryThrow(THROWABLE_TYPES.FLASH, nowMs);
-        } else {
-          this.tryThrow(THROWABLE_TYPES.SMOKE, nowMs);
-        }
+        this.handleActionKey(code, nowMs);
       }
       if (down) {
         this.previousPressed.add(code);
@@ -617,12 +842,59 @@ export class Game {
     }
   }
 
+  /** 单个动作键的分派（保持 handleActionKeys 只做边沿检测）。 */
+  private handleActionKey(code: string, nowMs: number): void {
+    if (code === "KeyR") {
+      this.requestReload();
+      return;
+    }
+    if (code === "KeyG") {
+      this.tryThrow(THROWABLE_TYPES.FRAG, nowMs);
+      return;
+    }
+    if (code === "KeyF") {
+      this.tryThrow(THROWABLE_TYPES.FLASH, nowMs);
+      return;
+    }
+    if (code === "KeyV") {
+      this.tryThrow(THROWABLE_TYPES.SMOKE, nowMs);
+      return;
+    }
+    const slot: WeaponSlot | null = Game.slotFromKeyCode(code);
+    if (slot !== null) {
+      // 数字键直达：空槽只播「咔」声，不切换（selectSlot 内部处理）
+      this.selectSlot(slot);
+    }
+  }
+
+  /** `Digit1`–`Digit6` / `Numpad1`–`Numpad6` → 槽位；其他按键返回 null。 */
+  private static slotFromKeyCode(code: string): WeaponSlot | null {
+    const match: RegExpExecArray | null = /^(?:Digit|Numpad)([1-6])$/.exec(code);
+    if (match === null) {
+      return null;
+    }
+    const index: number = Number(match[1]) - 1;
+    return SLOT_ORDER[index] ?? null;
+  }
+
+  /** 切枪动画进度 0→1（无切枪时恒 0，视模型据此下压/抬回）。 */
+  private switchProgress(): number {
+    if (this.switchDurationMs <= 0) {
+      return 0;
+    }
+    const elapsed: number = performance.now() - this.switchStartAt;
+    return Math.min(1, Math.max(0, elapsed / this.switchDurationMs));
+  }
+
   public dispose(): void {
     if (this.disposed) {
       return;
     }
     this.disposed = true;
     cancelAnimationFrame(this.animationFrameId);
+    window.clearTimeout(this.throwReturnTimer);
+    this.unsubscribeSettings?.();
+    this.unmountSettings?.();
     this.resizeObserver.disconnect();
     this.renderer.domElement.removeEventListener("click", this.handleCanvasClick);
     this.hud.lockOverlayElement.removeEventListener("click", this.handleCanvasClick);

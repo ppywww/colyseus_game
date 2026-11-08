@@ -40,6 +40,8 @@ interface PlayerLike {
   smokes: number;
   x: number;
   z: number;
+  weaponSlot: number;
+  switchEndAt: number;
 }
 
 interface CloudLike {
@@ -144,6 +146,17 @@ describe("S4 投掷物与弹药", () => {
       assert.ok(cloud.radius > 0, "云团半径应大于 0");
 
       // 弹药：开火扣 1 发
+      //
+      // 注意（S6 起）：快捷投掷会把服务端槽位自动切成投掷物（手雷/烟雾），
+      // 而 `FIRE` 只对枪械槽（0/1）生效，所以这里必须先切回步枪，
+      // 否则开火会被服务端按"手里拿的是道具"忽略掉。等切枪动画（350ms）结束再开火。
+      roomA.send(MESSAGE_TYPES.WEAPON_SWITCH, { slot: 0 });
+      await waitFor(
+        () => stateOf(roomA).players.get(roomA.sessionId)!.weaponSlot === 0,
+        "投掷后应能切回步枪",
+      );
+      await sleep(400);
+
       const ammoBefore = stateOf(roomA).players.get(roomA.sessionId)!.ammo;
       roomA.send(MESSAGE_TYPES.FIRE);
       await waitFor(

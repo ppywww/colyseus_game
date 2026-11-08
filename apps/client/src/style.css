@@ -153,6 +153,105 @@ kbd {
   font-size: 12px;
 }
 
+/* ---------- 设置（大厅折叠区 + 游戏内 Esc 遮罩共用） ---------- */
+
+.settings summary {
+  color: #e6edf3;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.settings summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings summary::before {
+  content: "▸ ";
+  color: #58a6ff;
+}
+
+.settings[open] summary::before {
+  content: "▾ ";
+}
+
+.settings-body {
+  margin-top: 14px;
+}
+
+.settings-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: 96px 1fr 56px;
+  align-items: center;
+  gap: 12px;
+  color: #8b98a9;
+  font-size: 13px;
+}
+
+.settings-name {
+  white-space: nowrap;
+}
+
+/* 滑块本体：默认外观在不同浏览器差异太大，这里统一成细轨 + 圆钮 */
+.settings-range {
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.settings-range::-webkit-slider-runnable-track {
+  height: 4px;
+  background: #2d3a4f;
+  border-radius: 999px;
+}
+
+.settings-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  background: #3b82f6;
+  border: 1px solid #7dd3fc;
+  border-radius: 50%;
+}
+
+.settings-range::-moz-range-track {
+  height: 4px;
+  background: #2d3a4f;
+  border-radius: 999px;
+}
+
+.settings-range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: #3b82f6;
+  border: 1px solid #7dd3fc;
+  border-radius: 50%;
+}
+
+.settings-value {
+  color: #7dd3fc;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.settings-hint {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
 /* ---------- 游戏容器与 HUD ---------- */
 
 #game-container {
@@ -275,14 +374,57 @@ kbd {
   pointer-events: auto; /* 可见时由遮罩自身承接点击，不依赖命中 canvas */
 }
 
-#lock-overlay p {
-  padding: 14px 34px;
-  background: rgba(18, 26, 38, 0.95);
+/* Esc 遮罩里的内容盒：标题 + 操作提示 + 设置滑块 */
+.lock-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 22px 30px 20px;
+  background: rgba(18, 26, 38, 0.96);
   border: 1px solid #3b82f6;
-  border-radius: 10px;
+  border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+}
+
+#lock-overlay .lock-title {
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: none;
   font-size: 18px;
   font-weight: 600;
   letter-spacing: 0.1em;
+}
+
+#lock-overlay .lock-hint {
+  margin: 0;
+  padding: 0;
+  max-width: 460px;
+  color: #8b98a9;
+  background: none;
+  border: none;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.7;
+  letter-spacing: 0;
+  text-align: center;
+}
+
+/* 游戏内设置：与大堂共用 mountSensitivitySlider 生成的 DOM */
+#lock-settings {
+  width: 100%;
+  min-width: 360px;
+  padding-top: 4px;
+  cursor: default;
+}
+
+#lock-settings .settings-row {
+  color: #b9c6d8;
+}
+
+#lock-settings .settings-hint {
+  text-align: center;
 }
 
 /* ---------- S3 战斗 HUD ---------- */
@@ -493,53 +635,88 @@ kbd {
   opacity: 1;
 }
 
-/* 道具栏（左下，血条上方） */
-.hud-slots {
+/* ---------- 武器栏（底部中央 6 格，S6） ---------- */
+
+.hud-weaponbar {
   position: absolute;
-  left: 16px;
-  bottom: 80px;
+  left: 50%;
+  bottom: 46px;
+  transform: translateX(-50%);
   display: flex;
-  gap: 8px;
-}
-
-.hud-slot {
-  display: flex;
-  align-items: center;
   gap: 6px;
-  padding: 4px 9px;
-  background: rgba(13, 20, 32, 0.78);
-  border: 1px solid rgba(148, 163, 184, 0.3);
-  border-radius: 6px;
-  font-size: 12px;
-  color: #cbd5e1;
+  padding: 6px 8px;
+  background: rgba(13, 20, 32, 0.72);
+  border: 1px solid rgba(59, 130, 246, 0.22);
+  border-radius: 10px;
 }
 
-.hud-slot-frag { border-color: rgba(248, 113, 113, 0.45); }
-.hud-slot-flash { border-color: rgba(250, 204, 21, 0.45); }
-.hud-slot-smoke { border-color: rgba(148, 163, 184, 0.5); }
-
-.hud-slot.empty {
-  opacity: 0.38;
-}
-
-.hud-slot-key {
-  display: inline-flex;
+.hud-weapon {
+  position: relative;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 3px;
-  background: #1a2333;
-  border: 1px solid #31405a;
-  border-radius: 3px;
-  font-size: 10px;
-  color: #9fb0c5;
+  gap: 2px;
+  min-width: 62px;
+  padding: 5px 8px 4px;
+  background: rgba(20, 30, 46, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 7px;
+  font-size: 11px;
+  color: #cbd5e1;
+  /* 未选中的格子压暗，让"手里拿的是哪把"一眼可见 */
+  opacity: 0.45;
+  transition: opacity 0.12s ease, border-color 0.12s ease;
 }
 
-.hud-slot-count {
-  font-weight: 700;
-  color: #f1f5f9;
+/* 当前槽位：金色描边 + 完全不透明（规格给定的唯二视觉信号） */
+.hud-weapon.active {
+  border-color: #fbbf24;
+  opacity: 1;
+  background: rgba(38, 48, 26, 0.9);
+}
+
+/* 数量为 0 的投掷物格：再加一层暗化，和"只是没选中"区分开 */
+.hud-weapon.empty {
+  opacity: 0.28;
+  border-style: dashed;
+}
+
+/* 切槽脉冲：120ms 的 scale(1.12) → 1 */
+@keyframes hud-weapon-pulse {
+  from {
+    transform: scale(1.12);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+.hud-weapon.pulse {
+  animation: hud-weapon-pulse 120ms ease-out;
+}
+
+.hud-weapon-key {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  font-size: 9px;
+  color: #7b8a9e;
   font-variant-numeric: tabular-nums;
+}
+
+.hud-weapon-icon {
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.hud-weapon-count {
+  color: #9fb0c5;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-weapon.active .hud-weapon-icon {
+  color: #fde68a;
 }
 
 /* 击杀横幅（屏幕中上） */

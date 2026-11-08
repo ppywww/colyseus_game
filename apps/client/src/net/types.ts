@@ -19,11 +19,17 @@ export interface PlayerState {
   ammo: number;
   reserve: number;
   reloadEndAt: number;
+  /** 手枪弹匣内子弹数（槽位 1，与步枪完全独立）。 */
+  pistolAmmo: number;
+  /** 手枪备弹数。 */
+  pistolReserve: number;
   frags: number;
   flashes: number;
   smokes: number;
   /** 当前手持武器槽位（0=AK 1=手枪 2=小刀 3=手雷 4=闪光 5=烟雾），协议 v2 新增。 */
   weaponSlot: number;
+  /** 切枪结束时间戳（Date.now()）；0 表示不在切枪中。 */
+  switchEndAt: number;
   /** 队伍（"T" / "CT"）：远端模型配色与出生朝向共用，协议 v2 新增。 */
   team: string;
 }

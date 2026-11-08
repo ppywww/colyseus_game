@@ -912,6 +912,13 @@ export const GRENADE_BOUNCE: number = 0.35;
 /** 手雷碰撞半径（米）。 */
 export const GRENADE_RADIUS: number = 0.11;
 
+/**
+ * 投掷物球-AABB 反弹物理：客户端预测与服务端权威共用同一实现（物理逻辑在同目录的
+ * `grenade-physics.ts`，本文件只做再导出，避免 index 继续膨胀）。
+ */
+export { stepGrenadePhysics } from "./grenade-physics.js";
+export type { GrenadeBody } from "./grenade-physics.js";
+
 /** 手雷脱离手部的位置（相对眼睛）。 */
 export const THROW_ORIGIN_FORWARD: number = 0.45;
 

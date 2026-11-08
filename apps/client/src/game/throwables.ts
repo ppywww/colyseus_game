@@ -8,11 +8,11 @@
 import * as THREE from "three";
 
 import {
-  MAP_BOUNDS,
-  GRENADE_BOUNCE,
-  GRENADE_GRAVITY,
   GRENADE_RADIUS,
   THROWABLES,
+  obstacleColliders,
+  stepGrenadePhysics,
+  type Aabb,
   type ExplosionMessage,
   type GrenadeLaunchedMessage,
   type SmokeCloudView,
@@ -43,6 +43,12 @@ interface SmokeVisual {
 }
 
 const SMOKE_SPRITE_COUNT = 14;
+
+/**
+ * 手雷弹道用的掩体 AABB（64 条，与客户端物理、服务端弹道遮挡同一份数据）。
+ * 只算一次：地图是静态的，没必要每帧重建 64 个盒子。
+ */
+const GRENADE_COLLIDERS: readonly Aabb[] = obstacleColliders();
 
 /** 生成柔和的烟团贴图（径向渐变 + 轻微噪点感）。 */
 function smokeTexture(): THREE.Texture {
@@ -186,46 +192,13 @@ export class ThrowableSystem {
     this.grenades.delete(id);
   }
 
-  /** 每帧：推进本地抛物线（约 20Hz 精度的指数积分），并做烟雾淡入淡出。 */
+  /** 每帧：推进本地抛物线（与服务端共用 shared 的 stepGrenadePhysics），并做烟雾淡入淡出。 */
   public update(dtSeconds: number, nowMs: number): void {
     for (const grenade of this.grenades.values()) {
-      grenade.vy -= GRENADE_GRAVITY * dtSeconds;
-      grenade.x += grenade.vx * dtSeconds;
-      grenade.y += grenade.vy * dtSeconds;
-      grenade.z += grenade.vz * dtSeconds;
-
-      if (grenade.y < GRENADE_RADIUS) {
-        grenade.y = GRENADE_RADIUS;
-        if (grenade.vy < 0) {
-          grenade.vy = -grenade.vy * GRENADE_BOUNCE;
-          grenade.vx *= 0.82;
-          grenade.vz *= 0.82;
-          if (Math.abs(grenade.vy) < 0.6) {
-            grenade.vy = 0;
-          }
-        }
-      }
-
-      // 场地边界：矩形反弹（逐轴 clamp + 对应速度分量反向），与服务端 stepGrenade 完全一致。
-      // 圆形钳制在 64×64 矩形地图里会把角落的手雷"吸"向中心，导致客户端预测与服务端位置打架。
-      const maxX = MAP_BOUNDS.maxX - GRENADE_RADIUS;
-      const minX = MAP_BOUNDS.minX + GRENADE_RADIUS;
-      const maxZ = MAP_BOUNDS.maxZ - GRENADE_RADIUS;
-      const minZ = MAP_BOUNDS.minZ + GRENADE_RADIUS;
-      if (grenade.x > maxX) {
-        grenade.x = maxX;
-        grenade.vx = -Math.abs(grenade.vx) * GRENADE_BOUNCE;
-      } else if (grenade.x < minX) {
-        grenade.x = minX;
-        grenade.vx = Math.abs(grenade.vx) * GRENADE_BOUNCE;
-      }
-      if (grenade.z > maxZ) {
-        grenade.z = maxZ;
-        grenade.vz = -Math.abs(grenade.vz) * GRENADE_BOUNCE;
-      } else if (grenade.z < minZ) {
-        grenade.z = minZ;
-        grenade.vz = Math.abs(grenade.vz) * GRENADE_BOUNCE;
-      }
+      // 物理与服务端 `stepGrenade` 是**同一个函数**（shared/grenade-physics.ts）：
+      // 重力、地面反弹、64 个掩体 AABB 的推出反弹、场地边界一次全做，
+      // 因此本地预测不会再出现"手雷直线穿墙飞进掩体"的视觉脱节。
+      stepGrenadePhysics(grenade, dtSeconds, GRENADE_COLLIDERS);
 
       grenade.mesh.position.set(grenade.x, grenade.y, grenade.z);
       grenade.mesh.rotation.x += dtSeconds * 8;

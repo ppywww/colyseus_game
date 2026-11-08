@@ -41,7 +41,12 @@ const GROUND_FRICTION = 0.82;
 const REST_SPEED_Y = 0.6;
 
 /** 单个子步允许的最大位移（米）：取碰撞半径，保证一步不会跨过任何一个 AABB 的厚度。 */
-const MAX_SUBSTEP_DISTANCE = GRENADE_RADIUS;
+function maxSubstepDistance(): number {
+  // 注意：本模块与 index.ts 构成再导出环，**模块初始化期不能读取 index.ts 的常量**
+  // （`export ... from "./grenade-physics.js"` 会让本文件先于 index.ts 的常量求值），
+  // 所以 GRENADE_RADIUS 只能在函数体内读，不能提到模块顶层赋给 const。
+  return GRENADE_RADIUS;
+}
 
 /** 子步数上限：防止异常速度（如被作弊客户端上报的 1000 m/s）把单帧计算量放大。 */
 const MAX_SUBSTEPS = 8;
@@ -65,7 +70,7 @@ export function stepGrenadePhysics(
   const distance = Number.isFinite(speed) ? speed * dtSeconds : 0;
   const substeps = Math.max(
     1,
-    Math.min(MAX_SUBSTEPS, Math.ceil(distance / MAX_SUBSTEP_DISTANCE)),
+    Math.min(MAX_SUBSTEPS, Math.ceil(distance / maxSubstepDistance())),
   );
   const stepSeconds = dtSeconds / substeps;
 

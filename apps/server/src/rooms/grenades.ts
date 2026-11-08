@@ -7,12 +7,9 @@
  */
 
 import {
-  MAP_BOUNDS,
-  GRENADE_BOUNCE,
-  GRENADE_GRAVITY,
-  GRENADE_RADIUS,
   PLAYER_HEIGHT,
   THROW_MAX_PITCH,
+  stepGrenadePhysics,
   type Aabb,
   type ThrowableType,
 } from "@colyseus-fps/shared";
@@ -60,92 +57,19 @@ export function clampThrowDirection(dir: Vec3): Vec3 {
   return { x: dir.x * scale, y: clampedY, z: dir.z * scale };
 }
 
-/** 推进一个物理步长（秒）：重力、地面与掩体反弹、场地边界。 */
+/**
+ * 推进一个物理步长（秒）：重力、地面与掩体反弹、场地边界。
+ *
+ * 实体逻辑已提到 `@colyseus-fps/shared` 的 `stepGrenadePhysics`：客户端的本地预测渲染
+ * 调的是同一个函数，两端不再各写一份（旧版客户端漏了掩体求交，手雷会穿墙）。
+ * 这里保留原函数名与签名，因为房间代码与 `tests/grenades.test.ts` 都在直接调用它。
+ */
 export function stepGrenade(
   grenade: GrenadeState,
   dtSeconds: number,
   obstacles: readonly Aabb[],
 ): void {
-  grenade.vy -= GRENADE_GRAVITY * dtSeconds;
-  grenade.x += grenade.vx * dtSeconds;
-  grenade.y += grenade.vy * dtSeconds;
-  grenade.z += grenade.vz * dtSeconds;
-
-  // 地面
-  if (grenade.y < GRENADE_RADIUS) {
-    grenade.y = GRENADE_RADIUS;
-    if (grenade.vy < 0) {
-      grenade.vy = -grenade.vy * GRENADE_BOUNCE;
-      grenade.vx *= 0.82;
-      grenade.vz *= 0.82;
-      if (Math.abs(grenade.vy) < 0.6) {
-        grenade.vy = 0;
-      }
-    }
-  }
-
-  // 掩体：按最小穿透轴推出并反弹对应分量
-  for (const box of obstacles) {
-    const insideX = grenade.x > box.minX - GRENADE_RADIUS && grenade.x < box.maxX + GRENADE_RADIUS;
-    const insideZ = grenade.z > box.minZ - GRENADE_RADIUS && grenade.z < box.maxZ + GRENADE_RADIUS;
-    if (!insideX || !insideZ) {
-      continue;
-    }
-
-    // 从上方落下：停在箱顶
-    if (grenade.y >= box.maxY && grenade.y - GRENADE_RADIUS <= box.maxY) {
-      grenade.y = box.maxY + GRENADE_RADIUS;
-      grenade.vy = grenade.vy < 0 ? -grenade.vy * GRENADE_BOUNCE : grenade.vy;
-      grenade.vx *= 0.82;
-      grenade.vz *= 0.82;
-      continue;
-    }
-
-    if (grenade.y < box.minY || grenade.y > box.maxY) {
-      continue;
-    }
-
-    const pushLeft = grenade.x - (box.minX - GRENADE_RADIUS);
-    const pushRight = box.maxX + GRENADE_RADIUS - grenade.x;
-    const pushBack = grenade.z - (box.minZ - GRENADE_RADIUS);
-    const pushFront = box.maxZ + GRENADE_RADIUS - grenade.z;
-    const minPush = Math.min(pushLeft, pushRight, pushBack, pushFront);
-
-    if (minPush === pushLeft) {
-      grenade.x = box.minX - GRENADE_RADIUS;
-      grenade.vx = -Math.abs(grenade.vx) * GRENADE_BOUNCE;
-    } else if (minPush === pushRight) {
-      grenade.x = box.maxX + GRENADE_RADIUS;
-      grenade.vx = Math.abs(grenade.vx) * GRENADE_BOUNCE;
-    } else if (minPush === pushBack) {
-      grenade.z = box.minZ - GRENADE_RADIUS;
-      grenade.vz = -Math.abs(grenade.vz) * GRENADE_BOUNCE;
-    } else {
-      grenade.z = box.maxZ + GRENADE_RADIUS;
-      grenade.vz = Math.abs(grenade.vz) * GRENADE_BOUNCE;
-    }
-  }
-
-  // 场地边界：矩形的四面外墙（逐轴 clamp + 对应速度分量反向）。
-  // 权威侧必须是矩形：客户端 throwables.ts 用同一套算法做本地预测，两端才会落在同一位置。
-  const maxX = MAP_BOUNDS.maxX - GRENADE_RADIUS;
-  const minX = MAP_BOUNDS.minX + GRENADE_RADIUS;
-  const maxZ = MAP_BOUNDS.maxZ - GRENADE_RADIUS;
-  const minZ = MAP_BOUNDS.minZ + GRENADE_RADIUS;
-  if (grenade.x > maxX) {
-    grenade.x = maxX;
-    grenade.vx = -Math.abs(grenade.vx) * GRENADE_BOUNCE;
-  } else if (grenade.x < minX) {
-    grenade.x = minX;
-    grenade.vx = Math.abs(grenade.vx) * GRENADE_BOUNCE;
-  }
-  if (grenade.z > maxZ) {
-    grenade.z = maxZ;
-    grenade.vz = -Math.abs(grenade.vz) * GRENADE_BOUNCE;
-  } else if (grenade.z < minZ) {
-    grenade.z = minZ;
-    grenade.vz = Math.abs(grenade.vz) * GRENADE_BOUNCE;
-  }
+  stepGrenadePhysics(grenade, dtSeconds, obstacles);
 }
 
 /** 视线是否被掩体遮挡（从 from 到 to）。 */

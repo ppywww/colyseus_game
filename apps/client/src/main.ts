@@ -17,7 +17,30 @@ import type {
 } from "@colyseus-fps/shared";
 import "./style.css";
 
-const defaultServerUrl: string = import.meta.env.VITE_COLYSEUS_URL ?? `ws://localhost:${DEFAULT_SERVER_PORT}`;
+/**
+ * 默认服务端地址的推导顺序：
+ * 1. 构建时显式注入的 VITE_COLYSEUS_URL 优先（可指向任意独立部署的服务端）；
+ * 2. 本地开发（localhost / 127.0.0.1）直连本机服务端端口；
+ * 3. 线上部署（页面由 nginx 托管）走同源 /fps-ws 反向代理，自动跟随 http/https 切换 ws/wss，
+ *    这样换域名、加 HTTPS、迁移服务器都不需要重新构建前端。
+ */
+function resolveDefaultServerUrl(): string {
+  const injected: string | undefined = import.meta.env.VITE_COLYSEUS_URL;
+  if (injected !== undefined && injected.trim().length > 0) {
+    return injected.trim();
+  }
+
+  const { protocol, hostname, host } = window.location;
+  const isLocal: boolean = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+  if (isLocal) {
+    return `ws://localhost:${DEFAULT_SERVER_PORT}`;
+  }
+
+  const wsProtocol: string = protocol === "https:" ? "wss:" : "ws:";
+  return `${wsProtocol}//${host}/fps-ws`;
+}
+
+const defaultServerUrl: string = resolveDefaultServerUrl();
 
 function requiredElement<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);

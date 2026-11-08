@@ -23,6 +23,20 @@ interface Effect {
 
 const TRACER_LIFE_MS = 110;
 
+/**
+ * 枪口火光在相机坐标系中的基准位置（fov 80 单 pass 方案，见参考文档 2.6.1）。
+ * 运行时会被 {@link CombatEffects#setMuzzleOffset} 用视模型枪口挂点的实时偏移覆盖，
+ * 这里的值只作为「视模型还没初始化好」时的兜底。
+ */
+const MUZZLE_OFFSET = { x: 0.205, y: -0.169, z: -0.997 } as const;
+
+/** 点光源位置：比火光 sprite 略靠近相机、略高，方便照亮墙面。 */
+const MUZZLE_LIGHT_OFFSET = { x: 0.205, y: -0.165, z: -0.985 } as const;
+
+/** 火光 sprite 缩放区间：0.22 占屏高 13.5%，0.28 ≈ 15.9%（旧值 0.45 会占 27.6%，明显过大）。 */
+const MUZZLE_SCALE_MIN = 0.22;
+const MUZZLE_SCALE_RANGE = 0.06;
+
 /** 生成径向渐变贴图（火花 / 烟雾 / 枪口火光共用）。 */
 function radialTexture(inner: string, outer: string, size = 64): THREE.Texture {
   const canvas = document.createElement("canvas");
@@ -66,14 +80,25 @@ export class CombatEffects {
         opacity: 0,
       }),
     );
-    this.muzzle.scale.set(0.45, 0.45, 1);
-    this.muzzle.position.set(0.22, -0.16, -0.75);
+    this.muzzle.scale.set(MUZZLE_SCALE_MIN, MUZZLE_SCALE_MIN, 1);
+    this.muzzle.position.set(MUZZLE_OFFSET.x, MUZZLE_OFFSET.y, MUZZLE_OFFSET.z);
     this.muzzle.visible = false;
     this.camera.add(this.muzzle);
 
     this.muzzleLight = new THREE.PointLight(0xffd9a0, 0, 14, 2);
-    this.muzzleLight.position.set(0.22, -0.12, -0.7);
+    this.muzzleLight.position.set(MUZZLE_LIGHT_OFFSET.x, MUZZLE_LIGHT_OFFSET.y, MUZZLE_LIGHT_OFFSET.z);
     this.camera.add(this.muzzleLight);
+  }
+
+  /**
+   * 同步枪口火光的挂点（相机坐标系）。
+   *
+   * 视模型每帧把枪口挂点的世界位置换算回相机空间后传进来，火光与点光源因此
+   * 会跟着后坐、换弹、投掷一起动——这是「火光始终贴在枪口帽正前方」的关键。
+   */
+  public setMuzzleOffset(offset: { x: number; y: number; z: number }): void {
+    this.muzzle.position.set(offset.x, offset.y, offset.z);
+    this.muzzleLight.position.set(offset.x, offset.y + 0.004, offset.z + 0.012);
   }
 
   /** 弹道轨迹：从枪口到命中点的短促亮线。 */
@@ -99,7 +124,7 @@ export class CombatEffects {
     this.muzzleUntil = nowMs + 45;
     this.muzzle.visible = true;
     this.muzzle.material.rotation = Math.random() * Math.PI;
-    const scale = 0.38 + Math.random() * 0.16;
+    const scale = MUZZLE_SCALE_MIN + Math.random() * MUZZLE_SCALE_RANGE;
     this.muzzle.scale.set(scale, scale, 1);
     this.muzzleLight.intensity = 9;
   }

@@ -86,13 +86,37 @@ describe("computeShot", () => {
   });
 
   it("掩体挡住射线时不命中", () => {
-    // 中心掩体位于 (0,0) 6×2.4×6，A 在 z=8 朝 -Z 打 z=-8 的 B
+    // 显式给一块 6×2.4×6 的掩体（旧版这里读真实地图的中心箱）；
+    // 地图改版后 64 个体块的相对位置会变，本用例只校验"射线-AABB 求交"这件事本身。
+    const centerBox = { minX: -3, maxX: 3, minY: 0, maxY: 2.4, minZ: -3, maxZ: 3 };
     const players = [makePlayer("A", 0, 8), makePlayer("B", 0, -8)];
-    const shot = computeShot(players, "A", obstacleColliders());
+    const shot = computeShot(players, "A", [centerBox]);
     assert.ok(shot !== null);
     assert.equal(shot.hitPlayerId, null);
     // 弹道应止于掩体前表面 z=3
     assert.ok(Math.abs(shot.hit.z - 3) < 1e-6);
+  });
+
+  it("真实地图回归：中路东墙（W8b）挡住 x 方向的子弹", () => {
+    // 真实地图：W8b 位于 x 4…6、z 0…8、高 4m，正好横在 (0,4) → (9,4) 这条 +X 枪线上。
+    // 这条用例吃的是 shared 的 OBSTACLES 数据，地图一旦被改动（墙挪位/矮到 1.6m 以下）会立刻失败。
+    const players = [makePlayer("A", 0, 4, -Math.PI / 2), makePlayer("B", 9, 4)];
+    const shot = computeShot(players, "A", obstacleColliders());
+    assert.ok(shot !== null);
+    assert.equal(shot.hitPlayerId, null, "墙后的目标不应被命中");
+    // 弹道应止于 W8b 的西表面 x = 4
+    assert.ok(Math.abs(shot.hit.x - 4) < 0.05, `弹道应止于墙前 x≈4，实际 ${shot.hit.x.toFixed(2)}`);
+    assert.ok(Math.abs(shot.hit.z - 4) < 1e-6);
+  });
+
+  it("真实地图回归：中路空走廊内 10m 对枪应命中（无墙遮挡）", () => {
+    // 真实地图：x −4…4、z −11…8 是中路空走廊（W6x/W8x 在 |x| ≥ 4，M1/M5 都在 z < −7）
+    const players = [makePlayer("A", -1.5, 7, 0), makePlayer("B", -1.5, -3)];
+    const shot = computeShot(players, "A", obstacleColliders());
+    assert.ok(shot !== null);
+    assert.equal(shot.hitPlayerId, "B", "空走廊内应命中目标");
+    // 命中点应在目标圆柱表面：z = −3 + 半径 0.35
+    assert.ok(Math.abs(shot.hit.z - (-3 + 0.35)) < 1e-6, `命中点 z 应约 −2.65，实际 ${shot.hit.z}`);
   });
 
   it("多名敌人时命中最近的一个", () => {

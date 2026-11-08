@@ -7,7 +7,7 @@
  */
 
 import {
-  ARENA_RADIUS,
+  MAP_BOUNDS,
   GRENADE_BOUNCE,
   GRENADE_GRAVITY,
   GRENADE_RADIUS,
@@ -126,19 +126,25 @@ export function stepGrenade(
     }
   }
 
-  // 场地边界：圆形围墙内反弹
-  const radial = Math.hypot(grenade.x, grenade.z);
-  const limit = ARENA_RADIUS - GRENADE_RADIUS;
-  if (radial > limit) {
-    const nx = grenade.x / radial;
-    const nz = grenade.z / radial;
-    grenade.x = nx * limit;
-    grenade.z = nz * limit;
-    const vn = grenade.vx * nx + grenade.vz * nz;
-    if (vn > 0) {
-      grenade.vx -= (1 + GRENADE_BOUNCE) * vn * nx;
-      grenade.vz -= (1 + GRENADE_BOUNCE) * vn * nz;
-    }
+  // 场地边界：矩形的四面外墙（逐轴 clamp + 对应速度分量反向）。
+  // 权威侧必须是矩形：客户端 throwables.ts 用同一套算法做本地预测，两端才会落在同一位置。
+  const maxX = MAP_BOUNDS.maxX - GRENADE_RADIUS;
+  const minX = MAP_BOUNDS.minX + GRENADE_RADIUS;
+  const maxZ = MAP_BOUNDS.maxZ - GRENADE_RADIUS;
+  const minZ = MAP_BOUNDS.minZ + GRENADE_RADIUS;
+  if (grenade.x > maxX) {
+    grenade.x = maxX;
+    grenade.vx = -Math.abs(grenade.vx) * GRENADE_BOUNCE;
+  } else if (grenade.x < minX) {
+    grenade.x = minX;
+    grenade.vx = Math.abs(grenade.vx) * GRENADE_BOUNCE;
+  }
+  if (grenade.z > maxZ) {
+    grenade.z = maxZ;
+    grenade.vz = -Math.abs(grenade.vz) * GRENADE_BOUNCE;
+  } else if (grenade.z < minZ) {
+    grenade.z = minZ;
+    grenade.vz = Math.abs(grenade.vz) * GRENADE_BOUNCE;
   }
 }
 

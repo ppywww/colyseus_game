@@ -1,7 +1,8 @@
 /**
  * S3 战斗集成测试：双真实客户端验证服务端权威开火/命中/击杀/重生。
  *
- * 场景：A 在 (5,0,8) 朝 -Z（yaw=0），B 在 (5,0,2)，两点间无掩体。
+ * 场景：A 在 (−1.5,0,7) 朝 -Z（yaw=0），B 在 (−1.5,0,1)，两点间无掩体
+ * （坐标已按沙漠迷城地图校验：中路 x −4…4、z −11…8 是空走廊，旧的 (5,·) 现在落在 W8b 墙体里）。
  * A 连续开火 4 次（每次间隔大于冷却），B 应扣血至死、A 计 1 杀，
  * 随后 B 在重生延迟后满血复活且 respawnSeq 自增。
  */
@@ -109,11 +110,11 @@ describe("S3 服务端权威战斗", () => {
       await waitFor(() => stateOf(roomA).players?.size === 2, "双方应进入同一房间");
 
       // 双方上报到无掩体直线位置，A 面向 -Z
-      sendTransform(roomA, 1, 5, 8);
-      sendTransform(roomB, 1, 5, 2);
+      sendTransform(roomA, 1, -1.5, 7);
+      sendTransform(roomB, 1, -1.5, 1);
       await waitFor(() => {
         const a = stateOf(roomB).players.get(roomA.sessionId);
-        return a !== undefined && Math.abs(a.z - 8) < 0.01;
+        return a !== undefined && Math.abs(a.z - 7) < 0.01;
       }, "A 的位置应同步到服务端并下发");
 
       // 连续两发：第二发在冷却内，应被限流

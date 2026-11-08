@@ -5,6 +5,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
+import { MAP_BOUNDS } from "@colyseus-fps/shared";
+
 import {
   DEFAULT_PHYSICS,
   stepPlayer,
@@ -25,6 +27,13 @@ const NO_INPUT: MoveInput = {
 function spawn(): PlayerKinematics {
   return { x: 0, y: 0, z: 0, vy: 0, yaw: 0, pitch: 0, grounded: true };
 }
+
+describe("物理默认值与共享常数一致", () => {
+  it("DEFAULT_PHYSICS.bounds 必须等于 shared 的 MAP_BOUNDS（单一真相，防止两处漂移）", () => {
+    // deepEqual 同时锁住了四个边界值：任何一侧被改动（含改 shared）都会红
+    assert.deepEqual(DEFAULT_PHYSICS.bounds, MAP_BOUNDS);
+  });
+});
 
 describe("stepPlayer 移动", () => {
   it("yaw=0 前进应向 -Z 移动", () => {
@@ -67,11 +76,34 @@ describe("stepPlayer 移动", () => {
     assert.equal(k.grounded, true);
   });
 
-  it("超出场地边界应被钳制", () => {
+  it("超出场地边界应被钳制（矩形可玩区）", () => {
     const k = spawn();
-    k.x = DEFAULT_PHYSICS.arenaRadius * 2;
+    k.x = DEFAULT_PHYSICS.bounds.maxX * 2;
     stepPlayer(k, NO_INPUT, 0.016, []);
-    assert.ok(Math.abs(k.x) <= DEFAULT_PHYSICS.arenaRadius);
+    assert.ok(Math.abs(k.x) <= DEFAULT_PHYSICS.bounds.maxX);
+  });
+
+  it("矩形边界：走到地图四角应贴住外墙，而不是被拽向中心", () => {
+    const k = spawn();
+    k.x = DEFAULT_PHYSICS.bounds.maxX + 5;
+    k.z = DEFAULT_PHYSICS.bounds.maxZ + 5;
+    stepPlayer(k, NO_INPUT, 0.016, []);
+
+    const limitX = DEFAULT_PHYSICS.bounds.maxX - DEFAULT_PHYSICS.playerRadius;
+    const limitZ = DEFAULT_PHYSICS.bounds.maxZ - DEFAULT_PHYSICS.playerRadius;
+    assert.ok(Math.abs(k.x - limitX) < 1e-6, `期望 x 贴住外墙 ${limitX}，实际 ${k.x}`);
+    assert.ok(Math.abs(k.z - limitZ) < 1e-6, `期望 z 贴住外墙 ${limitZ}，实际 ${k.z}`);
+    // 圆形钳制会把 (35,35) 拉回到半径 29.65 的圆弧上（约 21m），这里必须仍是 29.65/29.65
+    assert.ok(Math.hypot(k.x, k.z) > 40, `角落不应被拽向中心，实际半径 ${Math.hypot(k.x, k.z)}`);
+  });
+
+  it("逐轴钳制：单轴越界不影响另一轴", () => {
+    const k = spawn();
+    k.x = -DEFAULT_PHYSICS.bounds.maxX * 3;
+    k.z = 12;
+    stepPlayer(k, NO_INPUT, 0.016, []);
+    assert.ok(Math.abs(k.x + (DEFAULT_PHYSICS.bounds.maxX - DEFAULT_PHYSICS.playerRadius)) < 1e-6);
+    assert.ok(Math.abs(k.z - 12) < 1e-6, "z 不应被边界影响");
   });
 });
 

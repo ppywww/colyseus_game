@@ -14,12 +14,14 @@
 import * as THREE from "three";
 
 import {
-  ARENA_RADIUS,
   CLIENT_INTERPOLATION_DELAY_MS,
   EYE_HEIGHT,
+  MAP_BOUNDS,
   PLAYER_TRANSFORM_RATE_HZ,
+  SPAWN_POINTS,
   THROWABLES,
   THROWABLE_TYPES,
+  THROW_COOLDOWN_MS,
   WEAPON_COOLDOWN_MS,
   WEAPON_MAG_SIZE,
   WEAPON_RELOAD_MS,
@@ -41,7 +43,7 @@ import { CombatEffects } from "./effects.js";
 import { Hud } from "./hud.js";
 import { InputController } from "./input.js";
 import { RemotePlayerManager } from "./remote-players.js";
-import { buildArena, obstacleColliders } from "./map.js";
+import { ARENA_FOG, ARENA_SKY_COLOR, buildArena, obstacleColliders } from "./map.js";
 import {
   DEFAULT_PHYSICS,
   stepPlayer,
@@ -63,6 +65,25 @@ const SPREAD_BASE = 3;
 const SPREAD_PER_SHOT = 7;
 const SPREAD_MOVE = 4;
 const SPREAD_RECOVER_PER_SECOND = 26;
+
+/**
+ * 用最近的固定出生点决定出生朝向。
+ *
+ * 旧实现用 `Math.atan2(-spawn.x, -spawn.z)`（面向地图中心），会让所有玩家朝同一个点扎堆，
+ * 与沙漠迷城的「T 在南朝北、CT 在北朝南」完全相反。现在按服务端出生表取 yaw。
+ */
+function spawnYawFor(x: number, z: number): number {
+  let bestYaw = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const point of SPAWN_POINTS) {
+    const distance = Math.hypot(point.x - x, point.z - z);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestYaw = point.yaw;
+    }
+  }
+  return bestYaw;
+}
 
 export class Game {
   private readonly renderer: THREE.WebGLRenderer;
@@ -115,8 +136,9 @@ export class Game {
     spawn: { x: number; y: number; z: number },
   ) {
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0b1220);
-    this.scene.fog = new THREE.Fog(0x0b1220, 25, ARENA_RADIUS + 25);
+    // 沙漠天空 + 暖沙色雾（雾 near = 40m，视模型最远 0.97m，绝不会被雾影响）
+    this.scene.background = new THREE.Color(ARENA_SKY_COLOR);
+    this.scene.fog = new THREE.Fog(ARENA_FOG.color, ARENA_FOG.near, ARENA_FOG.far);
 
     this.camera = new THREE.PerspectiveCamera(
       80,
@@ -132,6 +154,9 @@ export class Game {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // ACES 色调映射：把 2.0 强度的暖阳压回不溢出的范围，沙漠高光才有层次
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
     container.append(this.renderer.domElement);
 
     this.scene.add(buildArena());
@@ -148,7 +173,7 @@ export class Game {
       y: spawn.y,
       z: spawn.z,
       vy: 0,
-      yaw: Math.atan2(-spawn.x, -spawn.z), // 面向场地中心
+      yaw: spawnYawFor(spawn.x, spawn.z), // 面向敌方半场（T 朝北 / CT 朝南）
       pitch: 0,
       grounded: true,
     };
@@ -215,7 +240,7 @@ export class Game {
     this.ammo = Math.max(0, this.ammo - 1);
     this.effects.muzzleFlash(nowMs);
     this.audio.gunshot();
-    this.viewModel.recoil();
+    this.viewModel.recoil(nowMs);
     this.recoilPitch -= RECOIL_PITCH;
     this.recoilYaw += (Math.random() - 0.5) * RECOIL_YAW * 2;
     this.shake = Math.min(1, this.shake + 0.18);
@@ -386,7 +411,7 @@ export class Game {
       this.kinematics.y = self.y;
       this.kinematics.z = self.z;
       this.kinematics.vy = 0;
-      this.kinematics.yaw = Math.atan2(-self.x, -self.z);
+      this.kinematics.yaw = spawnYawFor(self.x, self.z);
       this.kinematics.pitch = 0;
       this.recoilPitch = 0;
       this.recoilYaw = 0;
@@ -466,7 +491,7 @@ export class Game {
       locked && this.selfAlive ? moveInput : idle,
       dtSeconds,
       this.colliders,
-      { ...DEFAULT_PHYSICS, arenaRadius: ARENA_RADIUS },
+      { ...DEFAULT_PHYSICS, bounds: MAP_BOUNDS },
     );
 
     // 相机（含抖动）
@@ -508,7 +533,18 @@ export class Game {
       this.kinematics.grounded;
     const reloadProgress =
       this.reloadEndAt > Date.now() ? 1 - (this.reloadEndAt - Date.now()) / WEAPON_RELOAD_MS : 0;
-    this.viewModel.update(dtSeconds, moving, this.kinematics.grounded, reloadProgress);
+    // 视模型：五态动画（idle / walk / fire / reload / throw）全部由这里驱动
+    this.viewModel.update(dtSeconds, {
+      moving,
+      sprinting: moveInput.sprint,
+      grounded: this.kinematics.grounded,
+      verticalSpeed: this.kinematics.vy,
+      reloadProgress,
+      throwing: nowMs - this.lastThrowAt < THROW_COOLDOWN_MS,
+      firingAt: this.lastFireAt,
+    });
+    // 让枪口火光贴着枪口帽走（后坐/换弹/投掷时一起位移）
+    this.effects.setMuzzleOffset(this.viewModel.getMuzzleWorldOffset());
 
     // 准星扩散回弹
     const baseSpread = SPREAD_BASE + (moving ? SPREAD_MOVE : 0);
@@ -586,7 +622,7 @@ export class Game {
     this.remotePlayers.dispose();
     this.throwables.dispose();
     this.effects.dispose();
-    this.viewModel.dispose(this.camera);
+    this.viewModel.dispose();
     this.audio.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();

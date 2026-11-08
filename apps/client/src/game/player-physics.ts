@@ -3,8 +3,11 @@
  *
  * 参考 threejs-fps-controls 的基本碰撞思路：WASD 平面移动 + 重力跳跃，
  * 玩家视为 AABB，与地图箱体做最小平移轴（MTA）推出。
+ * 场地边界是矩形（逐轴钳制），与 shared 的 MAP_BOUNDS / 服务端 transform.ts 保持一致。
  * S2 客户端权威移动；S3 将改为服务端权威模拟，这里保留纯函数形态便于迁移。
  */
+
+import { MAP_BOUNDS } from "@colyseus-fps/shared";
 
 export interface PlayerKinematics {
   /** 脚底位置（米） */
@@ -36,8 +39,22 @@ export interface Aabb {
   maxZ: number;
 }
 
+/** 可玩区矩形（米，与 shared 的 MAP_BOUNDS 同构）。 */
+export interface BoundsRect {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+}
+
 export interface PhysicsOptions {
-  arenaRadius: number;
+  /**
+   * 可玩区矩形：逐轴钳制，玩家贴到任意一堵外墙都会停下。
+   *
+   * 旧实现是 `arenaRadius`（圆形边界），在 64×64 的矩形地图里会让四角出现
+   * 「被一股力量拽向场地中心」的诡异手感，且与服务端 transform.ts 的逐轴 ±30 钳制不一致。
+   */
+  bounds: BoundsRect;
   playerRadius: number;
   playerHeight: number;
   walkSpeed: number;
@@ -48,7 +65,8 @@ export interface PhysicsOptions {
 }
 
 export const DEFAULT_PHYSICS: PhysicsOptions = {
-  arenaRadius: 30,
+  // 唯一真相来自 shared 的 MAP_BOUNDS（与服务端 transform.ts、手雷反弹共用同一份常数）
+  bounds: { ...MAP_BOUNDS },
   playerRadius: 0.35,
   playerHeight: 1.8,
   walkSpeed: 5,
@@ -112,14 +130,10 @@ export function stepPlayer(
     kinematics.grounded = true;
   }
 
-  // 场地边界（圆形）
-  const limit = options.arenaRadius - options.playerRadius;
-  const dist = Math.hypot(kinematics.x, kinematics.z);
-  if (dist > limit) {
-    const scale = limit / dist;
-    kinematics.x *= scale;
-    kinematics.z *= scale;
-  }
+  // 场地边界（矩形，逐轴钳制并内缩玩家半径）
+  const radius = options.playerRadius;
+  kinematics.x = Math.min(options.bounds.maxX - radius, Math.max(options.bounds.minX + radius, kinematics.x));
+  kinematics.z = Math.min(options.bounds.maxZ - radius, Math.max(options.bounds.minZ + radius, kinematics.z));
 
   // 箱体碰撞：最小平移轴推出
   for (const box of colliders) {

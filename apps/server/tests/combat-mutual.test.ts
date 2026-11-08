@@ -4,7 +4,7 @@
  * 背景：实际联机中出现「玩家1 打玩家2 有伤害，玩家2 打玩家1 不扣血」。
  * 本用例把双方摆在同一直线上互相面对，交替开火，验证两个方向都扣血。
  *
- * 场景：A(5,0,8) yaw=0 朝 -Z；B(5,0,2) yaw=π 朝 +Z；中间无掩体。
+ * 场景：A(−1.5,0,7) yaw=0 朝 -Z；B(−1.5,0,1) yaw=π 朝 +Z；中间无掩体（中路空走廊）。
  */
 
 import assert from "node:assert/strict";
@@ -100,13 +100,13 @@ describe("双向对射", () => {
     try {
       await waitFor(() => stateOf(roomA).players?.size === 2, "双方进入同一房间");
 
-      // 面对面：A 在 z=8 朝 -Z，B 在 z=2 朝 +Z
-      aim(roomA, 1, 5, 8, 0);
-      aim(roomB, 1, 5, 2, Math.PI);
+      // 面对面：A 在 z=7 朝 -Z，B 在 z=1 朝 +Z
+      aim(roomA, 1, -1.5, 7, 0);
+      aim(roomB, 1, -1.5, 1, Math.PI);
       await waitFor(() => {
         const a = stateOf(roomB).players.get(roomA.sessionId);
         const b = stateOf(roomB).players.get(roomB.sessionId);
-        return a !== undefined && b !== undefined && Math.abs(a.z - 8) < 0.01 && Math.abs(b.z - 2) < 0.01;
+        return a !== undefined && b !== undefined && Math.abs(a.z - 7) < 0.01 && Math.abs(b.z - 1) < 0.01;
       }, "位置同步完成");
 
       // 方向一：A 打 B

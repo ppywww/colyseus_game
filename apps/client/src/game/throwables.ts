@@ -8,7 +8,7 @@
 import * as THREE from "three";
 
 import {
-  ARENA_RADIUS,
+  MAP_BOUNDS,
   GRENADE_BOUNCE,
   GRENADE_GRAVITY,
   GRENADE_RADIUS,
@@ -206,18 +206,25 @@ export class ThrowableSystem {
         }
       }
 
-      const radial = Math.hypot(grenade.x, grenade.z);
-      const limit = ARENA_RADIUS - GRENADE_RADIUS;
-      if (radial > limit) {
-        const nx = grenade.x / radial;
-        const nz = grenade.z / radial;
-        grenade.x = nx * limit;
-        grenade.z = nz * limit;
-        const vn = grenade.vx * nx + grenade.vz * nz;
-        if (vn > 0) {
-          grenade.vx -= (1 + GRENADE_BOUNCE) * vn * nx;
-          grenade.vz -= (1 + GRENADE_BOUNCE) * vn * nz;
-        }
+      // 场地边界：矩形反弹（逐轴 clamp + 对应速度分量反向），与服务端 stepGrenade 完全一致。
+      // 圆形钳制在 64×64 矩形地图里会把角落的手雷"吸"向中心，导致客户端预测与服务端位置打架。
+      const maxX = MAP_BOUNDS.maxX - GRENADE_RADIUS;
+      const minX = MAP_BOUNDS.minX + GRENADE_RADIUS;
+      const maxZ = MAP_BOUNDS.maxZ - GRENADE_RADIUS;
+      const minZ = MAP_BOUNDS.minZ + GRENADE_RADIUS;
+      if (grenade.x > maxX) {
+        grenade.x = maxX;
+        grenade.vx = -Math.abs(grenade.vx) * GRENADE_BOUNCE;
+      } else if (grenade.x < minX) {
+        grenade.x = minX;
+        grenade.vx = Math.abs(grenade.vx) * GRENADE_BOUNCE;
+      }
+      if (grenade.z > maxZ) {
+        grenade.z = maxZ;
+        grenade.vz = -Math.abs(grenade.vz) * GRENADE_BOUNCE;
+      } else if (grenade.z < minZ) {
+        grenade.z = minZ;
+        grenade.vz = Math.abs(grenade.vz) * GRENADE_BOUNCE;
       }
 
       grenade.mesh.position.set(grenade.x, grenade.y, grenade.z);

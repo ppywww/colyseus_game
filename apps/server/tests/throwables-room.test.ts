@@ -112,13 +112,13 @@ describe("S4 投掷物与弹药", () => {
     try {
       await waitFor(() => stateOf(roomA).players?.size === 2, "双方进入同一房间");
 
-      // 面对面：A 在 z=8 朝 -Z，B 在 z=4 朝 +Z（相距 4 米，正对投掷）
-      aim(roomA, 1, 5, 8, 0);
-      aim(roomB, 1, 5, 4, Math.PI);
+      // 面对面：A 在 z=7 朝 -Z，B 在 z=3.5 朝 +Z（相距 3.5 米，正对投掷，中路空走廊）
+      aim(roomA, 1, -1.5, 7, 0);
+      aim(roomB, 1, -1.5, 3.5, Math.PI);
       await waitFor(() => {
         const a = stateOf(roomA).players.get(roomA.sessionId);
         const b = stateOf(roomA).players.get(roomB.sessionId);
-        return a !== undefined && b !== undefined && Math.abs(a.z - 8) < 0.05 && Math.abs(b.z - 4) < 0.05;
+        return a !== undefined && b !== undefined && Math.abs(a.z - 7) < 0.05 && Math.abs(b.z - 3.5) < 0.05;
       }, "位置同步完成");
 
       const fragsBefore = stateOf(roomA).players.get(roomA.sessionId)!.frags;

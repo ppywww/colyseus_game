@@ -2,7 +2,6 @@ import { Room, type Client } from "@colyseus/core";
 import type { Logger } from "pino";
 
 import {
-  ARENA_RADIUS,
   EYE_HEIGHT,
   GAME_TICK_INTERVAL_MS,
   MAX_DISPLAY_NAME_LENGTH,
@@ -11,6 +10,7 @@ import {
   PLAYER_MAX_HP,
   PLAYER_RESPAWN_DELAY_MS,
   PROTOCOL_VERSION,
+  SPAWN_POINTS,
   THROWABLES,
   THROW_COOLDOWN_MS,
   THROW_ORIGIN_FORWARD,
@@ -30,6 +30,8 @@ import {
   type KillMessage,
   type PingMessage,
   type PongMessage,
+  type SpawnPoint,
+  type TeamId,
   type ThrowableType,
   type ThrowMessage,
 } from "@colyseus-fps/shared";
@@ -91,18 +93,24 @@ function setCountOf(player: Player, type: ThrowableType, value: number): void {
   player[inventoryFieldOf(type)] = Math.max(0, Math.min(255, value));
 }
 
+/** 出生表异常时的兜底点位（正常不会用到，仅为避免非空断言）。 */
+const FALLBACK_SPAWN: SpawnPoint = { team: "T", x: 0, z: 25, yaw: 0 };
+
 /**
- * 确定性出生点：按加入顺序绕场地中心均匀散开（黄金角分布），
- * 避免玩家重叠出生；S4 可替换为自定义重生逻辑。
- */function nextSpawnPoint(index: number): { x: number; y: number; z: number } {
-  const goldenAngle: number = Math.PI * (3 - Math.sqrt(5));
-  const angle: number = index * goldenAngle;
-  const radius: number = Math.min(ARENA_RADIUS * 0.4, 4 + index * 1.5);
-  return {
-    x: Math.cos(angle) * radius,
-    y: 0,
-    z: Math.sin(angle) * radius,
-  };
+ * 按序号从固定出生表取点：偶数序号进 T 侧、奇数进 CT 侧，同队按 `floor(index/2) % 5` 取槽位。
+ *
+ * 为什么不用旧的「黄金角绕中心撒点」：那张表假设场地是半径 30 的圆形空地，
+ * 在沙漠迷城地图里会把玩家生成到市场建筑群（12×24 的实心块）或墙体内部，
+ * 客户端物理的 MTA 推出会把人弹出来并产生橡皮筋。固定表每条都已按 0.35m 玩家半径校验过。
+ */
+export function nextSpawnPoint(index: number): SpawnPoint {
+  const team: TeamId = index % 2 === 0 ? "T" : "CT";
+  const slots: readonly SpawnPoint[] = SPAWN_POINTS.filter((point) => point.team === team);
+  if (slots.length === 0) {
+    return FALLBACK_SPAWN;
+  }
+  const slot: number = Math.floor(index / 2) % slots.length;
+  return slots[slot] ?? FALLBACK_SPAWN;
 }
 
 /** FPS 对战房间：S1 联机、S2 位置同步、S3 服务端权威战斗、S4 弹药与投掷物。 */
@@ -116,6 +124,8 @@ export class FPSBattleRoom extends Room<BattleState> {
   /** 飞行中的投掷物（服务端权威模拟）。 */
   private readonly grenades = new Map<number, GrenadeState>();
   private nextGrenadeId = 1;
+  /** 出生点游标：加入与重生共用，保证前 10 次出生互不重叠（之后开始轮转）。 */
+  private spawnCursor = 0;
 
   /** 投掷物模拟步长（毫秒）：比状态同步更密，保证抛物线平滑。 */
   private static readonly GRENADE_STEP_MS = 50;
@@ -214,10 +224,13 @@ export class FPSBattleRoom extends Room<BattleState> {
     player.displayName = sanitizeDisplayName(joinOptions.name, client.sessionId);
     player.joinedAt = Date.now();
 
-    const spawn = nextSpawnPoint(this.state.players.size);
+    const spawn = nextSpawnPoint(this.spawnCursor);
+    this.spawnCursor += 1;
     player.x = spawn.x;
-    player.y = spawn.y;
+    player.y = 0;
     player.z = spawn.z;
+    // 朝向直接取出生表：T 面向 −Z、CT 面向 +Z，不再让所有人朝地图中心扎堆
+    player.yaw = spawn.yaw;
 
     this.state.players.set(client.sessionId, player);
 
@@ -469,10 +482,12 @@ export class FPSBattleRoom extends Room<BattleState> {
       return;
     }
 
-    const spawn = nextSpawnPoint(player.deaths + this.state.players.size);
+    const spawn = nextSpawnPoint(this.spawnCursor);
+    this.spawnCursor += 1;
     player.x = spawn.x;
-    player.y = spawn.y;
+    player.y = 0;
     player.z = spawn.z;
+    player.yaw = spawn.yaw;
     player.hp = PLAYER_MAX_HP;
     player.alive = true;
     player.respawnAt = 0;

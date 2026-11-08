@@ -82,8 +82,38 @@ export interface PongMessage {
  * S2：位置与视角同步
  * ------------------------------------------------------------------ */
 
-/** 场地半径（米）：客户端出生点与移动边界、服务端越界钳制的共同依据。 */
+/**
+ * 可玩区半边长（米）。
+ *
+ * 语义变更（S5 沙漠迷城）：地图从「半径 30 的圆形竞技场」改为 64×64 的矩形城镇，
+ * 本常量保留原名以兼容既有调用方（服务端 transform.ts 的 ±30 逐轴钳制恰好与新可玩区一致），
+ * 数值仍是 30，表示「可玩区从中心向四个方向各延伸 30 米」。
+ * 需要矩形边界时请使用 {@link MAP_BOUNDS}。
+ */
 export const ARENA_RADIUS: number = 30;
+
+/** 地图外框边长（米）：含 2m 外墙，x/z ∈ [−32, 32]。 */
+export const MAP_SIZE: number = 64;
+
+/** 外墙高度（米）：足够阻断视线，玩家不可能跳出。 */
+export const WALL_HEIGHT: number = 6;
+
+/** 外墙厚度（米）。 */
+export const WALL_THICKNESS: number = 2;
+
+/** 矩形可玩区（米）：客户端移动钳制、手雷反弹与服务端越界钳制的共同依据。 */
+export interface MapBounds {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+}
+
+/**
+ * 可玩区矩形（外墙内表面）：与外框 64×64 减去 2m 外墙后完全吻合。
+ * 客户端 `stepPlayer` 与服务端 `sanitizeTransform` 都按 ±30 逐轴钳制，两端天然一致。
+ */
+export const MAP_BOUNDS: MapBounds = { minX: -30, maxX: 30, minZ: -30, maxZ: 30 };
 
 /** 玩家眼睛高度（米）：本地相机与远端模型头顶标签的共同依据。 */
 export const EYE_HEIGHT: number = 1.6;
@@ -164,13 +194,22 @@ export interface KillMessage {
  * 共用同一份数据，保证「所见即所挡」。
  * ------------------------------------------------------------------ */
 
+/**
+ * 障碍物类型：只用于客户端渲染分派（几何体 + 材质 + 装饰件），
+ * 服务端弹道遮挡与客户端物理都只读 AABB，不关心 type。
+ */
+export type ObstacleKind = "wall" | "crate" | "cart" | "barrel" | "palm" | "arch" | "building";
+
 export interface ObstacleSpec {
+  /** 便于日志/调试与平面图核对的语义 id（如 "W2"、"M1"）。 */
+  id: string;
   x: number;
   z: number;
   width: number;
   height: number;
   depth: number;
   color: number;
+  type: ObstacleKind;
 }
 
 /** 轴对齐包围盒（客户端物理与服务端射线遮挡共用）。 */
@@ -183,21 +222,171 @@ export interface Aabb {
   maxZ: number;
 }
 
-/** 掩体布局：中心一块主掩体，四周对称分布（单位：米）。 */
-export const OBSTACLES: readonly ObstacleSpec[] = [
-  { x: 0, z: 0, width: 6, height: 2.4, depth: 6, color: 0x4a5568 },
-  { x: 12, z: 0, width: 3, height: 1.6, depth: 8, color: 0x5a6b7d },
-  { x: -12, z: 0, width: 3, height: 1.6, depth: 8, color: 0x5a6b7d },
-  { x: 0, z: 12, width: 8, height: 1.6, depth: 3, color: 0x5a6b7d },
-  { x: 0, z: -12, width: 8, height: 1.6, depth: 3, color: 0x5a6b7d },
-  { x: 9, z: 9, width: 2.4, height: 3, depth: 2.4, color: 0x6b5a7d },
-  { x: -9, z: 9, width: 2.4, height: 3, depth: 2.4, color: 0x6b5a7d },
-  { x: 9, z: -9, width: 2.4, height: 3, depth: 2.4, color: 0x6b5a7d },
-  { x: -9, z: -9, width: 2.4, height: 3, depth: 2.4, color: 0x6b5a7d },
-  { x: 20, z: 14, width: 4, height: 2, depth: 2, color: 0x50607a },
-  { x: -20, z: -14, width: 4, height: 2, depth: 2, color: 0x50607a },
-  { x: -20, z: 14, width: 4, height: 2, depth: 2, color: 0x50607a },
-  { x: 20, z: -14, width: 4, height: 2, depth: 2, color: 0x50607a },
+/** 各类障碍物的基准渲染色（地貌配色见 docs/参考-CS2视觉与地图.md 3.8.1）。 */
+const OBSTACLE_COLORS: Record<ObstacleKind, number> = {
+  wall: 0xc39a63,
+  building: 0xb0864f,
+  crate: 0xa9713a,
+  cart: 0x8a5a2b,
+  barrel: 0xb4703a,
+  palm: 0x7a5c3a,
+  arch: 0xcda976,
+};
+
+/** 障碍物定义（不含颜色，颜色由 type 推导），便于逐条对照平面图核对。 */
+interface ObstacleSeed {
+  id: string;
+  type: ObstacleKind;
+  x: number;
+  z: number;
+  width: number;
+  height: number;
+  depth: number;
+}
+
+/**
+ * 沙漠迷城（Dust II 风格）实心体块：25 段墙 + 39 个掩体 = 64 个轴对齐盒。
+ *
+ * 硬约束（不要破坏）：
+ *   1. **只允许 AABB**：服务端射线遮挡（rayAabb）与客户端 MTA 推出都只认轴对齐盒；
+ *   2. 高度必须落在「≤1.15m 可跳」或「≥1.4m 必绕」两档，1.16–1.39 是灰区（会表现成跳不上去的黏滑手感）；
+ *   3. 门洞（中门 4m、A 坡道 4m、B 门 4m、A 小道门 2m、下沉通道 3m、B 洞出口 10m）由相邻墙段之间的空隙形成，
+ *      挪动任何一段墙都会改掉枪线长度，改动前请重跑栅格化平面图。
+ *
+ * 与设计表的两处偏差（均为满足上面的第 2 条，视觉与玩法不变）：
+ *   - 油桶 L2 / M3 / T4 的高度取 **1.4m**（真实油桶 42×42×56u ≈ 1.42m），设计表写 1.2m 落在 1.16–1.30 灰区；
+ *   - 出生点 T1 的 z 取 25.0（设计表 26.0），否则与 P1 木箱有 0.15m 重叠。
+ */
+const OBSTACLE_SEEDS: readonly ObstacleSeed[] = [
+  /* ---------------- 3.4 墙体清单（25 条） ---------------- */
+  // 外墙：外表面 x/z ∈ [−32, 32]，内表面 ±30，高 6m
+  { id: "N", type: "wall", x: 0, z: -31, width: 64, height: 6, depth: 2 },
+  { id: "S", type: "wall", x: 0, z: 31, width: 64, height: 6, depth: 2 },
+  { id: "W", type: "wall", x: -31, z: 0, width: 2, height: 6, depth: 64 },
+  { id: "E", type: "wall", x: 31, z: 0, width: 2, height: 6, depth: 64 },
+  // A 大道东墙（长门 → 拐角）
+  { id: "W1", type: "wall", x: -21, z: 7, width: 2, height: 4, depth: 30 },
+  // 市场建筑群：全图最大实心块，把中路与 A 侧彻底隔开
+  { id: "W2", type: "building", x: -14, z: 10, width: 12, height: 4, depth: 24 },
+  // A 小道北墙：两段之间留出 x −17…−15 的 2m 门洞
+  // width 5 → 4.96：西面从 x=−22 退到 x=−21.98，与 W1 西面错开 2cm，避免共面 z-fighting（东侧 2m 门洞因此变 2.02m，玩法无感）
+  { id: "W3a", type: "wall", x: -19.5, z: -8, width: 4.96, height: 4, depth: 2 },
+  { id: "W3b", type: "wall", x: -13.5, z: -8, width: 3, height: 4, depth: 2 },
+  { id: "W4", type: "wall", x: -11, z: -15, width: 2, height: 4, depth: 14 },
+  { id: "W5", type: "building", x: -8, z: -15, width: 4, height: 4, depth: 14 },
+  // 中路西墙：南段 z −22…−7，北段 z −2…8，中间 z −7…−2 为 A 小道口
+  { id: "W6a", type: "wall", x: -5, z: -14.5, width: 2, height: 4, depth: 15 },
+  { id: "W6b", type: "wall", x: -5, z: 3, width: 2, height: 4, depth: 10 },
+  // 中门：左右扇之间留出 x −2…2 的 4m 门洞（全图最长 31.3m 枪线）
+  { id: "W7a", type: "wall", x: -3.5, z: -12, width: 3, height: 4, depth: 1 },
+  { id: "W7b", type: "wall", x: 3.5, z: -12, width: 3, height: 4, depth: 1 },
+  // 中路东墙：南段 z −22…−6，北段 z 0…8，中间 z −6…0 为下沉通道口
+  { id: "W8a", type: "wall", x: 5, z: -14, width: 2, height: 4, depth: 16 },
+  { id: "W8b", type: "wall", x: 5, z: 4, width: 2, height: 4, depth: 8 },
+  { id: "W9", type: "building", x: 8, z: -15, width: 4, height: 4, depth: 14 },
+  // 上层通道西墙：北段 z −1…22，南段 z −6…−4，中间 z −4…−1 为洞口
+  { id: "W10a", type: "wall", x: 11, z: 10.5, width: 2, height: 4, depth: 23 },
+  { id: "W10c", type: "wall", x: 11, z: -5, width: 2, height: 4, depth: 2 },
+  // B 侧建筑体块（东侧长条）
+  { id: "W11", type: "building", x: 27, z: 10, width: 6, height: 6, depth: 40 },
+  // B 点南墙：西残段 + 东段，之间 x 14…24 为 10m 宽的 B 洞出口
+  { id: "W12a", type: "wall", x: 13, z: -8, width: 2, height: 4, depth: 2 },
+  // width 6 → 5.96：W12b 整体被 W11（x 24…30, z −10…30, h 6）包住，两侧 x 面原本与 W11 共面会 z-fighting；
+  // 内缩 2cm 后它的面全部落在 W11 体内（对外不可见），碰撞体与弹道遮挡由 W11 覆盖，玩法零影响。
+  { id: "W12b", type: "wall", x: 27, z: -8, width: 5.96, height: 4, depth: 2 },
+  { id: "W13", type: "wall", x: 11, z: -15, width: 2, height: 4, depth: 14 },
+  // A 坡道东侧、B 门南侧：只在 z −26…−22 开门洞
+  { id: "W14", type: "wall", x: -11, z: -28, width: 2, height: 4, depth: 4 },
+  { id: "W15", type: "wall", x: 11, z: -28, width: 2, height: 4, depth: 4 },
+
+  /* ---------------- 3.5 掩体清单（39 条） ---------------- */
+  // A 点：A1 电梯箱 + A3 箱堆夹出 Ninja 角；A6 矮墙是 A 点唯一可跳掩体
+  { id: "A1", type: "crate", x: -24, z: -18, width: 2.4, height: 2.0, depth: 2.4 },
+  { id: "A2", type: "crate", x: -27, z: -24, width: 1.8, height: 1.1, depth: 1.8 },
+  { id: "A3", type: "crate", x: -19, z: -22, width: 2.0, height: 1.6, depth: 2.0 },
+  { id: "A4", type: "palm", x: -15, z: -27, width: 0.6, height: 5.0, depth: 0.6 },
+  { id: "A5", type: "cart", x: -28, z: -12, width: 2.2, height: 1.5, depth: 1.2 },
+  { id: "A6", type: "wall", x: -13.5, z: -13, width: 4.0, height: 1.1, depth: 1.0 },
+  // A 小道：S1 箱 + S2 油桶把 14m 通视切成 9.3m
+  { id: "S1", type: "crate", x: -16, z: -5, width: 1.6, height: 0.9, depth: 1.6 },
+  { id: "S2", type: "barrel", x: -19.5, z: -3.5, width: 0.9, height: 1.0, depth: 0.9 },
+  { id: "S3", type: "arch", x: -9, z: -3, width: 0.8, height: 3.0, depth: 0.8 },
+  // A 大道：L1 蓝箱把 29m 长道切成 16.3m + 10.0m
+  { id: "L1", type: "crate", x: -27, z: 12, width: 2.5, height: 1.6, depth: 2.5 },
+  { id: "L2", type: "barrel", x: -29, z: 4, width: 1.2, height: 1.4, depth: 1.2 },
+  { id: "L3", type: "crate", x: -23, z: 18, width: 1.6, height: 1.1, depth: 1.6 },
+  { id: "L4", type: "wall", x: -24, z: -2, width: 3.0, height: 2.4, depth: 1.0 },
+  { id: "L5", type: "crate", x: -24.5, z: 6, width: 1.8, height: 1.1, depth: 1.8 },
+  // 中路：M1 Xbox 是中路唯一能跳上去的箱子（上猫道的踏脚石）
+  { id: "M1", type: "crate", x: 0.5, z: -8.5, width: 1.8, height: 1.1, depth: 1.8 },
+  { id: "M2", type: "crate", x: 3.2, z: -9.5, width: 1.4, height: 0.9, depth: 1.4 },
+  { id: "M3", type: "barrel", x: -3.5, z: 2, width: 0.9, height: 1.4, depth: 0.9 },
+  { id: "M4", type: "wall", x: 2.5, z: 6, width: 2.4, height: 0.9, depth: 1.0 },
+  { id: "M5", type: "crate", x: -2, z: -16, width: 1.6, height: 1.1, depth: 1.6 },
+  { id: "M6", type: "crate", x: 1, z: 12, width: 2.0, height: 1.6, depth: 2.0 },
+  { id: "M7", type: "wall", x: -4, z: -4, width: 0.9, height: 2.4, depth: 2.0 },
+  // 上层通道：T2/T3 拱门柱净宽 5.8m，构成 B 侧唯一长廊视野
+  { id: "T1", type: "crate", x: 16, z: 10, width: 1.8, height: 1.1, depth: 1.8 },
+  { id: "T2", type: "arch", x: 12.6, z: 3, width: 1.0, height: 4.0, depth: 1.0 },
+  { id: "T3", type: "arch", x: 19.4, z: 3, width: 1.0, height: 4.0, depth: 1.0 },
+  { id: "T4", type: "barrel", x: 18, z: 17, width: 1.1, height: 1.4, depth: 1.1 },
+  { id: "T5", type: "cart", x: 22, z: 14, width: 2.2, height: 1.4, depth: 1.2 },
+  // B 点：B2 平台（0.9m，5×4）是 B 点唯一的低台，制造「高打低」
+  { id: "B1", type: "crate", x: 20, z: -14, width: 2.6, height: 1.6, depth: 2.6 },
+  { id: "B2", type: "wall", x: 26, z: -20, width: 5.0, height: 0.9, depth: 4.0 },
+  { id: "B3", type: "cart", x: 15, z: -12, width: 2.4, height: 1.4, depth: 1.2 },
+  { id: "B4", type: "crate", x: 17, z: -24, width: 1.8, height: 1.1, depth: 1.8 },
+  { id: "B5", type: "palm", x: 28, z: -11, width: 0.6, height: 5.0, depth: 0.6 },
+  { id: "B6", type: "crate", x: 23, z: -26, width: 2.0, height: 2.0, depth: 2.0 },
+  { id: "B7", type: "wall", x: 14, z: -19, width: 1.0, height: 1.1, depth: 3.0 },
+  // CT 出生点两侧与 T 出生点周边的散件
+  { id: "C1", type: "crate", x: -8.5, z: -23.5, width: 1.6, height: 1.1, depth: 1.6 },
+  { id: "C2", type: "crate", x: 8.5, z: -23.5, width: 1.6, height: 1.1, depth: 1.6 },
+  { id: "P1", type: "crate", x: -7, z: 27, width: 1.6, height: 1.1, depth: 1.6 },
+  { id: "P2", type: "cart", x: 7, z: 26, width: 2.2, height: 1.4, depth: 1.2 },
+  { id: "P3", type: "palm", x: 9.5, z: 29, width: 0.6, height: 5.0, depth: 0.6 },
+  { id: "P4", type: "wall", x: -9, z: 23, width: 1.0, height: 1.1, depth: 3.0 },
+];
+
+/** 全图实心体块（64 条 = 25 段墙 + 39 个掩体），渲染/物理/弹道共用同一份数据。 */
+export const OBSTACLES: readonly ObstacleSpec[] = OBSTACLE_SEEDS.map((seed) => ({
+  ...seed,
+  color: OBSTACLE_COLORS[seed.type],
+}));
+
+/* ------------------------------------------------------------------ *
+ * 出生点：固定出生表（服务端按加入顺序取，重生轮转）
+ * ------------------------------------------------------------------ */
+
+export type TeamId = "T" | "CT";
+
+export interface SpawnPoint {
+  /** 队伍：T 侧在南（+Z），CT 侧在北（−Z）。 */
+  team: TeamId;
+  x: number;
+  z: number;
+  /** 出生朝向（弧度）：T 为 0（面向 −Z），CT 为 π（面向 +Z）。 */
+  yaw: number;
+}
+
+/**
+ * 10 个固定出生点（已按 0.35m 玩家半径校验，不与任何 AABB 重叠）。
+ *
+ * 与旧版「黄金角绕中心」相比，固定表的价值是：不会生成在墙体/建筑内部，
+ * 同队玩家不会重叠，且朝向是「面向敌方半场」而不是「面向地图中心」。
+ * 注：T1 的 z 从设计表的 26.0 微调到 25.0，避开 P1 木箱（−7, 27, 1.6×1.6）的 0.15m 重叠。
+ */
+export const SPAWN_POINTS: readonly SpawnPoint[] = [
+  { team: "T", x: -6, z: 25.0, yaw: 0 },
+  { team: "T", x: -2, z: 27.5, yaw: 0 },
+  { team: "T", x: 2, z: 26.0, yaw: 0 },
+  { team: "T", x: 6, z: 27.5, yaw: 0 },
+  { team: "T", x: 0, z: 29.0, yaw: 0 },
+  { team: "CT", x: -6, z: -26.0, yaw: Math.PI },
+  { team: "CT", x: -2, z: -27.5, yaw: Math.PI },
+  { team: "CT", x: 2, z: -26.0, yaw: Math.PI },
+  { team: "CT", x: 6, z: -27.5, yaw: Math.PI },
+  { team: "CT", x: 0, z: -28.5, yaw: Math.PI },
 ];
 
 /** 由障碍数据推导碰撞 AABB。 */

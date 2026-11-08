@@ -284,7 +284,14 @@ export interface HitCylinder {
  * 玩家判定体：6 个竖直圆柱，总高 0.02 → 1.80，与 {@link PLAYER_HEIGHT} 一致。
  *
  * 站立时（y=0）各段世界高度：
- *   头 [1.54, 1.80]  胸 [1.14, 1.54]  腹 [0.90, 1.14]  臂 [0.98, 1.52]  腿 [0.02, 0.90]
+ *   头 [1.63, 1.80]  胸 [1.14, 1.63]  腹 [0.90, 1.14]  臂 [0.98, 1.52]  腿 [0.02, 0.90]
+ *
+ * 为什么头部下沿取 1.63 而不是模型头顶下沿 1.54：
+ *   相机眼高是 1.60，若头部判定从 1.54 起，平地上水平对枪的**每一发**都会落在头段里
+ *   （准星恰好压在眼高线上），全场退化成"见面一枪秒"，身体 4 枪的设定永远触发不到。
+ *   把头部下沿抬到 1.63（眼高之上 3cm），玩家必须主动抬枪 2–3° 才能爆头，
+ *   平射默认命中胸部 —— 这才是 CS 里"点头"的操作含义。代价是视觉上的下巴/颈部算胸部，
+ *   属于射击游戏的常规做法（颈部并入侵伤区），A2 建模时头部球体下沿也取 1.63 对齐。
  *
  * 硬约束：
  *   1. 躯干三段（腿→腹→胸→头）必须**首尾相接**（不留缝），缝隙会让垂直下压的子弹从两段之间漏判；
@@ -292,8 +299,8 @@ export interface HitCylinder {
  *   3. 判定体只比模型宽 1–3cm（网络容错方向：宁可判中，不可判漏）。
  */
 export const PLAYER_HITBOXES: readonly HitCylinder[] = [
-  { zone: "head", offsetRight: 0, yMin: 1.54, yMax: 1.8, radius: 0.14 },
-  { zone: "chest", offsetRight: 0, yMin: 1.14, yMax: 1.54, radius: 0.27 },
+  { zone: "head", offsetRight: 0, yMin: 1.63, yMax: 1.8, radius: 0.13 },
+  { zone: "chest", offsetRight: 0, yMin: 1.14, yMax: 1.63, radius: 0.27 },
   { zone: "belly", offsetRight: 0, yMin: 0.9, yMax: 1.14, radius: 0.25 },
   { zone: "arm", offsetRight: 0.3, yMin: 0.98, yMax: 1.52, radius: 0.1 },
   { zone: "arm", offsetRight: -0.3, yMin: 0.98, yMax: 1.52, radius: 0.1 },

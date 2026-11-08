@@ -191,10 +191,15 @@ describe("rayPlayerHitboxes 分段命中", () => {
     assert.equal(rayPlayerHitboxes(origin, dir, target(), 60)?.zone, "arm");
   });
 
-  it("同高度（眼睛 1.60m）水平射击 = 头部命中（CS 的「准星对头线」）", () => {
-    const origin: Vec3 = { x: 0, y: EYE_HEIGHT, z: 6 };
-    const dir: Vec3 = { x: 0, y: 0, z: -1 };
-    assert.equal(rayPlayerHitboxes(origin, dir, target(), 60)?.zone, "head");
+  it("眼高（1.60m）平射 = 胸部；抬头 0.7° 才进头部判定区", () => {
+    // 头部下沿 1.63 高于相机眼高 1.60，所以水平对枪默认打胸（身体 4 枪），
+    // 想爆头必须主动上抬视线 —— 这是「点头」的操作含义。
+    const flat: Vec3 = { x: 0, y: EYE_HEIGHT, z: 6 };
+    assert.equal(rayPlayerHitboxes(flat, { x: 0, y: 0, z: -1 }, target(), 60)?.zone, "chest");
+
+    // 6m 外抬 0.0117 rad ≈ 0.67°，射线到目标面时升到 1.67m（头部圆心）
+    const aimUp: Vec3 = { x: 0, y: Math.sin(0.0117), z: -Math.cos(0.0117) };
+    assert.equal(rayPlayerHitboxes(flat, aimUp, target(), 60)?.zone, "head");
   });
 
   it("完全打偏（水平偏移 0.6m）不命中任何段", () => {
@@ -224,12 +229,17 @@ describe("rayPlayerHitboxes 分段命中", () => {
     assert.equal(rayPlayerHitboxes(frontOrigin, frontDir, target(), 60)?.zone, "chest");
   });
 
-  it("擦边（头与胸 t 相差 ≤1cm）按优先级取头", () => {
-    // 从 6m 外、1.60m 高射向一个「刚从 1.54m 抬起来一点点」的位置：
-    // 射线在 1.55m 处会同时擦到头的下沿与胸的上沿，验证优先级生效。
-    const hit = rayPlayerHitboxes({ x: 0, y: EYE_HEIGHT, z: 6 }, { x: 0, y: 0, z: -1 }, target(), 60);
-    assert.equal(hit?.zone, "head");
-    assert.ok(hit !== null && hit.t < 6);
+  it("头/胸分界处（1.63m）不漏判：1.62 判胸、1.64 判头", () => {
+    // 6m 外按目标高度调俯仰角：y = 1.60 + tan(pitch) * 6
+    const shootAtHeight = (height: number): string | undefined => {
+      const pitch: number = Math.atan((height - EYE_HEIGHT) / 6);
+      const dir: Vec3 = { x: 0, y: Math.sin(pitch), z: -Math.cos(pitch) };
+      const hit = rayPlayerHitboxes({ x: 0, y: EYE_HEIGHT, z: 6 }, dir, target(), 60);
+      assert.ok(hit !== null, `高度 ${height} 不应打空（分界处漏判）`);
+      return hit?.zone;
+    };
+    assert.equal(shootAtHeight(1.62), "chest");
+    assert.equal(shootAtHeight(1.64), "head");
   });
 });
 
@@ -247,8 +257,10 @@ describe("computeShot 分区结算", () => {
     };
     // 6m 外把视线压到 1.34m（胸部中心）：atan(0.26/6) ≈ 0.0433 rad
     assert.equal(at(-0.0433), ZONE_DAMAGE.chest);
-    // 水平视线 = 眼睛高度 1.60m，落在头部判定区
-    assert.equal(at(0), ZONE_DAMAGE.head);
+    // 平视（1.60m）也是胸部 —— 头部下沿 1.63 在眼高之上
+    assert.equal(at(0), ZONE_DAMAGE.chest);
+    // 抬到 1.67m（头部圆心）：atan(0.07/6) ≈ 0.0117 rad
+    assert.equal(at(0.0117), ZONE_DAMAGE.head);
   });
 
   it("未命中时 damage = 0、hitZone = null", () => {
@@ -278,9 +290,9 @@ describe("computeShot 分区结算", () => {
   });
 
   it("视角快照可覆盖服务端已存视角（3° 内的「打哪中哪」）", () => {
-    const players = [shooter("A", 0, 6, 0, -0.05), shooter("B", 0, 0)];
+    const players = [shooter("A", 0, 6, 0, 0), shooter("B", 0, 0)];
     const withoutSnapshot = computeShot(players, "A", []);
-    const withSnapshot = computeShot(players, "A", [], { yaw: 0, pitch: 0 });
+    const withSnapshot = computeShot(players, "A", [], { yaw: 0, pitch: 0.0117 });
     assert.equal(withoutSnapshot?.hitZone, "chest");
     assert.equal(withSnapshot?.hitZone, "head");
   });

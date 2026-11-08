@@ -18,8 +18,8 @@ import {
 
 const ORIGIN: Vec3 = { x: 0, y: EYE_HEIGHT, z: 0 };
 
-function makePlayer(id: string, x: number, z: number, yaw = 0): CombatantView {
-  return { sessionId: id, x, y: 0, z, yaw, pitch: 0, alive: true };
+function makePlayer(id: string, x: number, z: number, yaw = 0, pitch = 0): CombatantView {
+  return { sessionId: id, x, y: 0, z, yaw, pitch, alive: true };
 }
 
 describe("directionFromYawPitch", () => {
@@ -54,15 +54,23 @@ describe("rayAabb", () => {
 });
 
 describe("computeShot", () => {
-  it("正对敌人命中头部（眼高水平射击 = 头部判定区）并给出命中点", () => {
+  it("正对敌人平射命中胸部（眼高 1.60 低于头部下沿 1.63）并给出命中点", () => {
     const players = [makePlayer("A", 0, 0), makePlayer("B", 0, -5)];
     const shot = computeShot(players, "A", []);
     assert.ok(shot !== null);
     assert.equal(shot.hitPlayerId, "B");
+    assert.equal(shot.hitZone, "chest");
+    assert.equal(shot.damage, ZONE_DAMAGE.chest);
+    // 胸部圆柱半径 0.27 → 表面距离 5 − 0.27
+    assert.ok(Math.abs(shot.hit.z + 4.73) < 1e-6, `命中点 z 应 −4.73，实际 ${shot.hit.z}`);
+  });
+
+  it("抬头约 0.7° 才命中头部（爆头需要主动压枪上抬）", () => {
+    const players = [makePlayer("A", 0, 0, 0, 0.0117), makePlayer("B", 0, -5)];
+    const shot = computeShot(players, "A", []);
+    assert.ok(shot !== null);
     assert.equal(shot.hitZone, "head");
     assert.equal(shot.damage, ZONE_DAMAGE.head);
-    // 头部圆柱半径 0.14 → 表面距离 5 − 0.14
-    assert.ok(Math.abs(shot.hit.z + 4.86) < 1e-6, `命中点 z 应 −4.86，实际 ${shot.hit.z}`);
   });
 
   it("死亡玩家不可开火、不可被命中", () => {
@@ -103,8 +111,8 @@ describe("computeShot", () => {
     const shot = computeShot(players, "A", obstacleColliders());
     assert.ok(shot !== null);
     assert.equal(shot.hitPlayerId, "B", "空走廊内应命中目标");
-    // 眼高水平射击打在头部圆柱表面：z = −3 + 0.14
-    assert.ok(Math.abs(shot.hit.z - (-3 + 0.14)) < 1e-6, `命中点 z 应约 −2.86，实际 ${shot.hit.z}`);
+    // 平射打在胸部圆柱表面：z = −3 + 0.27
+    assert.ok(Math.abs(shot.hit.z - (-3 + 0.27)) < 1e-6, `命中点 z 应约 −2.73，实际 ${shot.hit.z}`);
   });
 
   it("多名敌人时命中最近的一个", () => {

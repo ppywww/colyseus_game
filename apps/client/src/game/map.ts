@@ -1,7 +1,7 @@
 /**
  * 沙漠迷城地图（Dust II 风格城镇）的几何构建。
  *
- * 数据流：所有实心体块来自 `@colyseus-fps/shared` 的 `OBSTACLES`（22 段墙 + 2 栋建筑 + 40 个掩体，全 AABB），
+ * 数据流：所有实心体块来自 `@colyseus-fps/shared` 的 `OBSTACLES`（50 段墙 + 12 栋建筑 + 35 个掩体，全 AABB），
  * 客户端渲染、客户端物理（MTA 推出）与服务端弹道遮挡共用同一份数据，保证「所见即所挡」。
  *
  * 性能约定（64 个体块不能变成 64 次 draw call）：
@@ -473,20 +473,20 @@ function addPalms(root: THREE.Group, palms: readonly ObstacleSpec[]): void {
   root.add(leaves);
 }
 
-/** 红色涂鸦：A 点东墙与 B 点西墙各贴一块 0.6×0.6 的平面（纯装饰）。 */
+/** 红色涂鸦：两个包点的门框侧面各贴一块 0.6×0.6 的平面（纯装饰，不参与碰撞）。 */
 function addGraffiti(root: THREE.Group): void {
   const material = arenaMaterials().graffiti;
   const geometry = new THREE.PlaneGeometry(0.6, 0.6);
 
-  // A 点：AW2b 的西侧面（x = −15 墙 → 贴面 x = −16），朝向 −X
+  // A 点：AS_E1 的西侧面（x = −19 墙 → 贴面 x = −19），朝向 −X（站在包点里能看见）
   const aTag = new THREE.Mesh(geometry, material);
-  aTag.position.set(-16.01, 1.7, -22);
+  aTag.position.set(-19.01, 1.7, -26);
   aTag.rotation.y = -Math.PI / 2;
   root.add(aTag);
 
-  // B 点：BW1b 的东侧面（x = 15 墙 → 贴面 x = 16），朝向 +X
+  // B 点：BS_W1 的东侧面（x = 18 墙 → 贴面 x = 18），朝向 +X
   const bTag = new THREE.Mesh(geometry, material);
-  bTag.position.set(16.01, 1.7, -22);
+  bTag.position.set(18.01, 1.7, -26);
   bTag.rotation.y = Math.PI / 2;
   root.add(bTag);
 }
@@ -519,8 +519,7 @@ export function buildArena(): THREE.Group {
   root.name = "arena";
   const materials = arenaMaterials();
 
-  // ---- 地面：一整块 64×64 沙地（贴图 repeat 24×24 ≈ 每 2.7m 一个纹理周期） ----
-  // 80×80 沙地（贴图 repeat 30 ≈ 每 2.7m 一个纹理周期，与旧图密度一致）
+  // ---- 地面：一整块 80×80 沙地（贴图 repeat 30 ≈ 每 2.7m 一个纹理周期） ----
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(MAP_SIZE, MAP_SIZE), materials.sand);
   floor.rotation.x = -Math.PI / 2;
   floor.receiveShadow = true;

@@ -16,6 +16,7 @@ import { describe, it } from "node:test";
 import {
   MAP_BOUNDS,
   MAP_SIZE,
+  MAP_ZONES,
   OBSTACLES,
   PLAYER_HIT_RADIUS,
   SPAWN_POINTS,
@@ -63,8 +64,8 @@ describe("地图尺寸与边界", () => {
 });
 
 describe("体块数据完整性", () => {
-  it("实心体块总数应 ≥ 60（当前为 22 段墙 + 2 栋连接建筑 + 40 个掩体）", () => {
-    assert.ok(OBSTACLES.length >= 60, `体块数量不足，实际 ${OBSTACLES.length}`);
+  it("实心体块总数应 ≥ 90（当前为 50 段墙 + 12 栋建筑 + 35 个掩体）", () => {
+    assert.ok(OBSTACLES.length >= 90, `体块数量不足，实际 ${OBSTACLES.length}`);
   });
 
   it("每个 AABB 都必须是正体积（min < max，且没有 NaN）", () => {
@@ -188,6 +189,123 @@ describe("出生点", () => {
           assert.ok(distance >= 1.5, `${team} 的出生点 ${i} 与 ${j} 距离仅 ${distance.toFixed(2)}m`);
         }
       }
+    }
+  });
+});
+
+describe("连通性（0.5m 栅格洪泛）", () => {
+  /** 按 0.35m 玩家半径把体块外扩后光栅化，再从 T 出生点洪泛。 */
+  const buildReachable = (): {
+    reachable: (x: number, z: number) => boolean;
+    walkableCells: number;
+    unreachableCells: number;
+  } => {
+    const step = 0.5;
+    const cols = Math.round((MAP_BOUNDS.maxX - MAP_BOUNDS.minX) / step);
+    const rows = Math.round((MAP_BOUNDS.maxZ - MAP_BOUNDS.minZ) / step);
+    const blocked = new Uint8Array(cols * rows);
+
+    const toCol = (x: number): number => Math.floor((x - MAP_BOUNDS.minX) / step);
+    const toRow = (z: number): number => Math.floor((z - MAP_BOUNDS.minZ) / step);
+
+    for (const obstacle of OBSTACLES) {
+      const minX = obstacle.x - obstacle.width / 2 - PLAYER_HIT_RADIUS;
+      const maxX = obstacle.x + obstacle.width / 2 + PLAYER_HIT_RADIUS;
+      const minZ = obstacle.z - obstacle.depth / 2 - PLAYER_HIT_RADIUS;
+      const maxZ = obstacle.z + obstacle.depth / 2 + PLAYER_HIT_RADIUS;
+      for (let i = Math.max(0, toCol(minX)); i <= Math.min(cols - 1, toCol(maxX)); i += 1) {
+        const x = MAP_BOUNDS.minX + (i + 0.5) * step;
+        if (x < minX || x > maxX) {
+          continue;
+        }
+        for (let j = Math.max(0, toRow(minZ)); j <= Math.min(rows - 1, toRow(maxZ)); j += 1) {
+          const z = MAP_BOUNDS.minZ + (j + 0.5) * step;
+          if (z >= minZ && z <= maxZ) {
+            blocked[j * cols + i] = 1;
+          }
+        }
+      }
+    }
+
+    const start = toRow(SPAWN_POINTS[0]!.z) * cols + toCol(SPAWN_POINTS[0]!.x);
+    assert.equal(blocked[start], 0, "T 出生点自身不应被体块占据");
+    const seen = new Uint8Array(cols * rows);
+    const queue: number[] = [start];
+    seen[start] = 1;
+    let walkableCells = 0;
+    for (let index = 0; index < blocked.length; index += 1) {
+      if (blocked[index] === 0) {
+        walkableCells += 1;
+      }
+    }
+
+    while (queue.length > 0) {
+      const current = queue.pop() as number;
+      const i = current % cols;
+      const j = Math.floor(current / cols);
+      const neighbours: Array<[number, number]> = [
+        [i + 1, j],
+        [i - 1, j],
+        [i, j + 1],
+        [i, j - 1],
+      ];
+      for (const [ni, nj] of neighbours) {
+        if (ni < 0 || nj < 0 || ni >= cols || nj >= rows) {
+          continue;
+        }
+        const next = nj * cols + ni;
+        if (seen[next] === 1 || blocked[next] === 1) {
+          continue;
+        }
+        seen[next] = 1;
+        queue.push(next);
+      }
+    }
+
+    let reached = 0;
+    for (let index = 0; index < seen.length; index += 1) {
+      if (seen[index] === 1) {
+        reached += 1;
+      }
+    }
+
+    return {
+      reachable: (x: number, z: number): boolean => seen[toRow(z) * cols + toCol(x)] === 1,
+      walkableCells,
+      unreachableCells: walkableCells - reached,
+    };
+  };
+
+  it("没有任何空地是走不到的（死角 = 0）", () => {
+    const { unreachableCells, walkableCells } = buildReachable();
+    assert.equal(
+      unreachableCells,
+      0,
+      `有 ${unreachableCells} 格（约 ${(unreachableCells * 0.25).toFixed(1)} m²）空地无法到达，共 ${walkableCells} 格`,
+    );
+  });
+
+  it("每个分区（A/B 点、三路、两个出生点）都可达", () => {
+    const { reachable } = buildReachable();
+    for (const zone of MAP_ZONES) {
+      // 分区矩形允许压到墙上（例如 B 点的北墙那一带），所以按 1m 采样点
+      // 判断"这块区域里有玩家能站的地方"，而不是死盯西南角。
+      let found = false;
+      for (let x = zone.minX + 0.5; x <= zone.maxX && !found; x += 1) {
+        for (let z = zone.minZ + 0.5; z <= zone.maxZ && !found; z += 1) {
+          if (reachable(x, z)) {
+            found = true;
+          }
+        }
+      }
+      assert.ok(found, `分区「${zone.label}」整块都不可达`);
+    }
+  });
+
+  it("全部出生点可达", () => {
+    const { reachable } = buildReachable();
+    for (const point of SPAWN_POINTS) {
+      assert.ok(reachable(point.x, point.z), `出生点 (${point.x}, ${point.z}) 不可达`);
     }
   });
 });

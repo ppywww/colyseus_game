@@ -130,15 +130,15 @@ describe("computeShot", () => {
     assert.ok(Math.abs(shot.hit.z - 3) < 1e-6);
   });
 
-  it("真实地图回归：中路东墙（MW2）挡住 +X 方向的子弹", () => {
-    // 真实地图：MW2 位于 x 6…8、z −10…22、高 4m，正好横在 (0,4) → (9,4) 这条 +X 枪线上。
-    // 这条用例吃的是 shared 的 OBSTACLES 数据，地图一旦被改动（墙挪位/矮到 1.6m 以下）会立刻失败。
+  it("真实地图回归：中路东墙（MID_E）挡住 +X 方向的子弹", () => {
+    // 真实地图：MID_E 位于 x 5…7、z −14…24、高 5m，正好横在 (0,4) → (9,4) 这条 +X 枪线上。
+    // 这条用例吃的是 shared 的 OBSTACLES 数据，地图一旦被改动（墙挪位/高度不够）会立刻失败。
     const players = [makePlayer("A", 0, 4, -Math.PI / 2), makePlayer("B", 9, 4)];
     const shot = computeShot(players, "A", obstacleColliders());
     assert.ok(shot !== null);
     assert.equal(shot.hitPlayerId, null, "墙后的目标不应被命中");
-    // 弹道应止于 MW2 的西表面 x = 6
-    assert.ok(Math.abs(shot.hit.x - 6) < 0.05, `弹道应止于墙前 x≈6，实际 ${shot.hit.x.toFixed(2)}`);
+    // 弹道应止于 MID_E 的西表面 x = 5
+    assert.ok(Math.abs(shot.hit.x - 5) < 0.05, `弹道应止于墙前 x≈5，实际 ${shot.hit.x.toFixed(2)}`);
     assert.ok(Math.abs(shot.hit.z - 4) < 1e-6);
   });
 

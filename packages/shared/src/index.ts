@@ -655,127 +655,205 @@ interface ObstacleSeed {
 }
 
 /**
- * 沙漠迷城（原创沙漠城镇，三路 + 双包点结构）实心体块：22 段墙 + 2 栋连接建筑 + 40 个掩体。
+ * 沙漠迷城 · 双包点城镇（Dust2 拓扑的原创重建）实心体块。
  *
- * 布局（x 西→东，z 南→北；T 在南 z>0，CT 在北 z<0）：
- *   - **A 大**：西侧 11m 宽长廊（x −38…−27），南端接 T 坡道，北端直接流进 A 点；
- *   - **中路**：中央 12m 走廊（x −6…6），经「中门」（z = −9，6m 门洞）进入 CT 中路广场；
- *   - **B 洞**：东侧 11m 宽长廊（x 27…38），南端接 T 坡道，北端进 B 点；
- *   - **CT 中路广场**（x −14…14，z −24…−10）：三条路的铰链，向西经「A 小道门」进 A 点，
- *     向东经「B 门」进 B 点，向北进 CT 出生点；
- *   - 两栋 6m 高的连接建筑（BLD1/BLD2）把中路与两侧长廊之间的空隙填实，避免"隔墙偷看"。
- *   - 两张包点各留一个 4m 门洞 + 一个宽出口，攻方有两条进场路线（长廊 / 中路转点）。
+ * 为什么是「拓扑重建」而不是 1:1 复刻：Valve 那张图的具体几何属于受版权保护的关卡设计，
+ * 逐点复制有法律风险；但「A 大 + 长门 + 坑位 / 中路 + 中门 + 猫道 / B 洞 + 上下隧道 /
+ * 两个包点 / 三条 CT 回防路线」这套**玩法结构**是通用射击范式，可以自由实现。
+ * 本图按那套结构重画，尺寸按本作 5m/s 移速与 60m 有效射程重新算过。
+ *
+ * 平面（x 西→东，z 南→北；T 在南 z>0，CT 在北 z<0，与 CS 雷达同向）：
+ *
+ *   z=−38 ┌──────────── CT 坡道 ───────────┬─ CT 出生点 ─┬──── CT → B 走廊 ────┐
+ *         │                              │             │                     │
+ *   z=−30 │  A 点（西包点）               │  CT 中路     │   B 点（东包点）    │
+ *         │    ↑ 短 A ← 猫道 ← 中门 ← ... │             │      ↑ B 门 ← 中门  │
+ *   z=−14 │  ↑ A 大（长道）              │  中路        │      ↑ 下隧道       │
+ *         │                              │             │                     │
+ *   z=18  │  A 外（长门）                │             │   B 外 / 上隧道弯   │
+ *   z=26  └──────────── T 出生点 ────────┴─────────────┴─────────────────────┘
+ *
+ * 攻方三条进攻轴（每条都有两个进场口，不靠单点突破）：
+ *   - **A 大**：T 西侧 → 长门 → 9m 长道 → 直接流进 A 点；也可从 CT 中路 → 猫道 → 短 A 夹击；
+ *   - **中路**：T 北门 → 12m 中路（xbox 箱）→ 中门（4m）→ CT 中路 → 向西猫道、向东 B 门；
+ *   - **B 洞**：T 东侧 → 上隧道 → 隧道弯 → 下隧道 → B 点南口；CT 侧走 CT → B 走廊从北口进。
  *
  * 硬约束（不要破坏）：
  *   1. **只允许 AABB**：服务端射线遮挡（rayAabb）与客户端 MTA 推出都只认轴对齐盒；
- *   2. 高度必须落在「≤1.15m 可跳」或「≥1.4m 必绕」两档，1.16–1.39 是灰区（会表现成跳不上去的黏滑手感）；
- *   3. 门洞由相邻墙段之间的空隙形成，挪动任何一段墙都会改掉枪线长度，改动前请重跑栅格化平面图；
- *   4. 相邻墙段的共面要错开 2cm（如 BLD1 的 width 取 15.9），否则渲染层会 z-fighting。
+ *   2. 高度必须落在「≤1.15m 可跳」或「≥1.4m 必绕」两档，1.16–1.39 是灰区（跳不上去、贴着黏手）；
+ *   3. 门洞由相邻墙段之间的空隙形成，挪动任何一段墙都会改掉枪线长度——改完必须重跑
+ *      `apps/server/tests/map.test.ts` 的连通性检查（0.25m 栅格洪泛，死区必须为 0）；
+ *   4. 相邻体块的共面错开 ≥2cm（如 BS_N1 与 BS_N2 的 z 中心不同），否则渲染层 z-fighting。
  */
 const OBSTACLE_SEEDS: readonly ObstacleSeed[] = [
-  /* ---------------- 外墙（4 段，x/z ∈ ±39，内表面 ±38） ---------------- */
+  /* ================= 外墙（内表面 ±38） ================= */
   { id: "N", type: "wall", x: 0, z: -39, width: 80, height: 6, depth: 2 },
   { id: "S", type: "wall", x: 0, z: 39, width: 80, height: 6, depth: 2 },
   { id: "W", type: "wall", x: -39, z: 0, width: 2, height: 6, depth: 80 },
   { id: "E", type: "wall", x: 39, z: 0, width: 2, height: 6, depth: 80 },
 
-  /* ---------------- 结构性墙体：三条路 + 两个包点 ---------------- */
-  // A 大（西侧长廊）的东墙：z −13…18。南端留空给 T 坡道，北端留空进 A 点。
-  { id: "AW1", type: "wall", x: -26, z: 2.5, width: 2, height: 4, depth: 31 },
-  // A 点东墙：被 4m 的「A 小道门」（z −24…−20）切成两段，连通 CT 中路与 A 点
-  { id: "AW2a", type: "wall", x: -15, z: -30, width: 2, height: 4, depth: 12 },
-  { id: "AW2b", type: "wall", x: -15, z: -17, width: 2, height: 4, depth: 6 },
-  // A 点南墙：只封住 x −27…−16，x −37…−27 敞开让 A 大直接流进包点
-  { id: "AW3", type: "wall", x: -21.5, z: -13, width: 11, height: 4, depth: 2 },
+  /* ================= T 出生点（内部 x −9…9, z 26…37） ================= */
+  // 西/东各留一个 4m 门洞（z 30…34）：西去 A 外，东去 B 外
+  { id: "TS_W1", type: "wall", x: -10, z: 28, width: 2, height: 4, depth: 4 },
+  { id: "TS_W2", type: "wall", x: -10, z: 35.5, width: 2, height: 4, depth: 3 },
+  { id: "TS_E1", type: "wall", x: 10, z: 28, width: 2, height: 4, depth: 4 },
+  { id: "TS_E2", type: "wall", x: 10, z: 35.5, width: 2, height: 4, depth: 3 },
+  // 北墙中央 6m 门洞（x −3…3）：T 出生点直通中路
+  { id: "TS_N1", type: "wall", x: -6, z: 25, width: 6, height: 4, depth: 2 },
+  { id: "TS_N2", type: "wall", x: 6, z: 25, width: 6, height: 4, depth: 2 },
 
-  // 中路两侧长墙（x = ∓7，z −10…22），中间 6m 净宽的走廊
-  { id: "MW1", type: "wall", x: -7, z: 6, width: 2, height: 4, depth: 32 },
-  { id: "MW2", type: "wall", x: 7, z: 6, width: 2, height: 4, depth: 32 },
-  // 中门：z = −9 的两扇墙，中央留 6m 门洞（中路唯一收窄点）
-  { id: "MD1", type: "wall", x: -8.5, z: -9, width: 11, height: 4, depth: 2 },
-  { id: "MD2", type: "wall", x: 8.5, z: -9, width: 11, height: 4, depth: 2 },
+  /* ================= T 侧两块大建筑 ================= */
+  // 把「A 外」与中路、「B 外」与中路隔开，形成 T 侧的两条出门路线
+  { id: "BLD_TS_W", type: "building", x: -13.5, z: 21.5, width: 13, height: 7, depth: 9 },
+  { id: "BLD_TS_E", type: "building", x: 13.5, z: 21.5, width: 13, height: 7, depth: 9 },
 
-  // B 点西墙：同样被 4m 的「B 门」（z −24…−20）切成两段
-  { id: "BW1a", type: "wall", x: 15, z: -30, width: 2, height: 4, depth: 12 },
-  { id: "BW1b", type: "wall", x: 15, z: -17, width: 2, height: 4, depth: 6 },
-  // B 点南墙：封住 x 15…27，x 27…37 敞开接 B 洞
-  { id: "BW2", type: "wall", x: 21, z: -13, width: 12, height: 4, depth: 2 },
-  // B 洞西墙：z −12…24，南端留空进包点
-  { id: "BW3", type: "wall", x: 26, z: 6, width: 2, height: 4, depth: 36 },
+  /* ================= A 大（x −38…−29, z −14…18） ================= */
+  // A 大东墙：与中路西侧的大建筑连成一片，形成 9m 宽的长道
+  { id: "LONG_E", type: "wall", x: -28, z: 1.5, width: 2, height: 5, depth: 31 },
+  // 长门：西侧 5m 墙 + 东侧 4m 门洞（门洞 x −33…−29）
+  { id: "LONG_DOOR", type: "wall", x: -35.5, z: 17, width: 5, height: 4, depth: 2 },
+  // A 点南墙（只在 A 大以东）：A 大直接从这一侧流进包点，形成「A 横道」
+  { id: "AS_S", type: "wall", x: -23, z: -13, width: 12, height: 4, depth: 2 },
 
-  // CT 出生点两侧短墙（z −36…−26）
-  { id: "CW1", type: "wall", x: -11, z: -31, width: 2, height: 4, depth: 10 },
-  { id: "CW2", type: "wall", x: 11, z: -31, width: 2, height: 4, depth: 10 },
-  // T 出生点两侧短墙（只封 z 30…38，南侧地面给 T 坡道让路）
-  { id: "SW1", type: "wall", x: -14, z: 34, width: 2, height: 4, depth: 8 },
-  { id: "SW2", type: "wall", x: 14, z: 34, width: 2, height: 4, depth: 8 },
-  // T 出生点北墙：中央留 6m 直通中路
-  { id: "SN1", type: "wall", x: -8.5, z: 23, width: 11, height: 4, depth: 2 },
-  { id: "SN2", type: "wall", x: 8.5, z: 23, width: 11, height: 4, depth: 2 },
+  /* ================= A 点（x −38…−17, z −30…−14） ================= */
+  // 北墙：西段封死，x −25…−17 接 CT 坡道
+  { id: "AS_N", type: "wall", x: -31.5, z: -31, width: 13, height: 4, depth: 2 },
+  // 东墙：4m 门洞（z −22…−18）接短 A
+  { id: "AS_E1", type: "wall", x: -18, z: -26, width: 2, height: 4, depth: 8 },
+  { id: "AS_E2", type: "wall", x: -18, z: -16, width: 2, height: 4, depth: 4 },
 
-  // 两条纵向「连接建筑」：把中路与 A 大 / B 洞之间的空地填实，形成真正的三路夹层
-  { id: "BLD1", type: "building", x: -17, z: 4, width: 15.9, height: 6, depth: 26 },
-  { id: "BLD2", type: "building", x: 17, z: 4, width: 15.9, height: 6, depth: 26 },
+  /* ================= CT 坡道（x −28…−11, z −38…−32） ================= */
+  { id: "AR_W", type: "wall", x: -29, z: -35, width: 2, height: 4, depth: 6 },
+  { id: "AR_S", type: "wall", x: -14, z: -31, width: 6, height: 4, depth: 2 },
+  // CT 坡道西侧的实心建筑：不填这块会在 A 点西北角留一个 8×6 的死角（洪泛会报出来）
+  { id: "BLD_AW", type: "building", x: -34, z: -35, width: 8, height: 7, depth: 6 },
 
-  /* ---------------- A 点掩体 ---------------- */
-  { id: "A1", type: "crate", x: -29, z: -27, width: 2.4, height: 2.0, depth: 2.4 },
-  { id: "A2", type: "crate", x: -34, z: -32, width: 1.8, height: 1.1, depth: 1.8 },
-  { id: "A3", type: "crate", x: -21, z: -30, width: 2.0, height: 1.6, depth: 2.0 },
-  { id: "A4", type: "palm", x: -35, z: -17, width: 0.6, height: 5.0, depth: 0.6 },
-  { id: "A5", type: "cart", x: -31, z: -16, width: 2.2, height: 1.5, depth: 1.2 },
-  { id: "A6", type: "wall", x: -24, z: -16, width: 4.0, height: 1.1, depth: 1.0 },
-  // 双拱门柱：A 点北侧的装饰性门廊（横梁由 map.ts 连接，不参与碰撞）
-  { id: "A7", type: "arch", x: -22, z: -34, width: 1.0, height: 4.0, depth: 1.0 },
-  { id: "A8", type: "arch", x: -18, z: -34, width: 1.0, height: 4.0, depth: 1.0 },
+  /* ================= CT 出生点（内部 x −9…9, z −37…−27） ================= */
+  { id: "CT_W1", type: "wall", x: -10, z: -36, width: 2, height: 4, depth: 2 },
+  { id: "CT_W2", type: "wall", x: -10, z: -29, width: 2, height: 4, depth: 4 },
+  { id: "CT_E1", type: "wall", x: 10, z: -36, width: 2, height: 4, depth: 2 },
+  { id: "CT_E2", type: "wall", x: 10, z: -29, width: 2, height: 4, depth: 4 },
+  // 南墙：中央 6m 门洞（x −3…3）接 CT 中路
+  { id: "CT_S1", type: "wall", x: -6, z: -26, width: 6, height: 4, depth: 2 },
+  { id: "CT_S2", type: "wall", x: 7, z: -26, width: 8, height: 4, depth: 2 },
 
-  /* ---------------- A 大（西长廊） ---------------- */
-  { id: "L1", type: "crate", x: -33, z: 10, width: 2.5, height: 1.6, depth: 2.5 },
-  { id: "L2", type: "barrel", x: -35.5, z: 2, width: 1.2, height: 1.4, depth: 1.2 },
-  { id: "L3", type: "crate", x: -30, z: -4, width: 1.6, height: 1.1, depth: 1.6 },
-  { id: "L4", type: "wall", x: -34, z: 14, width: 3.0, height: 1.1, depth: 1.0 },
+  /* ================= CT 中路（内部 x −9…9, z −25…−8） ================= */
+  { id: "CM_W", type: "wall", x: -10, z: -19.5, width: 2, height: 4, depth: 11 },
+  { id: "CM_E1", type: "wall", x: 10, z: -23.5, width: 2, height: 4, depth: 3 },
+  { id: "CM_E2", type: "wall", x: 10, z: -16, width: 2, height: 4, depth: 4 },
+  // 中门：z = −8 的两扇墙，中央 4m 门洞（x −2…2）
+  { id: "MD1", type: "wall", x: -5.5, z: -8, width: 7, height: 4, depth: 2 },
+  { id: "MD2", type: "wall", x: 5.5, z: -8, width: 7, height: 4, depth: 2 },
 
-  /* ---------------- 中路 ---------------- */
-  { id: "M1", type: "crate", x: 2, z: -2, width: 1.8, height: 1.1, depth: 1.8 },
-  { id: "M2", type: "crate", x: -2.5, z: 12, width: 1.6, height: 1.1, depth: 1.6 },
-  { id: "M3", type: "barrel", x: 4.5, z: 4, width: 0.9, height: 1.4, depth: 0.9 },
-  { id: "M4", type: "wall", x: 0, z: 16, width: 2.4, height: 0.9, depth: 1.0 },
-  { id: "M5", type: "crate", x: -4, z: 18, width: 1.6, height: 1.1, depth: 1.6 },
+  /* ================= 中路（内部 x −5…5, z −8…24） ================= */
+  { id: "MID_W", type: "wall", x: -6, z: 5, width: 2, height: 5, depth: 38 },
+  { id: "MID_E", type: "wall", x: 6, z: 5, width: 2, height: 5, depth: 38 },
 
-  /* ---------------- CT 中路（中门后的广场，连接两个包点） ---------------- */
-  { id: "C1", type: "crate", x: -9, z: -14, width: 2.0, height: 1.6, depth: 2.0 },
-  { id: "C2", type: "cart", x: 9, z: -18, width: 2.2, height: 1.4, depth: 1.2 },
-  { id: "C3", type: "barrel", x: -5, z: -20, width: 1.2, height: 1.4, depth: 1.2 },
-  { id: "C4", type: "wall", x: 11, z: -12, width: 1.0, height: 1.1, depth: 3.0 },
-  { id: "C5", type: "crate", x: 4, z: -21, width: 1.4, height: 0.9, depth: 1.4 },
+  /* ================= 猫道 / 短 A ================= */
+  // 猫道：x −15…−11, z −14…−8；东端直通 CT 中路
+  { id: "CAT_W", type: "wall", x: -16, z: -11, width: 2, height: 4, depth: 6 },
+  // 短 A：x −17…−11, z −22…−14；北墙封死，西侧 4m 门洞进 A 点（由 AS_E 形成）
+  { id: "SA_N", type: "wall", x: -14, z: -23, width: 6, height: 4, depth: 2 },
+  // CT 坡道与短 A 之间的实心建筑
+  { id: "BLD_A", type: "building", x: -13, z: -27, width: 8, height: 6, depth: 6 },
 
-  /* ---------------- B 点 ---------------- */
-  { id: "B1", type: "crate", x: 22, z: -25, width: 2.6, height: 1.6, depth: 2.6 },
-  { id: "B2", type: "wall", x: 32, z: -30, width: 5.0, height: 0.9, depth: 4.0 },
-  { id: "B3", type: "cart", x: 19, z: -18, width: 2.4, height: 1.4, depth: 1.2 },
-  { id: "B4", type: "crate", x: 28, z: -32, width: 1.8, height: 1.1, depth: 1.8 },
-  { id: "B5", type: "palm", x: 35, z: -17, width: 0.6, height: 5.0, depth: 0.6 },
-  { id: "B6", type: "crate", x: 25, z: -20, width: 2.0, height: 2.0, depth: 2.0 },
-  { id: "B7", type: "wall", x: 17.5, z: -30, width: 1.0, height: 1.1, depth: 3.0 },
+  /* ================= 中路西/东两侧的大建筑 ================= */
+  // 西：把 A 大、猫道与中路之间的空地填实（也挡住「隔墙偷看」的枪线）
+  { id: "BLD_W", type: "building", x: -17, z: 6, width: 20, height: 7, depth: 24 },
+  // A 点东南角与猫道之间的实心建筑
+  { id: "BLD_B", type: "building", x: -21, z: -10, width: 12, height: 6, depth: 8 },
+  // 东：把中路与 B 洞之间的空地填实
+  { id: "BLD_E", type: "building", x: 17, z: 6, width: 20, height: 7, depth: 24 },
 
-  /* ---------------- B 洞（东长廊） ---------------- */
-  { id: "T1", type: "crate", x: 33, z: 12, width: 1.8, height: 1.1, depth: 1.8 },
-  { id: "T2", type: "barrel", x: 35, z: 3, width: 1.2, height: 1.4, depth: 1.2 },
-  { id: "T3", type: "crate", x: 30, z: -2, width: 1.6, height: 1.1, depth: 1.6 },
-  { id: "T4", type: "barrel", x: 36, z: 20, width: 0.9, height: 1.4, depth: 0.9 },
-  { id: "T5", type: "crate", x: 33, z: 22, width: 1.6, height: 1.1, depth: 1.6 },
+  /* ================= B 点（x 17…38, z −30…−14） ================= */
+  // 西墙：4m 门洞（z −22…−18）接「中门→B 门」的短廊
+  { id: "BS_W1", type: "wall", x: 17, z: -26, width: 2, height: 4, depth: 8 },
+  { id: "BS_W2", type: "wall", x: 17, z: -16, width: 2, height: 4, depth: 4 },
+  // 北墙：x 20…26 是 CT 侧入口
+  { id: "BS_N1", type: "wall", x: 15.5, z: -29, width: 9, height: 4, depth: 2 },
+  { id: "BS_N2", type: "wall", x: 32, z: -29, width: 12, height: 4, depth: 2 },
+  // 南墙：x 24…30 是隧道出口
+  { id: "BS_S1", type: "wall", x: 20.5, z: -13, width: 7, height: 4, depth: 2 },
+  { id: "BS_S2", type: "wall", x: 34, z: -13, width: 8, height: 4, depth: 2 },
 
-  /* ---------------- T 出生点周边 ---------------- */
-  { id: "P1", type: "crate", x: -11, z: 27, width: 1.6, height: 1.1, depth: 1.6 },
-  { id: "P2", type: "cart", x: 11, z: 27, width: 2.2, height: 1.4, depth: 1.2 },
-  { id: "P3", type: "palm", x: -12, z: 36.5, width: 0.6, height: 5.0, depth: 0.6 },
-  { id: "P4", type: "wall", x: 12, z: 32, width: 1.0, height: 1.1, depth: 3.0 },
+  /* ================= 中门 → B 门 短廊（x 11…16, z −22…−18） ================= */
+  { id: "B2B_N", type: "building", x: 13.5, z: -26, width: 5, height: 5, depth: 8 },
+  { id: "B2B_S", type: "building", x: 13.5, z: -16, width: 5, height: 5, depth: 4 },
+  { id: "BLD_C", type: "building", x: 15.5, z: -10, width: 17, height: 6, depth: 8 },
 
-  /* ---------------- CT 出生点周边 ---------------- */
-  { id: "Q1", type: "crate", x: -8, z: -27, width: 1.6, height: 1.1, depth: 1.6 },
-  { id: "Q2", type: "crate", x: 8, z: -28, width: 1.6, height: 1.1, depth: 1.6 },
+  /* ================= CT → B 的走廊（x 11…26, z −38…−28） ================= */
+  { id: "CTB_E", type: "wall", x: 27, z: -32, width: 2, height: 4, depth: 8 },
+  { id: "BLD_CTB", type: "building", x: 32.5, z: -33, width: 9, height: 6, depth: 8 },
+
+  /* ================= B 洞 / 隧道 ================= */
+  // 上隧道（x 28…38, z 2…18）
+  { id: "UT_W", type: "wall", x: 27, z: 10, width: 2, height: 4, depth: 16 },
+  // 隧道弯（x 24…38, z −4…2）
+  { id: "TB_N", type: "wall", x: 25, z: 3, width: 2, height: 4, depth: 2 },
+  { id: "TB_S", type: "wall", x: 34, z: -5, width: 8, height: 4, depth: 2 },
+  // 下隧道（x 24…30, z −14…−4）
+  { id: "LT_W", type: "wall", x: 23, z: -9, width: 2, height: 4, depth: 10 },
+  { id: "LT_E", type: "wall", x: 31, z: -9, width: 2, height: 4, depth: 10 },
+  { id: "BLD_D", type: "building", x: 35, z: -10, width: 6, height: 6, depth: 8 },
+
+  /* ================= 掩体：A 大 ================= */
+  { id: "P_AL1", type: "crate", x: -33, z: 6, width: 1.8, height: 1.1, depth: 1.8 },
+  { id: "P_AL2", type: "barrel", x: -35, z: 11, width: 1.2, height: 1.4, depth: 1.2 },
+  { id: "P_AL3", type: "crate", x: -31, z: -2, width: 1.6, height: 1.1, depth: 1.6 },
+  { id: "P_AL4", type: "wall", x: -35, z: -8, width: 3, height: 1.1, depth: 1 },
+
+  /* ================= 掩体：A 外（T 侧） ================= */
+  { id: "P_AO1", type: "cart", x: -24, z: 30, width: 2.2, height: 1.5, depth: 1.2 },
+  { id: "P_AO2", type: "barrel", x: -30, z: 24, width: 1.2, height: 1.4, depth: 1.2 },
+  { id: "P_AO3", type: "crate", x: -34, z: 29, width: 1.8, height: 1.6, depth: 1.8 },
+  { id: "P_AO4", type: "palm", x: -36, z: 21, width: 0.6, height: 5, depth: 0.6 },
+
+  /* ================= 掩体：A 点 ================= */
+  { id: "P_A1", type: "crate", x: -33, z: -27, width: 2.4, height: 1.6, depth: 2.4 },
+  { id: "P_A2", type: "crate", x: -30, z: -19, width: 2.0, height: 1.1, depth: 2.0 },
+  { id: "P_A3", type: "crate", x: -22, z: -26, width: 2.2, height: 1.6, depth: 2.2 },
+  { id: "P_A4", type: "barrel", x: -36, z: -24, width: 1.2, height: 1.4, depth: 1.2 },
+  { id: "P_A5", type: "cart", x: -25, z: -28, width: 2.4, height: 1.4, depth: 1.2 },
+  { id: "P_A6", type: "wall", x: -35, z: -18, width: 4, height: 1.1, depth: 1 },
+  { id: "P_A7", type: "palm", x: -37, z: -30, width: 0.6, height: 5, depth: 0.6 },
+
+  /* ================= 掩体：短 A / 猫道 / CT 中路 ================= */
+  { id: "P_S1", type: "crate", x: -12.2, z: -18.5, width: 1.4, height: 1.1, depth: 1.4 },
+  { id: "P_C1", type: "crate", x: -4, z: -18, width: 1.6, height: 1.1, depth: 1.6 },
+  { id: "P_C2", type: "barrel", x: 5, z: -21, width: 1.2, height: 1.4, depth: 1.2 },
+  { id: "P_C3", type: "wall", x: -7, z: -11, width: 1, height: 1.1, depth: 3 },
+
+  /* ================= 掩体：中路（xbox 与门口箱） ================= */
+  { id: "P_M1", type: "crate", x: 0, z: 2, width: 1.8, height: 1.1, depth: 1.8 },
+  { id: "P_M2", type: "crate", x: 3, z: 12, width: 1.6, height: 1.1, depth: 1.6 },
+  { id: "P_M3", type: "barrel", x: -3.5, z: 18, width: 0.9, height: 1.4, depth: 0.9 },
+  { id: "P_M4", type: "wall", x: 2, z: 21, width: 1, height: 1.1, depth: 3 },
+
+  /* ================= 掩体：B 点 ================= */
+  { id: "P_B1", type: "crate", x: 22, z: -25, width: 2.4, height: 1.6, depth: 2.4 },
+  { id: "P_B2", type: "crate", x: 30, z: -20, width: 2.0, height: 1.1, depth: 2.0 },
+  { id: "P_B3", type: "crate", x: 34, z: -26, width: 1.8, height: 1.6, depth: 1.8 },
+  { id: "P_B4", type: "barrel", x: 26, z: -16, width: 1.2, height: 1.4, depth: 1.2 },
+  { id: "P_B5", type: "cart", x: 20, z: -16, width: 2.2, height: 1.4, depth: 1.2 },
+  { id: "P_B6", type: "palm", x: 37, z: -18, width: 0.6, height: 5, depth: 0.6 },
+  { id: "P_B7", type: "wall", x: 28, z: -27, width: 4, height: 1.1, depth: 1 },
+
+  /* ================= 掩体：B 洞 / 隧道 / B 外 ================= */
+  { id: "P_T1", type: "crate", x: 33, z: 10, width: 1.6, height: 1.1, depth: 1.6 },
+  { id: "P_T2", type: "barrel", x: 36, z: 4, width: 0.9, height: 1.4, depth: 0.9 },
+  { id: "P_T3", type: "crate", x: 27, z: -1, width: 1.4, height: 1.1, depth: 1.4 },
+  { id: "P_T4", type: "crate", x: 29, z: 22, width: 1.8, height: 1.6, depth: 1.8 },
+  { id: "P_T5", type: "cart", x: 22, z: 28, width: 2.2, height: 1.5, depth: 1.2 },
+  { id: "P_T6", type: "barrel", x: 35, z: 30, width: 1.2, height: 1.4, depth: 1.2 },
+
+  /* ================= 掩体：两个出生点周边（只放贴墙的小件，不占出生位） ================= */
+  { id: "P_TS1", type: "crate", x: -8.2, z: 26.8, width: 1.2, height: 1.1, depth: 1.2 },
+  { id: "P_TS2", type: "barrel", x: 8.2, z: 26.8, width: 1.0, height: 1.4, depth: 1.0 },
+  { id: "P_CT1", type: "crate", x: -8.2, z: -27.6, width: 1.2, height: 1.1, depth: 1.2 },
+  { id: "P_CT2", type: "barrel", x: 8.2, z: -27.6, width: 1.0, height: 1.4, depth: 1.0 },
 ];
 
-/** 全图实心体块（64 条 = 22 段墙 + 2 栋建筑 + 40 个掩体），渲染/物理/弹道共用同一份数据。 */
+/** 全图实心体块（97 条 = 50 段墙 + 12 栋建筑 + 35 个掩体），渲染/物理/弹道共用同一份数据。 */
 export const OBSTACLES: readonly ObstacleSpec[] = OBSTACLE_SEEDS.map((seed) => ({
   ...seed,
   color: OBSTACLE_COLORS[seed.type],
@@ -806,13 +884,13 @@ export const SPAWN_POINTS: readonly SpawnPoint[] = [
   { team: "T", x: -6, z: 34.0, yaw: 0 },
   { team: "T", x: 0, z: 35.5, yaw: 0 },
   { team: "T", x: 6, z: 34.0, yaw: 0 },
-  { team: "T", x: -10, z: 31.0, yaw: 0 },
-  { team: "T", x: 10, z: 31.0, yaw: 0 },
-  { team: "CT", x: -6, z: -33.0, yaw: Math.PI },
-  { team: "CT", x: 0, z: -34.5, yaw: Math.PI },
-  { team: "CT", x: 6, z: -33.0, yaw: Math.PI },
-  { team: "CT", x: -9, z: -29.5, yaw: Math.PI },
-  { team: "CT", x: 9, z: -29.5, yaw: Math.PI },
+  { team: "T", x: -6, z: 29.0, yaw: 0 },
+  { team: "T", x: 6, z: 29.0, yaw: 0 },
+  { team: "CT", x: -6, z: -34.0, yaw: Math.PI },
+  { team: "CT", x: 0, z: -35.5, yaw: Math.PI },
+  { team: "CT", x: 6, z: -34.0, yaw: Math.PI },
+  { team: "CT", x: -6, z: -29.0, yaw: Math.PI },
+  { team: "CT", x: 6, z: -29.0, yaw: Math.PI },
 ];
 
 /**
@@ -827,6 +905,58 @@ export const TEAM_SPAWN_COUNT: number = 4;
 /** 取某队参与随机的那几个出生点（前 {@link TEAM_SPAWN_COUNT} 条，坐标原样）。 */
 export function teamSpawnPoints(team: TeamId): readonly SpawnPoint[] {
   return SPAWN_POINTS.filter((point) => point.team === team).slice(0, TEAM_SPAWN_COUNT);
+}
+
+/* ------------------------------------------------------------------ *
+ * 地图分区：小地图标签、播报与将来的下包/拆包判定共用
+ * ------------------------------------------------------------------ */
+
+export type MapZoneKind = "site" | "spawn" | "lane" | "area";
+
+/** 一块有名字的区域（轴对齐矩形，单位米）。 */
+export interface MapZone {
+  id: string;
+  /** 小地图与播报用的中文名。 */
+  label: string;
+  kind: MapZoneKind;
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+}
+
+/**
+ * 分区表（与小地图上的字一一对应）。
+ *
+ * 只用于**显示与语义**，不参与碰撞或判定：碰撞永远只看 {@link OBSTACLES}。
+ * 区域的矩形允许互相重叠（例如「中门」落在「中路」里），标注时按数组顺序取第一个命中的。
+ */
+export const MAP_ZONES: readonly MapZone[] = [
+  { id: "site_a", label: "A 点", kind: "site", minX: -38, maxX: -18, minZ: -30, maxZ: -14 },
+  { id: "site_b", label: "B 点", kind: "site", minX: 18, maxX: 38, minZ: -30, maxZ: -14 },
+  { id: "spawn_t", label: "T 出生点", kind: "spawn", minX: -9, maxX: 9, minZ: 26, maxZ: 37 },
+  { id: "spawn_ct", label: "CT 出生点", kind: "spawn", minX: -9, maxX: 9, minZ: -37, maxZ: -27 },
+  { id: "long_a", label: "A 大", kind: "lane", minX: -38, maxX: -29, minZ: -14, maxZ: 17 },
+  { id: "outside_long", label: "A 外", kind: "area", minX: -38, maxX: -21, minZ: 18, maxZ: 37 },
+  { id: "short_a", label: "短 A", kind: "lane", minX: -17, maxX: -11, minZ: -22, maxZ: -14 },
+  { id: "catwalk", label: "猫道", kind: "lane", minX: -15, maxX: -11, minZ: -14, maxZ: -8 },
+  { id: "ct_mid", label: "CT 中路", kind: "area", minX: -9, maxX: 9, minZ: -25, maxZ: -8 },
+  { id: "mid", label: "中路", kind: "lane", minX: -5, maxX: 5, minZ: -8, maxZ: 24 },
+  { id: "b_doors", label: "B 门", kind: "lane", minX: 11, maxX: 17, minZ: -22, maxZ: -18 },
+  { id: "tunnels", label: "B 洞", kind: "lane", minX: 28, maxX: 38, minZ: 2, maxZ: 18 },
+  { id: "lower_tunnel", label: "下隧道", kind: "lane", minX: 24, maxX: 30, minZ: -14, maxZ: -4 },
+  { id: "ct_to_b", label: "CT → B", kind: "lane", minX: 11, maxX: 26, minZ: -37, maxZ: -28 },
+  { id: "ct_to_a", label: "CT 坡道", kind: "lane", minX: -28, maxX: -11, minZ: -37, maxZ: -31 },
+];
+
+/** 查询某点所属区域（重叠时返回数组中靠前的一块）。 */
+export function mapZoneAt(x: number, z: number): MapZone | null {
+  for (const zone of MAP_ZONES) {
+    if (x >= zone.minX && x <= zone.maxX && z >= zone.minZ && z <= zone.maxZ) {
+      return zone;
+    }
+  }
+  return null;
 }
 
 /** 由障碍数据推导碰撞 AABB。 */

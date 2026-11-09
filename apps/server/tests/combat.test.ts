@@ -94,6 +94,28 @@ describe("computeShot", () => {
     );
   });
 
+  it("蹲下时射线起点下沉到蹲姿眼高", () => {
+    const stand: CombatantView = { ...makePlayer("A", 0, 0), crouch: false };
+    const crouched: CombatantView = { ...makePlayer("A", 0, 0), crouch: true };
+    const target = makePlayer("B", 0, -6);
+    const standingShot = computeShot([stand, target], "A", []);
+    const crouchedShot = computeShot([crouched, target], "A", []);
+    assert.ok(standingShot !== null && crouchedShot !== null);
+    assert.ok(Math.abs(standingShot.rayOrigin.y - 1.6) < 1e-9);
+    assert.ok(Math.abs(crouchedShot.rayOrigin.y - 1.02) < 1e-9, `蹲姿眼高应 1.02，实际 ${crouchedShot.rayOrigin.y}`);
+    // 蹲姿下判定也应该从更低的位置出发：平射命中的是"腿/腹"而不是"胸"
+    assert.equal(crouchedShot.hitZone, "belly");
+  });
+
+  it("目标蹲下时判定体被压扁：平射会从他头顶过去", () => {
+    const shooter = makePlayer("A", 0, 0);
+    const standing = makePlayer("B", 0, -6);
+    const crouching: CombatantView = { ...makePlayer("B", 0, -6), crouch: true };
+    assert.equal(computeShot([shooter, standing], "A", [])?.hitPlayerId, "B");
+    // 站立头顶 1.80 / 蹲下头顶 1.80 × 0.63 = 1.134，1.6m 的水平射线整体越过
+    assert.equal(computeShot([shooter, crouching], "A", [])?.hitPlayerId, null);
+  });
+
   it("掩体挡住射线时不命中", () => {
     // 显式给一块 6×2.4×6 的掩体（旧版这里读真实地图的中心箱）；
     // 地图改版后 64 个体块的相对位置会变，本用例只校验"射线-AABB 求交"这件事本身。

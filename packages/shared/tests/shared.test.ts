@@ -60,6 +60,11 @@ import {
   recoilDeltaOf,
   serializeSensitivity,
   slotOfThrowable,
+  spreadHalfAngleDeg,
+  spreadToPixels,
+  sampleSpread,
+  hashString,
+  mixShotSeed,
   switchDurationOf,
   teamSpawnPoints,
   throwableTypeOfSlot,
@@ -510,5 +515,109 @@ describe("后坐力：喷弹形与冲量方向", () => {
     const end = recoilDeltaOf(ak, 999);
     assert.equal(end.nextIndex, 29);
     assert.equal(end.pitchDeg, 0, "已经到最后一格，再打也不应继续上抬");
+  });
+});
+
+describe("服务端权威扩散（圆锥采样）", () => {
+  const ak = fireProfileOf(0);
+  const pistol = fireProfileOf(1);
+
+  it("两把枪的扩散参数必须存在且单调（首发 < 封顶）", () => {
+    assert.ok(ak !== null);
+    assert.ok(pistol !== null);
+    for (const profile of [ak, pistol]) {
+      assert.ok(profile.spreadFirstDeg > 0, "首发扩散不能为 0（否则等于激光枪）");
+      assert.ok(profile.spreadStepDeg > 0);
+      assert.ok(profile.spreadMaxDeg > profile.spreadFirstDeg);
+    }
+  });
+
+  it("扩散半角必须查表而非随机：第 1 发最小、逐发递增、到顶封顶", () => {
+    assert.ok(ak !== null);
+    assert.equal(spreadHalfAngleDeg(ak, 0), 0.2);
+    // 0.20 + 9×0.26 = 2.54（第 10 发）
+    assert.ok(Math.abs(spreadHalfAngleDeg(ak, 9) - 2.54) < 1e-9);
+    // 第 11 发本该 2.80，被 2.60 封顶
+    assert.equal(spreadHalfAngleDeg(ak, 10), 2.6);
+    assert.equal(spreadHalfAngleDeg(ak, 29), 2.6);
+    // 越界（负数 / 极大值）不能炸，也不能返回 NaN
+    assert.equal(spreadHalfAngleDeg(ak, -5), 0.2);
+    assert.equal(spreadHalfAngleDeg(ak, 10000), 2.6);
+  });
+
+  it("手枪涨得更快、封顶更低（第 7 发到顶 1.80）", () => {
+    assert.ok(pistol !== null);
+    assert.equal(spreadHalfAngleDeg(pistol, 0), 0.12);
+    assert.ok(Math.abs(spreadHalfAngleDeg(pistol, 5) - 1.62) < 1e-9);
+    assert.equal(spreadHalfAngleDeg(pistol, 6), 1.8, "第 7 发本该 1.92，应被 1.80 封顶");
+  });
+
+  it("首发 30m 处的落点半径必须小于头部判定半径（静止首发能稳定爆头）", () => {
+    assert.ok(ak !== null);
+    const radius: number = 30 * Math.tan((spreadHalfAngleDeg(ak, 0) * Math.PI) / 180);
+    assert.ok(radius < 0.13, `30m 首发半径 ${radius.toFixed(3)}m 超过头部半径 0.13m，首发不再可靠`);
+  });
+
+  it("同一颗种子必须得到逐位相同的采样（QA 能断言、争议弹道能回放）", () => {
+    assert.ok(ak !== null);
+    const seed = mixShotSeed(0xdeadbeef, hashString("session-1"), 7);
+    const first = sampleSpread(ak, 7, seed);
+    const second = sampleSpread(ak, 7, seed);
+    assert.deepEqual(first, second);
+  });
+
+  it("种子三要素缺一不可：换房间 / 换玩家 / 换发数都必须换出不同偏移", () => {
+    assert.ok(ak !== null);
+    const base = mixShotSeed(1, 100, 3);
+    assert.notEqual(mixShotSeed(2, 100, 3), base, "换房间种子应改变偏移");
+    assert.notEqual(mixShotSeed(1, 200, 3), base, "换玩家盐应改变偏移");
+    assert.notEqual(mixShotSeed(1, 100, 4), base, "换发数应改变偏移");
+  });
+
+  it("采样必须落在单位盘内（|v| ≤ 1），否则实际扩散会超过标称半角", () => {
+    assert.ok(ak !== null);
+    for (let i = 0; i < 500; i += 1) {
+      const sample = sampleSpread(ak, i % 30, mixShotSeed(0x12345678, hashString(`p${i}`), i % 30));
+      const length: number = Math.hypot(sample.x, sample.y);
+      assert.ok(length <= 1 + 1e-9, `第 ${i} 次采样 |v| = ${length} 超出单位盘`);
+    }
+  });
+
+  it("半径分布必须接近均匀圆盘（中位数 ≈ 0.707R，不是集中在中心或边缘）", () => {
+    assert.ok(ak !== null);
+    const radii: number[] = [];
+    for (let i = 0; i < 2000; i += 1) {
+      const sample = sampleSpread(ak, 0, mixShotSeed(0x9e3779b9, hashString("sampler"), i));
+      radii.push(Math.hypot(sample.x, sample.y));
+    }
+    radii.sort((a, b) => a - b);
+    const median: number = radii[Math.floor(radii.length / 2)] as number;
+    assert.ok(median > 0.66 && median < 0.75, `半径中位数 ${median.toFixed(3)} 偏离 0.707 太多`);
+    // 均值应接近 2/3（E[√u]）
+    const mean: number = radii.reduce((sum, value) => sum + value, 0) / radii.length;
+    assert.ok(mean > 0.62 && mean < 0.71, `半径均值 ${mean.toFixed(3)} 偏离 0.667 太多`);
+  });
+
+  it("采样方向必须覆盖四个象限（不是只往一个方向偏）", () => {
+    assert.ok(ak !== null);
+    const quadrants = [0, 0, 0, 0];
+    for (let i = 0; i < 400; i += 1) {
+      const sample = sampleSpread(ak, 0, mixShotSeed(7, 7, i));
+      const index: number = (sample.x >= 0 ? 0 : 1) + (sample.y >= 0 ? 0 : 2);
+      quadrants[index] = (quadrants[index] ?? 0) + 1;
+    }
+    for (const count of quadrants) {
+      assert.ok(count > 60, `某个象限只有 ${count} 次采样，分布不均`);
+    }
+  });
+
+  it("spreadToPixels 必须是单调的、且与 FOV/分辨率线性", () => {
+    const low: number = spreadToPixels(0.2, 80, 1080);
+    const high: number = spreadToPixels(2.6, 80, 1080);
+    assert.ok(high > low * 10, "2.6° 应比 0.2° 张开得多一个量级");
+    // 同角度、分辨率翻倍 → 像素翻倍
+    assert.ok(Math.abs(spreadToPixels(2.6, 80, 2160) - high * 2) < 1e-9);
+    // 0.2° @ FOV 80 / 1080p：tan(0.2°)/tan(40°)×540 ≈ 2.25px
+    assert.ok(Math.abs(low - 2.25) < 0.05, `0.2° 应约 2.25px，实际 ${low.toFixed(3)}`);
   });
 });

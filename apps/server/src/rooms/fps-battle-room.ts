@@ -24,8 +24,11 @@ import {
   WEAPON_RESERVE_AMMO,
   WEAPON_SLOTS,
   fireProfileOf,
+  hashString,
   isSlotEnabled,
+  mixShotSeed,
   obstacleColliders,
+  sampleSpread,
   slotOfThrowable,
   switchDurationOf,
   throwableTypeOfSlot,
@@ -158,6 +161,22 @@ export class FPSBattleRoom extends Room<BattleState> {
   private readonly lastThrowAt = new Map<string, number>();
   /** 每玩家上次挥刀时间戳（服务端限流依据，{@link MELEE_COOLDOWN_MS}）。 */
   private readonly lastKnifeAt = new Map<string, number>();
+  /**
+   * 每玩家当前这一串连发的发数（0 = 下一发是第一发）。
+   *
+   * 扩散半角由它查表、随机偏移由它当种子的一部分，所以它必须**严格等于**客户端
+   * 用来画准星的那个游标，两边都按「成功开火 +1 / 停火 sprayResetMs 归零 /
+   * 切枪·换弹·死亡·重生归零」维护。不一致的具体后果是：准星张到 2.6° 了，
+   * 服务端还按 0.2° 结算 —— 玩家觉得"扫射比点射还准"。
+   */
+  private readonly sprayIndex = new Map<string, number>();
+  /**
+   * 本房间的扩散随机种子（**永不广播**）。
+   *
+   * 每局房间随机生成：作弊者只能猜到"偏移是确定的"，猜不到具体偏到哪，
+   * 因此无法"等偏到人身上再开枪"；而服务端可以凭它完整回放任何一发争议弹道。
+   */
+  private readonly roomSeed: number = (Math.random() * 0x100000000) >>> 0;
   /** 飞行中的投掷物（服务端权威模拟）。 */
   private readonly grenades = new Map<number, GrenadeState>();
   private nextGrenadeId = 1;
@@ -251,8 +270,21 @@ export class FPSBattleRoom extends Room<BattleState> {
       if (now - last < profile.cooldownMs * FIRE_COOLDOWN_TOLERANCE) {
         return;
       }
+      // 停火超过 sprayResetMs → 这一发算第一发，扩散回到 spreadFirstDeg。
+      // 与客户端画准星用的是同一个规则、同一个游标，否则准星张开的幅度和真实圆锥无关。
+      const sprayShotIndex: number =
+        now - last > profile.sprayResetMs ? 0 : this.sprayIndex.get(client.sessionId) ?? 0;
+      this.sprayIndex.set(client.sessionId, sprayShotIndex + 1);
       this.lastFireAt.set(client.sessionId, now);
       shooter[fields.mag] -= 1;
+
+      // 服务端权威扩散：种子 = 房间种子 ^ 玩家盐 ^ 发数。
+      // 同发可复现（QA 能断言、争议弹道能回放），但房间种子不广播 → 作弊者无法预测。
+      const spread = sampleSpread(
+        profile,
+        sprayShotIndex,
+        mixShotSeed(this.roomSeed, hashString(client.sessionId), sprayShotIndex),
+      );
 
       const aim: AimSnapshot | null = acceptAimSnapshot(raw, { yaw: shooter.yaw, pitch: shooter.pitch });
       // 开火瞬间的位置快照：判定射线必须从玩家屏幕上看到的位置出发，否则移动中开枪
@@ -269,6 +301,7 @@ export class FPSBattleRoom extends Room<BattleState> {
         aim ?? undefined,
         profile.range,
         fireOrigin,
+        spread,
       );
       if (shot === null) {
         return;
@@ -308,6 +341,8 @@ export class FPSBattleRoom extends Room<BattleState> {
 
       player.weaponSlot = requested;
       player.switchEndAt = now + switchDurationOf(requested);
+      // 换枪必须重置扩散游标：否则切到手枪的第一发会继承 AK 扫了 20 发后的 2.6° 扩散
+      this.sprayIndex.delete(client.sessionId);
       this.logger.debug(
         { playerId: client.sessionId, slot: requested, switchEndAt: player.switchEndAt },
         "玩家切换武器槽",
@@ -428,6 +463,7 @@ export class FPSBattleRoom extends Room<BattleState> {
     this.lastFireAt.delete(client.sessionId);
     this.lastThrowAt.delete(client.sessionId);
     this.lastKnifeAt.delete(client.sessionId);
+    this.sprayIndex.delete(client.sessionId);
     const removed: boolean = this.state.players.delete(client.sessionId);
     this.logger.info({ playerId: client.sessionId, removed, clients: this.clients.length }, "玩家已离开");
   }
@@ -467,6 +503,8 @@ export class FPSBattleRoom extends Room<BattleState> {
     victim.alive = false;
     victim.deaths += 1;
     victim.respawnAt = Date.now() + PLAYER_RESPAWN_DELAY_MS;
+    // 死亡清空扩散游标：重生后第一发必须是准的（否则玩家"刚复活就散得打不中人"）
+    this.sprayIndex.delete(victimId);
 
     const killer = this.state.players.get(killerId);
     if (killer) {
@@ -514,6 +552,8 @@ export class FPSBattleRoom extends Room<BattleState> {
 
     const slot: number = player.weaponSlot;
     player.reloadEndAt = Date.now() + WEAPON_RELOAD_MS;
+    // 换弹期间夹具复位，换完第一发必须回到首发精度（CS 里换弹确实会重置喷弹形）
+    this.sprayIndex.delete(client.sessionId);
     this.clock.setTimeout(() => {
       const current = this.state.players.get(client.sessionId);
       if (!current || !current.alive) {
@@ -712,6 +752,7 @@ export class FPSBattleRoom extends Room<BattleState> {
     player.flashes = THROWABLES.flash.initialCount;
     player.smokes = THROWABLES.smoke.initialCount;
     player.weaponSlot = 0;
+    this.sprayIndex.delete(sessionId);
     player.switchEndAt = 0;
     player.armor = 0;
 

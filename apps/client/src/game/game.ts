@@ -34,6 +34,8 @@ import {
   nextSlot,
   recoilDeltaOf,
   slotOfThrowable,
+  spreadHalfAngleDeg,
+  spreadToPixels,
   switchDurationOf,
   throwableTypeOfSlot,
   type DamageTakenMessage,
@@ -74,11 +76,16 @@ const MAX_PITCH = Math.PI / 2 - 0.02;
 /** 角度 → 弧度。武器参数表里的后坐力用「度」表示（人读得懂），运行时换算成弧度。 */
 const DEG2RAD = Math.PI / 180;
 
-/** 准星扩散：基础值、每发增量、移动增量、回弹速度（像素/秒）。 */
-const SPREAD_BASE = 3;
-const SPREAD_PER_SHOT = 7;
-const SPREAD_MOVE = 4;
-const SPREAD_RECOVER_PER_SECOND = 26;
+/**
+ * 准星最小张开量（像素）。
+ *
+ * 即使扩散为 0（刀、投掷物）准星也不能完全闭合：四根线贴在一起会糊成一个点，
+ * 玩家就找不到屏幕正中心了。
+ */
+const CROSSHAIR_GAP_MIN_PX = 3;
+
+/** 相机竖直 FOV（度）——准星的像素换算必须用同一个值，否则准星宽度与真实圆锥不成比例。 */
+const CAMERA_FOV_Y_DEG = 80;
 
 /**
  * 需要「边沿触发」的动作键。
@@ -200,7 +207,15 @@ export class Game {
   /** 上一发的时刻，用于判断停火间隔、驱动 `shotIndex` 回退。 */
   private lastShotAtMs = 0;
   private shake = 0;
-  private spread = SPREAD_BASE;
+  /**
+   * 扩散游标：这一串连发已经打了几发（0 = 下一发是第一发）。
+   *
+   * 与服务端 `sprayIndex` 必须严格同步（同样的 +1 与归零规则），因为它决定
+   * **准星张开多少像素**，而服务端用同一个数决定**圆锥半径多少度**。
+   * 两边不同步的后果很具体：准星已经张到 2.6°，服务端还按 0.2° 结算，
+   * 玩家会觉得"扫射反而比点射准"，而且永远练不准。
+   */
+  private spreadIndex = 0;
   private readonly previousPressed = new Set<string>();
 
   public constructor(
@@ -395,7 +410,8 @@ export class Game {
     this.viewModel.recoil(nowMs);
     this.applyRecoilImpulse(profile, nowMs);
     this.shake = Math.min(1, this.shake + 0.18);
-    this.spread = Math.min(26, this.spread + SPREAD_PER_SHOT);
+    // 扩散游标 +1：下一发的圆锥半径由它决定（服务端用同一个数 + 同一个公式）
+    this.spreadIndex += 1;
     if (this.currentMag() === 0 && this.currentReserve() > 0) {
       this.requestReload();
     }
@@ -413,6 +429,12 @@ export class Game {
    * 没有表的枪（半自动手枪）用单发随机，每次点击独立。
    */
   private applyRecoilImpulse(profile: WeaponFireProfile, nowMs: number): void {
+    // 停火够久 → 两个游标一起归零（图案从头、扩散回到首发）。
+    // 放在这里而不是只靠主循环，是为了不依赖"开火前恰好跑过一帧"。
+    if (this.lastShotAtMs > 0 && nowMs - this.lastShotAtMs > profile.sprayResetMs) {
+      this.shotIndex = 0;
+      this.spreadIndex = 0;
+    }
     this.lastShotAtMs = nowMs;
     const delta: RecoilDelta = recoilDeltaOf(profile, this.shotIndex);
     // `pitch` 增大 = 视线抬高（three.js 的 YXZ 相机里 `rotation.x > 0` 让 −Z 转向 +Y），
@@ -421,6 +443,28 @@ export class Game {
     this.recoilPitch += delta.pitchDeg * DEG2RAD;
     this.recoilYaw += delta.yawDeg * DEG2RAD;
     this.shotIndex = delta.nextIndex;
+  }
+
+  /**
+   * 准星张开多少像素。
+   *
+   * **必须**由 `spreadHalfAngleDeg`（服务端同一个函数）换算而来，不能用自己的一套
+   * "每发 +7px"：那样准星张开的幅度和真实圆锥没有关系，就是又一次"准星撒谎"——
+   * 上一轮"弹道不对"的根因之一正是这个（准星在抖、服务端射线是直线）。
+   */
+  private crosshairSpreadPx(): number {
+    const profile = fireProfileOf(this.weaponSlot);
+    if (profile === null) {
+      // 刀 / 投掷物没有圆锥扩散，准星保持最小张开量
+      return CROSSHAIR_GAP_MIN_PX;
+    }
+    const halfAngleDeg: number = spreadHalfAngleDeg(profile, this.spreadIndex);
+    // 用画布真实高度换算：不同分辨率下"张开的角度"相同、"张开的像素"不同
+    const viewportHeight: number = this.renderer.domElement.clientHeight || 720;
+    return Math.max(
+      CROSSHAIR_GAP_MIN_PX,
+      spreadToPixels(halfAngleDeg, CAMERA_FOV_Y_DEG, viewportHeight),
+    );
   }
 
   private requestReload(): void {
@@ -436,6 +480,10 @@ export class Game {
       return;
     }
     this.reloadEndAt = Date.now() + WEAPON_RELOAD_MS;
+    // 换弹重置两个游标（服务端 `handleReload` 同步做同样的事）：
+    // 换完第一发必须回到首发精度，否则会接着上一串的扩散继续打。
+    this.shotIndex = 0;
+    this.spreadIndex = 0;
     this.connection.sendReload();
     this.audio.reloadStart();
     window.setTimeout(() => {
@@ -550,6 +598,8 @@ export class Game {
     // 换枪即重置喷弹形：新枪的第一发必须是表头（几乎没有偏移），
     // 否则切枪后会接着上一把枪的图案打，出现"第一发就飞"的怪异手感。
     this.shotIndex = 0;
+    // 扩散游标同罪：不重置的话，AK 扫了 20 发（2.6°）切手枪，第一发就散到封顶
+    this.spreadIndex = 0;
   }
 
   /**
@@ -768,6 +818,7 @@ export class Game {
       this.recoilPitch = 0;
       this.recoilYaw = 0;
       this.shotIndex = 0;
+      this.spreadIndex = 0;
     }
 
     // 死亡即断扳机：否则落地那一刻仍然按着左键，重生后第一帧就会"自动"打出一发
@@ -844,6 +895,10 @@ export class Game {
     // 松手 320ms 后下一枪是第一格（几乎无偏移），所以点射永远比乱扫准。
     if (this.shotIndex > 0 && recoilProfile !== null && nowMs - this.lastShotAtMs > recoilProfile.sprayResetMs) {
       this.shotIndex = 0;
+    }
+    // 扩散游标同理：停火后准星收回到首发宽度（这一点与服务端 `sprayIndex` 完全一致）
+    if (this.spreadIndex > 0 && recoilProfile !== null && nowMs - this.lastShotAtMs > recoilProfile.sprayResetMs) {
+      this.spreadIndex = 0;
     }
     const pitchWithRecoil = Math.min(MAX_PITCH, Math.max(-MAX_PITCH, this.kinematics.pitch + this.recoilPitch));
     const yawWithRecoil = this.kinematics.yaw + this.recoilYaw;
@@ -938,10 +993,6 @@ export class Game {
     // 让枪口火光贴着枪口帽走（后坐/换弹/投掷时一起位移）
     this.effects.setMuzzleOffset(this.viewModel.getMuzzleWorldOffset());
 
-    // 准星扩散回弹
-    const baseSpread = SPREAD_BASE + (moving ? SPREAD_MOVE : 0);
-    this.spread = Math.max(baseSpread, this.spread - SPREAD_RECOVER_PER_SECOND * dtSeconds);
-
     this.hud.update({
       position: { x: this.kinematics.x, y: this.kinematics.y, z: this.kinematics.z },
       playerCount: this.latestPlayers.length,
@@ -958,7 +1009,7 @@ export class Game {
       frags: this.frags,
       flashes: this.flashes,
       smokes: this.smokes,
-      spread: this.spread,
+      spread: this.crosshairSpreadPx(),
     });
 
     this.renderer.render(this.scene, this.camera);

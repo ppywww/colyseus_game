@@ -348,3 +348,74 @@ yawKick(i)   = recoilHorizDeg × swingSign(i) × fadeIn(i)
 - **移动/跳跃的扩散惩罚**：同上，完全没建模。
 
 这两项交付后的验收标准见 §4.2 与 §4.5。
+
+---
+
+## 8. 服务端权威扩散落地记录（2026-11-09，覆盖 §7.3 的第一项）
+
+**§7.3 列的两项，第一项已完成，第二项仍不做。**
+
+### 8.1 实际实现（与 §2.2 的规则逐条对应）
+
+| §2.2 规则 | 落地位置 | 说明 |
+|---|---|---|
+| 1. 服务端只加扩散、不加后坐力 | `fps-battle-room.ts` FIRE handler | 后坐力已在客户端上报的 `yaw/pitch` 快照里，服务端再抬一次就是双倍 |
+| 2. 半角查表、不由随机决定 | `spreadHalfAngleDeg()` | `min(max, first + index × step)`，纯函数可断言 |
+| 3. `shotIndex` 生命周期 | 服务端 `sprayIndex` Map / 客户端 `spreadIndex` | 成功开火 +1；停火 `sprayResetMs` 归零；切枪、换弹、死亡、重生、离开都归零 |
+| 4. 圆盘均匀采样 | `sampleSpread()` | `r = √u`、`φ = 2πv` |
+| 5. 确定性 PRNG | `mixShotSeed()` + xorshift32 | 种子 = 房间种子 ^ `hashString(sessionId)` ^ 发数 |
+| 6. 不广播 seed | `ShotMessage.spreadDeg` | 只发结果半角，种子留在服务端 |
+| 7. `auto` 由客户端按冷却驱动 | 保持 B 案（已把限流提到 60/s） | 改 A 案要动开火状态机，与本轮无关；B 案配额占用已降到 67% 以下 |
+| 8. `semi` 一次点击一发 | `FIRE_MODES.SEMI` 分支 | 未变 |
+| 9. 弹匣空即停 | 保持客户端停止 + 服务端 `mag <= 0` 丢弃 | 未变 |
+| 10. 停火超时兜底 | 由 `sprayResetMs` 与冷却共同覆盖 | 本作没有服务端 auto 循环（B 案不需要） |
+
+### 8.2 参数（与 §1.1 / §1.2 一致，唯一改动是手枪 `spreadMaxDeg` 采纳了 §0 第 2 项建议）
+
+| 字段 | AK | 手枪 | 备注 |
+|---|---|---|---|
+| `spreadFirstDeg` | 0.20 | 0.12 | 30m 首发半径 0.105m / 0.063m，均 < 头判定 0.13m |
+| `spreadStepDeg` | 0.26 | 0.30 | AK 第 11 发封顶、手枪第 7 发封顶 |
+| `spreadMaxDeg` | 2.60 | **1.80** | 采纳 §0 第 2 项：1.30 会让手枪在 30m 的命中率高达 74%，"手枪只能点射"的意图失效 |
+
+### 8.3 偏移的施加方式（为什么不是小角近似）
+
+```
+tanHalf = tan(halfAngleDeg)
+dir'    = normalize(dir + right × (x · tanHalf) + up × (y · tanHalf))
+```
+
+偏移向量与 `dir` **垂直**，所以偏移后的夹角正好是 `atan(tanHalf × |v|)`；
+`|v| = 1` 时**精确等于**半角（单测断言误差 < 1e-6），30m 处换算误差 < 1mm。
+用 `dir.y += offset` 那种"加在分量上"的写法会在大角度时把半角压扁，30m 处少偏 3–5cm。
+
+### 8.4 准星（§2.6 的最小实现）
+
+```
+px = tan(halfAngleDeg) / tan(FOV_Y / 2) × (viewportHeight / 2)
+```
+
+客户端 `crosshairSpreadPx()` 直接用这个式子，`halfAngleDeg` 来自与服务端同一个
+`spreadHalfAngleDeg(profile, spreadIndex)`。参数：FOV 80°、1080p 下 0.20° → 2.25px、
+2.60° → 29.3px。
+
+旧的 `SPREAD_BASE = 3 / SPREAD_PER_SHOT = 7 / SPREAD_RECOVER_PER_SECOND = 26`
+（一套纯像素、与角度毫无关系的经验值）已删除——**这就是"准星撒谎"的物证**：
+它张开 26px 时，服务端射线仍然是 0°。
+
+### 8.5 仍未做：移动 / 跳跃扩散（§5 已列为不做）
+
+CS2 的 `inaccuracy_move` 是站立时的 27 倍（0.175 vs 0.0064）。本作跑动射击与静止一样准，
+而准星现在**如实显示**这一点（跑动时准星不会额外张开）。要补齐的话，改动点只有两处：
+服务端 FIRE 时按 `shooter` 的当前速度取一个系数乘到 `halfAngleDeg` 上、客户端
+`crosshairSpreadPx()` 用同一个系数。
+
+### 8.6 新增测试（17 条）
+
+- `packages/shared/tests/shared.test.ts` →「服务端权威扩散（圆锥采样）」10 条：
+  半角查表与封顶、首发 30m 半径 < 头部半径、同种子逐位复现、种子三要素敏感、
+  采样必落单位盘内、半径中位数 ≈ 0.707、四象限分布、像素换算单调与线性。
+- `apps/server/tests/spread.test.ts` 7 条：
+  无扩散时方向不变、圆心采样不改方向、`|v| = 1` 时夹角精确等于半角、
+  判定起点一字不差（枪口允许微移 < 2cm）、`dir` 是单位向量、
+  30m 处能把"打空"变成"命中"、首发与封顶的圆锥半径差一个量级。

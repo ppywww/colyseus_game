@@ -499,6 +499,13 @@ export interface ShotMessage {
   damage: number;
   /** 开火时使用的武器槽位（{@link WEAPON_SLOTS}）。 */
   weaponSlot: number;
+  /**
+   * 这一发实际使用的扩散半角（度）；0 表示无扩散（刀/投掷物或功能被关闭）。
+   *
+   * **不广播随机种子**：种子等于"下一发偏多少"的答案，发出去就等于给作弊客户端
+   * 提供了"等偏到人身上再开枪"的能力。只发结果角度，足够客户端画准星和调试。
+   */
+  spreadDeg: number;
 }
 
 /** 服务端广播的击杀事件。 */
@@ -892,6 +899,17 @@ export interface WeaponFireProfile {
   reserveAmmo: number;
   /** 展示名（HUD 用）。 */
   label: string;
+  /**
+   * 这一串**第一发**的扩散半角（度）。
+   *
+   * 这是"服务端圆锥"的半径，不是准星的像素宽度——准星的像素宽度由
+   * {@link spreadToPixels} 从同一个角度换算，两者必须同源，否则就是"准星撒谎"。
+   */
+  spreadFirstDeg: number;
+  /** 每多打一发，半角增加多少度（线性递增到 {@link spreadMaxDeg} 封顶）。 */
+  spreadStepDeg: number;
+  /** 扩散半角的上限（度）。到顶后再怎么扫都不会更散。 */
+  spreadMaxDeg: number;
   /** 单发上跳（度，正数 = 抬头）。玩家必须自己向下压枪来抵消。 */
   recoilVertDeg: number;
   /** 单发横向抖动半幅（度）。 */
@@ -931,6 +949,12 @@ export const WEAPON_FIRE_PROFILES: Record<number, WeaponFireProfile> = {
     magSize: WEAPON_MAG_SIZE,
     reserveAmmo: WEAPON_RESERVE_AMMO,
     label: "AK",
+    // 扩散：0.20° 起、每发 +0.26°、第 11 发封顶 2.60°。
+    // 换算：30m 处首发半径 0.105m（< 头判定 0.13m，所以静止首发 30m 能稳定爆头），
+    // 封顶时 30m 半径 1.36m（直径 2.72m），命中率约 19% —— "30m 别扫，要么点要么短点"。
+    spreadFirstDeg: 0.2,
+    spreadStepDeg: 0.26,
+    spreadMaxDeg: 2.6,
     // 有表时 recoilVertDeg / recoilHorizDeg 不再逐发生效（改由 AK_SPRAY_PATTERN 决定），
     // 保留数值只作为"该枪的单发量级"参考与无表分支的兜底。
     recoilVertDeg: 1.6,
@@ -947,6 +971,12 @@ export const WEAPON_FIRE_PROFILES: Record<number, WeaponFireProfile> = {
     magSize: PISTOL_MAG_SIZE,
     reserveAmmo: PISTOL_RESERVE_AMMO,
     label: "手枪",
+    // 扩散：首发 0.12° 比步枪更准（手枪的价值就在"每一发都准"），
+    // 但每发 +0.30° 涨得更快、1.80° 封顶 —— 第 7 发就到顶。
+    // 封顶时 30m 半径 0.94m、命中率约 39%：远距离 spam 会失准，逼玩家点射。
+    spreadFirstDeg: 0.12,
+    spreadStepDeg: 0.3,
+    spreadMaxDeg: 1.8,
     // 手枪单发上跳比 AK 更大（1.60 vs 1.60 的单发量级），但回正快一倍多（12 vs 5.5）：
     // 打一枪立刻复位，逼玩家一发一发点，而不是像 AK 那样压着扫。
     recoilVertDeg: 1.6,
@@ -1005,6 +1035,118 @@ export function recoilDeltaOf(
     yawDeg: (random() - 0.5) * profile.recoilHorizDeg * 2,
     nextIndex: 0,
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * S3b：服务端权威扩散（圆锥采样）
+ *
+ * 为什么扩散必须由服务端算：如果客户端算，作弊客户端把 spread 置 0 就是激光枪。
+ * 但扩散又不能随机到"不可复现"——那样 QA 无法断言、争议弹道无法回放。
+ * 所以用**确定性 PRNG**：种子 = 房间种子 ^ 玩家 ^ 发数，同一发生的偏移永远一致，
+ * 而玩家不知道房间种子 → 无法预测下一发偏到哪。
+ * ------------------------------------------------------------------ */
+
+/**
+ * 第 `shotIndex` 发（0 = 这一串的第一发）的扩散半角（度）。
+ *
+ * 线性递增到上限封顶：`min(spreadMaxDeg, spreadFirstDeg + shotIndex × spreadStepDeg)`。
+ * **确定性**是关键——第 5 发一定比第 1 发散，玩家才能学会"打几发要停"。
+ */
+export function spreadHalfAngleDeg(profile: WeaponFireProfile, shotIndex: number): number {
+  const index: number = Math.max(0, Math.floor(shotIndex));
+  return Math.min(profile.spreadMaxDeg, profile.spreadFirstDeg + index * profile.spreadStepDeg);
+}
+
+/** FNV-1a 32 位字符串哈希：把 sessionId 折成种子的一部分（同一玩家每局盐值相同）。 */
+export function hashString(value: string): number {
+  let hash: number = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+/**
+ * 混合出这一发的种子：`mix(roomSeed, playerSalt, shotIndex)`。
+ *
+ * 三个输入缺一不可——
+ * - `roomSeed`：每局房间随机生成、**永不广播**，所以玩家无法预先算出偏移；
+ * - `playerSalt`：同一发数下不同玩家偏得不一样，避免"A 站哪最准"这种位置迷信；
+ * - `shotIndex`：同一玩家每一发都不同，否则整个弹匣打在同一个点上。
+ */
+export function mixShotSeed(roomSeed: number, playerSalt: number, shotIndex: number): number {
+  let hash: number = roomSeed >>> 0;
+  hash = Math.imul(hash ^ (playerSalt >>> 0), 0x01000193) >>> 0;
+  hash = Math.imul(hash ^ ((shotIndex + 0x9e3779b9) >>> 0), 0x85ebca6b) >>> 0;
+  hash ^= hash >>> 16;
+  return hash >>> 0;
+}
+
+/** xorshift32 推进一步：返回 [0,1) 的均匀值与新状态。 */
+function xorshiftUnit(state: number): { value: number; next: number } {
+  let s: number = state >>> 0;
+  // 0 是 xorshift 的不动点，必须换一个非零常量
+  if (s === 0) {
+    s = 0x9e3779b9;
+  }
+  s ^= s << 13;
+  s >>>= 0;
+  s ^= s >>> 17;
+  s ^= s << 5;
+  s >>>= 0;
+  return { value: s / 0x100000000, next: s };
+}
+
+/** 圆锥采样结果：单位盘内坐标（已乘 √u）+ 本次使用的半角。 */
+export interface SpreadSample {
+  /** 右向偏移系数；实际切向位移 = `x × tan(halfAngleDeg)`。 */
+  x: number;
+  /** 上向偏移系数；同上。 */
+  y: number;
+  /** 本次使用的扩散半角（度），便于广播给客户端画准星与调试。 */
+  halfAngleDeg: number;
+}
+
+/**
+ * 采样一发的圆锥偏移（均匀圆盘分布）。
+ *
+ * 用 `r = √u`、`φ = 2πv` 而不是矩形或高斯采样：均匀圆盘的落点是"圆内任何一块
+ * 等面积的区域命中概率相同"，这样 `docs/武器手感规格-CS2校准.md` 里的命中率表
+ * 可以直接套用；矩形采样会让对角方向明显偏得多，高斯采样会让"运气枪"过多。
+ *
+ * @param shotIndex 这一发之前已经打出的发数（0 = 这一串的第一发）
+ * @param seed 由 {@link mixShotSeed} 预先混合好的 32 位种子
+ */
+export function sampleSpread(
+  profile: WeaponFireProfile,
+  shotIndex: number,
+  seed: number,
+): SpreadSample {
+  const halfAngleDeg: number = spreadHalfAngleDeg(profile, shotIndex);
+  const first = xorshiftUnit(seed);
+  const second = xorshiftUnit(first.next);
+  const radius: number = Math.sqrt(first.value);
+  const angle: number = Math.PI * 2 * second.value;
+  return {
+    x: Math.cos(angle) * radius,
+    y: Math.sin(angle) * radius,
+    halfAngleDeg,
+  };
+}
+
+/**
+ * 把扩散半角换算成屏幕像素半径（准星张开多少 px）。
+ *
+ * `px = tan(半角) / tan(竖直 FOV / 2) × (视口高度 / 2)`
+ *
+ * 客户端准星必须用这个函数，而不是自己维护一套 `SPREAD_BASE / SPREAD_PER_SHOT`——
+ * 上一轮"弹道不对"的根因之一就是准星在抖、服务端射线是直线，两者毫无关系。
+ */
+export function spreadToPixels(halfAngleDeg: number, fovYDeg: number, viewportHeight: number): number {
+  const halfFov: number = (fovYDeg * Math.PI) / 360;
+  const angle: number = (halfAngleDeg * Math.PI) / 180;
+  return (Math.tan(angle) / Math.tan(halfFov)) * (viewportHeight / 2);
 }
 
 /* ------------------------------------------------------------------ *

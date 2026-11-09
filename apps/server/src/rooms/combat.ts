@@ -25,6 +25,7 @@ import {
   type Aabb,
   type HitZone,
   type ShotMessage,
+  type SpreadSample,
 } from "@colyseus-fps/shared";
 
 export interface Vec3 {
@@ -264,6 +265,32 @@ export function rayPlayerHitboxes(
 }
 
 /**
+ * 把扩散偏移施加到单位方向上（返回新的单位方向）。
+ *
+ * 做法：在垂直于 `dir` 的 (right, up) 平面内平移 `tan(半角) × 单位盘坐标`，再归一化。
+ * 偏移量与 `dir` 垂直，所以偏移后的夹角正好是 `atan(tan(半角) × |sample|)`，
+ * `|sample| = 1` 时**精确等于**半角——不是小角近似，30m 处误差 < 1mm。
+ */
+function applySpread(dir: Vec3, right: Vec3, sample: SpreadSample): Vec3 {
+  // up = right × dir（右手系，与客户端的相机 up 同向）
+  const up: Vec3 = {
+    x: right.y * dir.z - right.z * dir.y,
+    y: right.z * dir.x - right.x * dir.z,
+    z: right.x * dir.y - right.y * dir.x,
+  };
+  const tan: number = Math.tan((sample.halfAngleDeg * Math.PI) / 180);
+  const dx: number = (right.x * sample.x + up.x * sample.y) * tan;
+  const dy: number = (right.y * sample.x + up.y * sample.y) * tan;
+  const dz: number = (right.z * sample.x + up.z * sample.y) * tan;
+  const length: number = Math.hypot(dir.x + dx, dir.y + dy, dir.z + dz) || 1;
+  return {
+    x: (dir.x + dx) / length,
+    y: (dir.y + dy) / length,
+    z: (dir.z + dz) / length,
+  };
+}
+
+/**
  * 计算一次开火的完整结果（返回值可直接广播，也是 `ShotMessage` 结构）。
  *
  * @param players 房间内全部玩家（任意 Iterable，函数内部先物化，避免耗尽一次性迭代器）
@@ -273,6 +300,9 @@ export function rayPlayerHitboxes(
  * @param maxRange 本次开火的射程上限（米）；缺省 {@link WEAPON_RANGE}（步枪）
  * @param originOverride 开火瞬间的脚底坐标（已在调用方做过速度合理性校验）；
  *   缺省用服务端保存的位置。移动中开火必须用它，否则判定起点落后于画面
+ * @param spread 服务端权威扩散采样（单位盘坐标 + 半角），缺省为无扩散。
+ *   **必须由服务端生成**：客户端算扩散等于让作弊端把 spread 置 0 变激光枪。
+ *   采样只改方向、不改起点——扩散是"打偏"，不是"从别的地方开枪"。
  */
 export function computeShot(
   players: Iterable<CombatantView>,
@@ -281,6 +311,7 @@ export function computeShot(
   aim?: AimSnapshot,
   maxRange: number = WEAPON_RANGE,
   originOverride?: { x: number; y: number; z: number } | null,
+  spread?: SpreadSample | null,
 ): ShotMessage | null {
   const all: CombatantView[] = Array.from(players);
 
@@ -301,11 +332,16 @@ export function computeShot(
   const feetY: number = originOverride?.y ?? shooter.y;
   const feetZ: number = originOverride?.z ?? shooter.z;
 
-  const dir: Vec3 = directionFromYawPitch(yaw, pitch);
+  const right: Vec3 = rightFromYaw(yaw);
+  const baseDir: Vec3 = directionFromYawPitch(yaw, pitch);
+  // 扩散：在 (right, up) 平面里按 tan(半角) 偏移，再归一化。
+  // 只旋转方向、不移动起点——否则"打偏"会变成"从旁边开枪"，贴墙时会打到不同的掩体。
+  const dir: Vec3 = spread === undefined || spread === null || spread.halfAngleDeg <= 0
+    ? baseDir
+    : applySpread(baseDir, right, spread);
   // 判定射线起点 = 眼睛（不能挪到枪口：贴脸时会先打中自己的枪口模型/掩体边角）
   const rayOrigin: Vec3 = { x: feetX, y: feetY + EYE_HEIGHT, z: feetZ };
   // 广播用视觉枪口 = 眼睛 + 右向偏移 + 向下偏移 + 前向偏移（与第一人称视模型姿态对齐）
-  const right: Vec3 = rightFromYaw(yaw);
   const up: Vec3 = {
     x: right.y * dir.z - right.z * dir.y,
     y: right.z * dir.x - right.x * dir.z,
@@ -376,5 +412,6 @@ export function computeShot(
     hitZone,
     damage,
     weaponSlot: shooter.weaponSlot ?? 0,
+    spreadDeg: spread === undefined || spread === null ? 0 : spread.halfAngleDeg,
   };
 }

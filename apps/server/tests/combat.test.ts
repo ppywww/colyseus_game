@@ -79,6 +79,21 @@ describe("computeShot", () => {
     assert.equal(computeShot([dead], "B", []), null);
   });
 
+  it("shotSeq 原样回显（客户端靠它把这一发和开火瞬间的枪口配对）", () => {
+    const players = [makePlayer("A", 0, 0), makePlayer("B", 0, -5)];
+    const shot = computeShot(players, "A", [], undefined, 60, null, null, 42);
+    assert.equal(shot?.shotSeq, 42);
+    // 客户端没带序号时必须是 0，不能是 NaN/undefined（否则客户端会当成"老服务端"走 FIFO）
+    assert.equal(computeShot(players, "A", [])?.shotSeq, 0);
+    // 脏数据也要收敛成合法整数：负数/小数/Infinity 都不能原样广播出去
+    assert.equal(computeShot(players, "A", [], undefined, 60, null, null, -7)?.shotSeq, 0);
+    assert.equal(computeShot(players, "A", [], undefined, 60, null, null, 3.9)?.shotSeq, 3);
+    assert.equal(
+      computeShot(players, "A", [], undefined, 60, null, null, Number.POSITIVE_INFINITY)?.shotSeq,
+      0,
+    );
+  });
+
   it("掩体挡住射线时不命中", () => {
     // 显式给一块 6×2.4×6 的掩体（旧版这里读真实地图的中心箱）；
     // 地图改版后 64 个体块的相对位置会变，本用例只校验"射线-AABB 求交"这件事本身。

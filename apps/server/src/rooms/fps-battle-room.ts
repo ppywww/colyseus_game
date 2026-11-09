@@ -294,6 +294,11 @@ export class FPSBattleRoom extends Room<BattleState> {
         { x: shooter.x, y: shooter.y, z: shooter.z },
         this.obstacles,
       );
+      // 客户端开火序号：只做回显，不参与判定。客户端靠它把这一发和"抠扳机那一刻
+      // 的枪口坐标"对上号——服务端在上面任何一个 return 里丢掉的那一发，
+      // 都不会让后面每一发的曳光错位一格。
+      const rawSeq: number = Number((raw as { seq?: unknown } | null)?.seq);
+      const shotSeq: number = Number.isFinite(rawSeq) ? Math.max(0, Math.trunc(rawSeq)) : 0;
       const shot = computeShot(
         this.state.players.values(),
         client.sessionId,
@@ -302,6 +307,7 @@ export class FPSBattleRoom extends Room<BattleState> {
         profile.range,
         fireOrigin,
         spread,
+        shotSeq,
       );
       if (shot === null) {
         return;

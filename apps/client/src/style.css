@@ -252,6 +252,115 @@ kbd {
   font-size: 12px;
 }
 
+/* 设置面板：灵敏度 / 准星两组，组间用细分隔线 */
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-group + .settings-group {
+  padding-top: 12px;
+  border-top: 1px solid #1f2b3d;
+}
+
+.settings-title {
+  margin: 0;
+  color: #e6edf3;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* 准星预览：与游戏内准星共用 .xh 的规则，外面套一块浅色底模拟墙面 */
+.xh-preview-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 64px;
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(214, 190, 148, 0.55), rgba(120, 96, 64, 0.25) 70%),
+    #1b2432;
+  border: 1px solid #253143;
+}
+
+/* 色块：选中态给白圈 + 黑边，深浅色都看得出来 */
+.settings-swatches {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-swatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px #0b1220;
+  cursor: pointer;
+}
+
+.settings-swatch.active {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 2px #58a6ff;
+}
+
+.settings-color {
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid #2d3a4f;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.settings-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  color: #8b98a9;
+  font-size: 12px;
+}
+
+.settings-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.settings-toggle input {
+  accent-color: #3b82f6;
+  cursor: pointer;
+}
+
+.settings-reset {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 5px 12px;
+  color: #b9c6d8;
+  font-size: 12px;
+  background: #1b2432;
+  border: 1px solid #2d3a4f;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.settings-reset:hover {
+  color: #e6edf3;
+  border-color: #3b82f6;
+}
+
 /* ---------- 游戏容器与 HUD ---------- */
 
 #game-container {
@@ -270,28 +379,68 @@ kbd {
   user-select: none;
 }
 
-/* 准星（--spread 由 Game 每帧写入，开火/移动时扩散） */
+/* 准星 = 四臂 + 可选中心点，全部尺寸/颜色由 JS 写入的 CSS 变量驱动
+   （设置面板「准星」一节可调，见 src/ui/settings.ts）
+
+   --xh-len    臂长（px）
+   --xh-thick  臂宽 = 中心点边长（px）
+   --xh-gap    中心到臂内侧的**静态**间距（px），玩家可调
+   --xh-color  颜色
+   --spread    开火时的额外张开量（px，由 Game 按服务端同源角度每帧换算）
+
+   容器是 0×0 的点，四臂靠 bottom/top/left/right 从中心往外摆——
+   这样改任何一个变量都只动一根臂，不会像固定 22px 盒子那样需要重算偏移。 */
+.xh {
+  --xh-len: 6px;
+  --xh-thick: 2px;
+  --xh-gap: 5px;
+  --xh-color: #e6edf3;
+  --xh-shadow: rgba(0, 0, 0, 0.85);
+  --spread: 0px;
+  position: relative;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
 #crosshair {
-  --spread: 3px;
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 22px;
-  height: 22px;
-  transform: translate(-50%, -50%);
 }
 
-#crosshair span {
+.xh span {
   position: absolute;
-  background: rgba(230, 237, 243, 0.9);
-  box-shadow: 0 0 3px rgba(0, 0, 0, 0.8);
+  display: block;
+  background: var(--xh-color);
+  box-shadow: 0 0 3px var(--xh-shadow);
   transition: transform 0.06s linear;
 }
 
-#crosshair span:nth-child(1) { left: 10px; top: 0; width: 2px; height: 6px; transform: translateY(calc(-1 * var(--spread))); }
-#crosshair span:nth-child(2) { left: 10px; bottom: 0; width: 2px; height: 6px; transform: translateY(var(--spread)); }
-#crosshair span:nth-child(3) { left: 0; top: 10px; width: 6px; height: 2px; transform: translateX(calc(-1 * var(--spread))); }
-#crosshair span:nth-child(4) { right: 0; top: 10px; width: 6px; height: 2px; transform: translateX(var(--spread)); }
+/* 描边开关：1px 实黑边 + 一点柔光，浅色墙面（沙漠图最常见的背景）上也看得清 */
+.xh.outline span {
+  box-shadow:
+    0 0 0 1px var(--xh-shadow),
+    0 0 3px var(--xh-shadow);
+}
+
+.xh span:nth-child(1) { left: calc(var(--xh-thick) / -2); bottom: var(--xh-gap); width: var(--xh-thick); height: var(--xh-len); transform: translateY(calc(-1 * var(--spread))); }
+.xh span:nth-child(2) { left: calc(var(--xh-thick) / -2); top: var(--xh-gap); width: var(--xh-thick); height: var(--xh-len); transform: translateY(var(--spread)); }
+.xh span:nth-child(3) { top: calc(var(--xh-thick) / -2); right: var(--xh-gap); width: var(--xh-len); height: var(--xh-thick); transform: translateX(calc(-1 * var(--spread))); }
+.xh span:nth-child(4) { top: calc(var(--xh-thick) / -2); left: var(--xh-gap); width: var(--xh-len); height: var(--xh-thick); transform: translateX(var(--spread)); }
+
+/* 中心点：默认不画，勾选后由 .has-dot 打开 */
+.xh .xh-dot {
+  left: calc(var(--xh-thick) / -2);
+  top: calc(var(--xh-thick) / -2);
+  width: var(--xh-thick);
+  height: var(--xh-thick);
+  display: none;
+}
+
+.xh.has-dot .xh-dot {
+  display: block;
+}
 
 /* 顶栏 */
 .hud-top {
@@ -411,12 +560,15 @@ kbd {
   text-align: center;
 }
 
-/* 游戏内设置：与大堂共用 mountSensitivitySlider 生成的 DOM */
+/* 游戏内设置：与大厅共用 mountSettingsPanel 生成的 DOM */
 #lock-settings {
   width: 100%;
   min-width: 360px;
   padding-top: 4px;
   cursor: default;
+  /* Esc 遮罩会滚动：准星一节内容较多，别把"点击进入战斗"挤出屏幕 */
+  max-height: 46vh;
+  overflow-y: auto;
 }
 
 #lock-settings .settings-row {

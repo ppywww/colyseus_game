@@ -6,7 +6,7 @@ import {
 import { Game } from "./game/game.js";
 import { LobbyConnection } from "./net/connection.js";
 import type { PlayerState } from "./net/types.js";
-import { getSettingsStore, mountSensitivitySlider } from "./ui/settings.js";
+import { getSettingsStore, mountSettingsPanel } from "./ui/settings.js";
 import type {
   DamageTakenMessage,
   ExplosionMessage,
@@ -70,8 +70,8 @@ serverUrlInput.value = defaultServerUrl;
 playerNameInput.value = `玩家-${Math.floor(Math.random() * 900 + 100)}`;
 
 // 大厅「设置」折叠区：与游戏内 Esc 遮罩共用同一个组件与同一个 SettingsStore。
-// 只挂一次，页面生命周期内一直有效（折叠区关掉也不会卸载，滑块值不会丢）。
-mountSensitivitySlider(requiredElement<HTMLElement>("settings-body"), getSettingsStore());
+// 只挂一次，页面生命周期内一直有效（折叠区关掉也不会卸载，值不会丢）。
+mountSettingsPanel(requiredElement<HTMLElement>("settings-body"), getSettingsStore());
 
 function setStatus(text: string, busy: boolean): void {
   statusBadge.textContent = text;

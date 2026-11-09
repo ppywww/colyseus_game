@@ -55,7 +55,7 @@ import {
 
 import type { LobbyConnection } from "../net/connection.js";
 import type { PlayerState } from "../net/types.js";
-import { getSettingsStore, mountSensitivitySlider, type SettingsStore } from "../ui/settings.js";
+import { getSettingsStore, mountSettingsPanel, type SettingsStore } from "../ui/settings.js";
 import { GameAudio } from "./audio.js";
 import { CombatEffects } from "./effects.js";
 import { Hud } from "./hud.js";
@@ -76,16 +76,54 @@ const MAX_PITCH = Math.PI / 2 - 0.02;
 /** 角度 → 弧度。武器参数表里的后坐力用「度」表示（人读得懂），运行时换算成弧度。 */
 const DEG2RAD = Math.PI / 180;
 
-/**
- * 准星最小张开量（像素）。
- *
- * 即使扩散为 0（刀、投掷物）准星也不能完全闭合：四根线贴在一起会糊成一个点，
- * 玩家就找不到屏幕正中心了。
- */
-const CROSSHAIR_GAP_MIN_PX = 3;
-
 /** 相机竖直 FOV（度）——准星的像素换算必须用同一个值，否则准星宽度与真实圆锥不成比例。 */
 const CAMERA_FOV_Y_DEG = 80;
+
+/**
+ * 待确认开火快照的容量。
+ *
+ * 600RPM（10 发/秒）× 2×RTT 一般不超过 3 发，这里留 24 是给弱网（RTT 500ms）
+ * 和突发抖动的余量；超出直接丢最老的，绝不无限增长。
+ */
+const PENDING_SHOT_CAPACITY = 24;
+
+/** 服务端回包超过这个时间还没到，说明那几发已被丢弃——快照直接作废，别拿来画曳光。 */
+const PENDING_SHOT_MAX_AGE_MS = 1200;
+
+/**
+ * 本地"出膛曳光"的视觉参数。
+ *
+ * 服务端的 SHOT 要 2×RTT 才回来，扣扳机的那一下必须有东西立刻从枪口飞出去，
+ * 否则手感是"开了枪但没子弹"。这条只飞 {@link MUZZLE_STREAK_METERS} 米就结束，
+ * 不冒充弹道（真正的弹道等回包再画），所以不可能"用本地直线撒谎"。
+ */
+const MUZZLE_STREAK_METERS = 2.6;
+const MUZZLE_STREAK_SPEED = 95;
+const MUZZLE_STREAK_RADIUS = 0.02;
+
+/** 本地开火快照：序号 + 扣扳机瞬间的枪口世界坐标。 */
+interface LocalShotSnapshot {
+  seq: number;
+  muzzle: { x: number; y: number; z: number };
+  firedAt: number;
+}
+
+/**
+ * 一颗还在路上的子弹的"落地表现"。
+ *
+ * 曳光要飞 `distance / speed` 毫秒才到墙（30m 约 115ms），弹孔若在这个时间点之前
+ * 就贴上去，玩家看到的是"墙先破洞、子弹后到"——比没有弹孔更假。
+ */
+interface PendingImpact {
+  /** 该出效果的时刻（performance.now 时间轴）。 */
+  at: number;
+  hit: { x: number; y: number; z: number };
+  /** 命中面法向；命中玩家时为 null（换成血雾）。 */
+  normal: { x: number; y: number; z: number } | null;
+}
+
+/** 在途弹着的队列上限。 */
+const PENDING_IMPACT_CAPACITY = 64;
 
 /**
  * 需要「边沿触发」的动作键。
@@ -162,6 +200,31 @@ export class Game {
    * 所有"不该继续开火"的时机都要显式清零——死亡、切枪、换弹、退出指针锁定。
    */
   private firing = false;
+  /**
+   * 半自动枪的"这一下点击还没结算"。
+   *
+   * `mousedown` 是事件回调，随时可能落在两帧之间——那时相机和视模型还是上一帧的，
+   * 直接开火会让弹道起点慢一帧。所以点击只置位，真正的 `tryFire` 由主循环在
+   * 「移动 → 相机 → 视模型」之后统一扣。
+   */
+  private semiFirePending = false;
+  /**
+   * 本地开火序号：每发 +1，随 FIRE 上行、由 SHOT 广播原样带回。
+   *
+   * 它不是防作弊的东西（服务端根本不校验），只是给**自己的曳光**一个配对凭据：
+   * 服务端因为限流/空仓丢掉的那一发不会让后面的曳光全部错位一格。
+   */
+  private fireSeq = 0;
+  /**
+   * 待确认的本地开火快照：`seq → 扣扳机那一刻的枪口世界坐标`。
+   *
+   * 只保留最近 {@link PENDING_SHOT_CAPACITY} 发；服务端回包晚于 1 秒的直接丢弃。
+   * 为什么非要存枪口：SHOT 广播要 2×RTT 才到（移动中半米），
+   * 那时再去问视模型要枪口坐标，拿到的是"现在"的枪口，不是"开火时"的枪口。
+   */
+  private readonly pendingShots: LocalShotSnapshot[] = [];
+  /** 在途弹着（曳光还没飞到的那几发）。 */
+  private readonly pendingImpacts: PendingImpact[] = [];
   private lastThrowAt = 0;
   private lastKnifeAt = 0;
   private lastRespawnSeq = 0;
@@ -276,13 +339,15 @@ export class Game {
     document.addEventListener("mouseup", this.handleMouseUp);
     window.addEventListener("resize", this.handleResize);
 
-    // ---- 设置：把持久化的灵敏度喂给输入层，并把滑块挂进 Esc 遮罩 ----
-    // 大厅与游戏内共用同一个 SettingsStore，因此这里既读既同步。
+    // ---- 设置：灵敏度 + 准星外观（大厅与游戏内共用同一个 SettingsStore）----
     this.input.setSensitivity(this.settings.getSensitivity());
+    this.hud.setCrosshair(this.settings.getCrosshair());
     this.unsubscribeSettings = this.settings.subscribe((snapshot) => {
       this.input.setSensitivity(snapshot.sensitivity);
+      // 准星外观实时生效：Esc 面板拖一下滑块，准星当场就变（不用重开一局）
+      this.hud.setCrosshair(snapshot.crosshair);
     });
-    this.unmountSettings = mountSensitivitySlider(this.hud.settingsContainer, this.settings);
+    this.unmountSettings = mountSettingsPanel(this.hud.settingsContainer, this.settings);
 
     // 容器尺寸可能被 CSS/布局变化（而非 window resize）改变，主动监听
     this.resizeObserver = new ResizeObserver(() => {
@@ -319,10 +384,11 @@ export class Game {
       this.tryThrow(throwable, now);
       return;
     }
-    // 枪械：按下即扣扳机。全自动枪由主循环（`tick`）按冷却持续补发，
-    // 半自动枪只在这里发这一发——按住左键不会连发。
+    // 枪械：按下只置位"这一下点击待结算"，真正的开火由主循环在
+    // 「移动 → 相机 → 视模型」之后统一扣（见 `tick`），保证快照的枪口/视角是本帧的。
+    // 全自动枪由主循环按冷却持续补发，半自动枪只结算置位的这一发。
     this.firing = true;
-    this.tryFire(now);
+    this.semiFirePending = true;
   };
 
   /** 左键松开：断开扳机。全自动枪停止连发，semi 枪不受影响。 */
@@ -395,17 +461,37 @@ export class Game {
     }
 
     this.lastFireAt = nowMs;
-    // 携带开火瞬间的**视角 + 位置**快照（与屏幕准星同源：含后坐偏移），
-    // 服务端按 25° / 1.2m 的阈值采信，超出则回退已存值。
-    this.connection.sendFire(
-      this.kinematics.yaw + this.recoilYaw,
-      this.kinematics.pitch + this.recoilPitch,
-      { x: this.kinematics.x, y: this.kinematics.y, z: this.kinematics.z },
-    );
+    // 开火瞬间的**视角 + 位置 + 序号**快照。视角与准星同源（含后坐偏移），
+    // 服务端按 25° / 1.2m 的阈值采信，超出则回退已存值；序号只用于回帧配对。
+    const aimYaw: number = this.kinematics.yaw + this.recoilYaw;
+    const aimPitch: number = this.kinematics.pitch + this.recoilPitch;
+    this.fireSeq += 1;
+    const seq: number = this.fireSeq;
+    this.connection.sendFire(aimYaw, aimPitch, { x: this.kinematics.x, y: this.kinematics.y, z: this.kinematics.z }, seq);
+
+    // 扣扳机这一刻的枪口世界坐标。**必须在 `recoil()` 之前取**：这一发是从
+    // "枪还没被顶回来"的位置出去的，服务端那条射线也是从这一刻的眼睛出发的。
+    const muzzle = this.viewModel.getMuzzleWorldPosition();
+    this.pendingShots.push({ seq, muzzle, firedAt: nowMs });
+    if (this.pendingShots.length > PENDING_SHOT_CAPACITY) {
+      this.pendingShots.shift();
+    }
 
     // 本地即时反馈（不等服务端回包，才有"跟手"的开枪感）
     this.setCurrentMag(mag - 1);
     this.effects.muzzleFlash(nowMs);
+    // 零延迟的"出膛曳光"：只飞 2.6m 就结束，不冒充弹道（真弹道等 SHOT 回包再画）。
+    // 没有它的话，按住左键的 2×RTT 里屏幕上除了火光什么都没有，像卡了。
+    const cosPitch: number = Math.cos(aimPitch);
+    this.effects.addTracer(
+      muzzle,
+      {
+        x: muzzle.x - Math.sin(aimYaw) * cosPitch * MUZZLE_STREAK_METERS,
+        y: muzzle.y + Math.sin(aimPitch) * MUZZLE_STREAK_METERS,
+        z: muzzle.z - Math.cos(aimYaw) * cosPitch * MUZZLE_STREAK_METERS,
+      },
+      { speed: MUZZLE_STREAK_SPEED, streak: MUZZLE_STREAK_METERS, radius: MUZZLE_STREAK_RADIUS },
+    );
     this.audio.gunshot();
     this.viewModel.recoil(nowMs);
     this.applyRecoilImpulse(profile, nowMs);
@@ -446,25 +532,27 @@ export class Game {
   }
 
   /**
-   * 准星张开多少像素。
+   * 准星**实际**张开多少像素（= 中心到臂内侧的距离）。
    *
-   * **必须**由 `spreadHalfAngleDeg`（服务端同一个函数）换算而来，不能用自己的一套
-   * "每发 +7px"：那样准星张开的幅度和真实圆锥没有关系，就是又一次"准星撒谎"——
-   * 上一轮"弹道不对"的根因之一正是这个（准星在抖、服务端射线是直线）。
+   * 两条规则叠起来：
+   *   1. 动态部分**必须**由 `spreadHalfAngleDeg`（服务端同一个函数）经
+   *      {@link spreadToPixels} 换算，不能自己拍一套"每发 +7px"——那样准星张开的幅度
+   *      和真实圆锥毫无关系，就是又一次"准星撒谎"（上一轮"弹道不对"的根因之一）。
+   *   2. 玩家在设置里调的 `gap` 是**下限**：静态准星就该老老实实停在这个间距上，
+   *      开火时从它往外张。所以取 `max(gap, 动态值)` —— 默认 gap = 3px 时，
+   *      与旧版 `max(3, 动态值)` 的观感逐像素一致。
    */
   private crosshairSpreadPx(): number {
+    const gap: number = this.settings.getCrosshair().gap;
     const profile = fireProfileOf(this.weaponSlot);
     if (profile === null) {
-      // 刀 / 投掷物没有圆锥扩散，准星保持最小张开量
-      return CROSSHAIR_GAP_MIN_PX;
+      // 刀 / 投掷物没有圆锥扩散，准星停在玩家设定的静态间距
+      return gap;
     }
     const halfAngleDeg: number = spreadHalfAngleDeg(profile, this.spreadIndex);
     // 用画布真实高度换算：不同分辨率下"张开的角度"相同、"张开的像素"不同
     const viewportHeight: number = this.renderer.domElement.clientHeight || 720;
-    return Math.max(
-      CROSSHAIR_GAP_MIN_PX,
-      spreadToPixels(halfAngleDeg, CAMERA_FOV_Y_DEG, viewportHeight),
-    );
+    return Math.max(gap, spreadToPixels(halfAngleDeg, CAMERA_FOV_Y_DEG, viewportHeight));
   }
 
   private requestReload(): void {
@@ -678,20 +766,28 @@ export class Game {
    *   爆头 → 红色大 ✕ + 部位读数「头部 −100」；身体 → 白色 ✕ + 部位读数；击杀 → 由 KILL 触发放大版。
    */
   public handleShot(message: ShotMessage): void {
-    // 自己的弹道从**本地视模型枪口**出发。
+    // 自己的弹道从**扣扳机那一刻的枪口**出发。
     //
-    // 服务端回的 `origin` 是"眼睛 + 固定偏移"算出来的理论枪口，而屏幕上真正的枪口
-    // 会随后坐、换弹、投掷、切枪一路动——两者在移动和连发时能差十几厘米。这正是
-    // 「子弹不是从枪口出来」的观感来源：判定没错，画错了。
-    const origin =
-      message.shooterId === this.selfSessionId
-        ? this.viewModel.getMuzzleWorldPosition()
-        : message.origin;
-    this.effects.addTracer(origin, message.hit);
+    // 这里曾经取的是"收到广播时的枪口"——服务端的 SHOT 要 2×RTT 才回来，
+    // 全速奔跑 80ms 就是 40cm、冲刺摆枪的 bob 相位还完全不同。线画出来当然在枪口上
+    // （那是"现在"的枪口），可它指向的却是"过去"的命中点，方向自然是斜的：
+    // 这既是"弹道不对"，也是移动中连发时"子弹不是从枪口出来"的真正原因。
+    //
+    // 现在用 `pendingShots` 里存的开火瞬间枪口坐标，配合服务端回显的 `shotSeq` 精确配对；
+    // 老服务端不回序号时退化成 FIFO（丢包会错位，但至少能用）。
+    const isSelf: boolean = message.shooterId === this.selfSessionId;
+    let origin: { x: number; y: number; z: number } = message.origin;
+    if (isSelf) {
+      const snapshot: LocalShotSnapshot | null = this.consumeLocalShot(message.shotSeq ?? 0);
+      origin = snapshot?.muzzle ?? this.viewModel.getMuzzleWorldPosition();
+    }
+    const travelMs: number = this.effects.addTracer(origin, message.hit);
 
     if (message.hitPlayerId !== null) {
-      this.effects.bloodBurst(message.hit);
-      if (message.shooterId === this.selfSessionId) {
+      // 血雾等曳光**飞到**再喷：曳光还在半路、血已经冒出来，比没有特效更假
+      this.queueImpact(travelMs, message.hit, null);
+      // 但"打中了"的反馈必须立刻给——这是手感，不是物理
+      if (isSelf) {
         this.hud.flashHitmarker(message.hitZone === "head" ? "head" : "body");
         if (message.hitZone !== null) {
           this.hud.showZoneDamage(ZONE_LABEL[message.hitZone], message.damage);
@@ -702,12 +798,89 @@ export class Game {
     }
 
     // 打空（射线飞到射程尽头）不画任何东西；
-    // 打墙/打地则同时出火花与弹孔，弹孔用**服务端返回的真实面法向**贴合。
+    // 打墙/打地则同时出火花与弹孔，弹孔用**服务端返回的真实面法向**贴合，
+    // 并且同样等曳光飞到再出现（否则"墙先破洞、子弹后到"）。
     if (message.hitSurface !== "wall" || message.hitNormal === null) {
       return;
     }
-    this.effects.impact(message.hit, message.hitNormal);
-    this.effects.bulletHole(message.hit, message.hitNormal);
+    this.queueImpact(travelMs, message.hit, message.hitNormal);
+  }
+
+  /** 把"子弹落地"的表现推迟到曳光飞到的那一刻（`travelMs` 为飞行耗时）。 */
+  private queueImpact(
+    travelMs: number,
+    hit: { x: number; y: number; z: number },
+    normal: { x: number; y: number; z: number } | null,
+  ): void {
+    this.pendingImpacts.push({
+      at: performance.now() + Math.max(0, travelMs),
+      hit: { x: hit.x, y: hit.y, z: hit.z },
+      normal: normal === null ? null : { x: normal.x, y: normal.y, z: normal.z },
+    });
+    if (this.pendingImpacts.length > PENDING_IMPACT_CAPACITY) {
+      this.pendingImpacts.shift();
+    }
+  }
+
+  /**
+   * 每帧结算到点的弹着表现。
+   *
+   * 用 `performance.now()` 与 rAF 时间戳同轴比较；遍历时不改长度以外的结构，
+   * 用 splice 出队即可（队列通常只有 0–3 项）。
+   */
+  private flushPendingImpacts(nowMs: number): void {
+    for (let i = 0; i < this.pendingImpacts.length; ) {
+      const impact = this.pendingImpacts[i] as PendingImpact;
+      if (impact.at > nowMs) {
+        i += 1;
+        continue;
+      }
+      this.pendingImpacts.splice(i, 1);
+      if (impact.normal === null) {
+        this.effects.bloodBurst(impact.hit);
+      } else {
+        this.effects.impact(impact.hit, impact.normal);
+        this.effects.bulletHole(impact.hit, impact.normal);
+      }
+    }
+  }
+
+  /**
+   * 按序号取回这一发对应的本地枪口快照（取到就出队）。
+   *
+   * 三种情况：
+   *   1. `seq > 0` 且找到 → 精确配对，最理想；
+   *   2. `seq > 0` 但没找到 → 把比它老的快照一起丢掉（那些永远不会再被认领了），
+   *      返回 null，调用方回退当前枪口。**不能**改成"随便拿一条"，那会让后面每一发都错位；
+   *   3. `seq === 0`（老服务端不回报文序号）→ FIFO。
+   *
+   * 顺带做过期清理：服务端因限流/空仓丢掉的那几发永远不会回包，
+   * 不清理的话队列会一直涨（虽然容量上限已经兜住了）。
+   */
+  private consumeLocalShot(seq: number): LocalShotSnapshot | null {
+    const now: number = performance.now();
+    while (this.pendingShots.length > 0) {
+      const oldest = this.pendingShots[0] as LocalShotSnapshot;
+      if (now - oldest.firedAt <= PENDING_SHOT_MAX_AGE_MS) {
+        break;
+      }
+      this.pendingShots.shift();
+    }
+    if (this.pendingShots.length === 0) {
+      return null;
+    }
+    if (seq <= 0) {
+      return this.pendingShots.shift() ?? null;
+    }
+    const index: number = this.pendingShots.findIndex((shot) => shot.seq === seq);
+    if (index >= 0) {
+      const [snapshot] = this.pendingShots.splice(index, 1);
+      return snapshot ?? null;
+    }
+    while (this.pendingShots.length > 0 && (this.pendingShots[0] as LocalShotSnapshot).seq < seq) {
+      this.pendingShots.shift();
+    }
+    return null;
   }
 
   /** 击杀广播：写入播报；自己击杀时给横幅、放大的击杀标记与确认音。 */
@@ -905,16 +1078,6 @@ export class Game {
 
     this.handleActionKeys(nowMs);
 
-    // 全自动扳机：按住左键时每帧尝试补发。`tryFire` 内部有 `nowMs - lastFireAt < cooldownMs`
-    // 的自我限流，所以每帧调用是安全的——它不是"每帧一发"，而是"这一帧冷却好了就发一发"。
-    // 半自动枪（手枪）不进这个分支：按住不放只出按下时那一发。
-    if (this.firing && locked && this.selfAlive) {
-      const profile = fireProfileOf(this.weaponSlot);
-      if (profile !== null && profile.fireMode === FIRE_MODES.AUTO) {
-        this.tryFire(nowMs);
-      }
-    }
-
     // 移动
     const moveInput: MoveInput = {
       forward: this.input.isDown("KeyW") || this.input.isDown("ArrowUp"),
@@ -970,6 +1133,7 @@ export class Game {
     // 远端插值渲染
     this.remotePlayers.render(nowMs);
     this.throwables.update(dtSeconds, nowMs);
+    this.flushPendingImpacts(nowMs);
     this.effects.update(nowMs);
 
     // 视模型摆动/换弹动作
@@ -992,6 +1156,31 @@ export class Game {
     });
     // 让枪口火光贴着枪口帽走（后坐/换弹/投掷时一起位移）
     this.effects.setMuzzleOffset(this.viewModel.getMuzzleWorldOffset());
+
+    // ---- 扳机（**必须**排在移动 → 相机 → 视模型之后）----
+    //
+    // `tryFire` 会把"扣扳机这一刻的枪口世界坐标"记进 `pendingShots`，收到服务端回包时
+    // 用它当曳光起点。旧顺序是"先扣扳机、再移动/摆相机/摆视模型"，于是记下的是
+    // **上一帧**的枪口：冲刺时每发落后 7cm、walk bob 相位还差 180° 时的错位更明显，
+    // 移动中连发看起来就是"子弹不是从枪口出来"。顺序固定下来这条就消失了。
+    //
+    // 副作用只有一条：枪身后坐（`viewModel.recoil`）在下一帧才出现在画面上。
+    // 这个延迟反而更真实——子弹先出膛，枪再往后顶。
+    if (this.semiFirePending) {
+      this.semiFirePending = false;
+      if (locked && this.selfAlive) {
+        this.tryFire(nowMs);
+      }
+    }
+    // 全自动扳机：按住左键时每帧尝试补发。`tryFire` 内部有 `nowMs - lastFireAt < cooldownMs`
+    // 的自我限流，所以每帧调用是安全的——它不是"每帧一发"，而是"这一帧冷却好了就发一发"。
+    // 半自动枪（手枪）不进这个分支：按住不放只出按下时那一发。
+    if (this.firing && locked && this.selfAlive) {
+      const autoProfile = fireProfileOf(this.weaponSlot);
+      if (autoProfile !== null && autoProfile.fireMode === FIRE_MODES.AUTO) {
+        this.tryFire(nowMs);
+      }
+    }
 
     this.hud.update({
       position: { x: this.kinematics.x, y: this.kinematics.y, z: this.kinematics.z },

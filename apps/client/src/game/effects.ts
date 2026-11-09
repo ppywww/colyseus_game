@@ -10,10 +10,28 @@
 
 import * as THREE from "three";
 
+/**
+ * 一条曳光。
+ *
+ * **不再是"从枪口到命中点的一整根静态直线"**——那玩意在移动中连发时是灾难：
+ * 线画出来的那一刻，玩家的相机早就往前走了半米，静态直线会把"当时的弹道"
+ * 画成"现在这个角度"，看起来就是子弹斜着飞、不从枪口出来。
+ *
+ * 现在它是一条**沿弹道飞过去的短拖尾**：头在 `speed` 的速度上前进，
+ * 尾随其后 `streak` 米，整根线只活 `lifeMs`。眼睛读到的是"有东西从枪口射出去了"，
+ * 而不是"半空里突然出现一根斜线"。
+ */
 interface Tracer {
-  line: THREE.Line;
-  material: THREE.LineBasicMaterial;
+  mesh: THREE.Mesh;
+  origin: THREE.Vector3;
+  dir: THREE.Vector3;
+  distance: number;
+  streak: number;
+  speed: number;
+  radius: number;
   bornAt: number;
+  lifeMs: number;
+  active: boolean;
 }
 
 interface Effect {
@@ -24,7 +42,42 @@ interface Effect {
   dispose: () => void;
 }
 
-const TRACER_LIFE_MS = 110;
+/** 曳光的视觉飞行速度（米/秒）。纯表现，与判定射程无关。 */
+const TRACER_SPEED = 260;
+/** 拖尾长度（米）：短到像"子弹"，长到在 30m 外也看得见一条亮线。 */
+const TRACER_STREAK = 2.4;
+/** 曳光半径（米）：太细在高 DPI 屏上会消失，太粗像激光。 */
+const TRACER_RADIUS = 0.014;
+/** 最短存活时间（毫秒）：贴脸打墙时不至于一帧都看不到。 */
+const TRACER_MIN_LIFE_MS = 40;
+/** 同时存在的曳光上限（对象池容量）。超了复用最老的一条，永不增长。 */
+const TRACER_CAPACITY = 48;
+
+const TRACER_UP = new THREE.Vector3(0, 1, 0);
+
+/**
+ * 曳光贴图：沿圆柱轴向的渐变（弹头端亮、尾部淡出）。
+ *
+ * `CanvasTexture` 默认 `flipY = true`，所以画布**顶部**对应 UV 的 v = 1，
+ * 也就是圆柱的 +Y 端。生成时把 +Y 对准飞行方向，弹头自然就是最亮的那一头。
+ */
+function tracerTexture(width = 8, height = 64): THREE.Texture {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (context !== null) {
+    const gradient = context.createLinearGradient(0, 0, 0, height);
+    gradient.addColorStop(0, "rgba(255,255,255,1)");
+    gradient.addColorStop(0.3, "rgba(255,238,186,0.9)");
+    gradient.addColorStop(1, "rgba(255,206,120,0)");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, width, height);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
 
 /** 弹孔保留数量上限。超过后从最旧的开始覆盖（环形缓冲）。 */
 const BULLET_HOLE_CAPACITY = 96;
@@ -129,7 +182,12 @@ function radialTexture(inner: string, outer: string, size = 64): THREE.Texture {
 }
 
 export class CombatEffects {
+  /** 曳光对象池（容量固定，按需创建，永不增长）。 */
   private readonly tracers: Tracer[] = [];
+  private readonly tracerGeometry: THREE.CylinderGeometry;
+  private readonly tracerMaterial: THREE.MeshBasicMaterial;
+  /** 复用的临时向量：每条曳光每帧都要算一次位置，不能分配。 */
+  private readonly scratchPosition = new THREE.Vector3();
   private readonly effects: Effect[] = [];
   private readonly sparkTexture: THREE.Texture;
   private readonly smokeTexture: THREE.Texture;
@@ -156,6 +214,18 @@ export class CombatEffects {
     this.smokeTexture = radialTexture("rgba(210,214,222,0.95)", "rgba(150,156,168,0)");
     this.flashTexture = radialTexture("rgba(255,246,214,1)", "rgba(255,170,60,0)");
     this.bloodTexture = radialTexture("rgba(214,38,38,1)", "rgba(110,8,8,0)");
+
+    // 曳光：一根单位圆柱（半径 1 / 高 1 / 沿 +Y），共用几何与材质，
+    // 每条只靠 scale 设半径与长度、靠四元数把 +Y 转到飞行方向。
+    this.tracerGeometry = new THREE.CylinderGeometry(1, 1, 1, 6, 1, true);
+    this.tracerMaterial = new THREE.MeshBasicMaterial({
+      map: tracerTexture(),
+      color: 0xfff3cf,
+      transparent: true,
+      opacity: 0.92,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
 
     this.muzzle = new THREE.Sprite(
       new THREE.SpriteMaterial({
@@ -212,22 +282,108 @@ export class CombatEffects {
     this.muzzleLight.position.set(offset.x, offset.y + 0.004, offset.z + 0.012);
   }
 
-  /** 弹道轨迹：从枪口到命中点的短促亮线。 */
-  public addTracer(origin: { x: number; y: number; z: number }, hit: { x: number; y: number; z: number }): void {
-    const geometry = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(origin.x, origin.y, origin.z),
-      new THREE.Vector3(hit.x, hit.y, hit.z),
-    ]);
-    const material = new THREE.LineBasicMaterial({
-      color: 0xffe9a8,
-      transparent: true,
-      opacity: 0.85,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    const line = new THREE.Line(geometry, material);
-    this.scene.add(line);
-    this.tracers.push({ line, material, bornAt: performance.now() });
+  /**
+   * 弹道曳光：从 `origin` 沿 `hit` 方向飞一条短拖尾。
+   *
+   * @param origin 起点。**必须是开火那一刻的枪口世界坐标**，不是收到广播时的枪口
+   *   （两者在移动中能差半米，见 `Game#handleShot`）。
+   * @param hit 终点。服务端权威命中点，世界坐标，画完为止。
+   * @param options.speed 飞行速度（米/秒），默认 {@link TRACER_SPEED}；
+   *   本地的"出膛曳光"用更慢的值，让玩家看得见枪口那一下。
+   * @param options.streak 拖尾长度（米），默认 {@link TRACER_STREAK}。
+   * @returns 弹头飞到 `hit` 需要的毫秒数（贴脸命中返回 0）。
+   *   调用方用它把"弹孔/血雾"推迟到子弹真正飞到时再出现——
+   *   曳光还在半路上、弹孔就已经贴在墙上，是比"没有弹孔"更容易被看穿的假。
+   */
+  public addTracer(
+    origin: { x: number; y: number; z: number },
+    hit: { x: number; y: number; z: number },
+    options: { speed?: number; streak?: number; radius?: number } = {},
+  ): number {
+    const dx: number = hit.x - origin.x;
+    const dy: number = hit.y - origin.y;
+    const dz: number = hit.z - origin.z;
+    const distance: number = Math.hypot(dx, dy, dz);
+    // 贴脸（枪口已经插进墙里）时不画：零长度线在屏幕上就是一个亮点，反而像 bug
+    if (distance < 0.05) {
+      return 0;
+    }
+
+    const tracer: Tracer = this.acquireTracer();
+    tracer.origin.set(origin.x, origin.y, origin.z);
+    tracer.dir.set(dx / distance, dy / distance, dz / distance);
+    tracer.distance = distance;
+    tracer.streak = Math.min(options.streak ?? TRACER_STREAK, distance);
+    tracer.speed = Math.max(20, options.speed ?? TRACER_SPEED);
+    tracer.radius = options.radius ?? TRACER_RADIUS;
+    tracer.bornAt = performance.now();
+    tracer.lifeMs = Math.max(
+      TRACER_MIN_LIFE_MS,
+      ((distance + tracer.streak) / tracer.speed) * 1000,
+    );
+    tracer.active = true;
+    tracer.mesh.visible = true;
+    // 圆柱的 +Y 转到弹道方向；之后只改 scale/position，不再动旋转。
+    tracer.mesh.quaternion.setFromUnitVectors(TRACER_UP, tracer.dir);
+    this.placeTracer(tracer, 0);
+    return (distance / tracer.speed) * 1000;
+  }
+
+  /** 从池里取一条可用曳光：优先后台对象 → 新对象（未满）→ 最老的一条。 */
+  private acquireTracer(): Tracer {
+    for (const tracer of this.tracers) {
+      if (!tracer.active) {
+        return tracer;
+      }
+    }
+    if (this.tracers.length < TRACER_CAPACITY) {
+      const mesh = new THREE.Mesh(this.tracerGeometry, this.tracerMaterial);
+      mesh.name = "tracer";
+      mesh.visible = false;
+      // 从枪口出发的细线很容易被视锥体裁掉（包围球在帧与帧之间跳），关掉最省心
+      mesh.frustumCulled = false;
+      mesh.renderOrder = 2;
+      this.scene.add(mesh);
+      const tracer: Tracer = {
+        mesh,
+        origin: new THREE.Vector3(),
+        dir: new THREE.Vector3(0, 0, -1),
+        distance: 0,
+        streak: TRACER_STREAK,
+        speed: TRACER_SPEED,
+        radius: TRACER_RADIUS,
+        bornAt: 0,
+        lifeMs: 0,
+        active: false,
+      };
+      this.tracers.push(tracer);
+      return tracer;
+    }
+    let oldest: Tracer = this.tracers[0] as Tracer;
+    for (const tracer of this.tracers) {
+      if (tracer.bornAt < oldest.bornAt) {
+        oldest = tracer;
+      }
+    }
+    return oldest;
+  }
+
+  /** 把曳光摆到 `ageMs` 时刻的姿态：头在前、尾在后，尾到头就是这一帧的可见长度。 */
+  private placeTracer(tracer: Tracer, ageMs: number): void {
+    const travelled: number = (ageMs / 1000) * tracer.speed;
+    const head: number = Math.min(tracer.distance, travelled);
+    const tail: number = Math.min(tracer.distance, Math.max(0, travelled - tracer.streak));
+    const length: number = head - tail;
+    if (length <= 1e-4) {
+      tracer.mesh.visible = false;
+      return;
+    }
+    tracer.mesh.visible = true;
+    tracer.mesh.scale.set(tracer.radius, length, tracer.radius);
+    this.scratchPosition
+      .copy(tracer.origin)
+      .addScaledVector(tracer.dir, (head + tail) / 2);
+    tracer.mesh.position.copy(this.scratchPosition);
   }
 
   /** 枪口火光：短促亮度脉冲 + 点光源照亮环境（CS 式反馈的关键）。 */
@@ -555,17 +711,19 @@ export class CombatEffects {
       }
     }
 
-    for (let i = this.tracers.length - 1; i >= 0; i -= 1) {
-      const tracer = this.tracers[i] as Tracer;
-      const age = nowMs - tracer.bornAt;
-      if (age >= TRACER_LIFE_MS) {
-        this.scene.remove(tracer.line);
-        tracer.line.geometry.dispose();
-        tracer.material.dispose();
-        this.tracers.splice(i, 1);
-      } else {
-        tracer.material.opacity = 0.85 * (1 - age / TRACER_LIFE_MS);
+    for (const tracer of this.tracers) {
+      if (!tracer.active) {
+        continue;
       }
+      // 出生时间用 performance.now()，而 update 收到的是 rAF 时间戳（同一时间轴，
+      // 但 rAF 的戳可能比"本帧内某次 performance.now()"早几毫秒）→ 夹到 0 防止倒飞
+      const age = Math.max(0, nowMs - tracer.bornAt);
+      if (age >= tracer.lifeMs) {
+        tracer.active = false;
+        tracer.mesh.visible = false;
+        continue;
+      }
+      this.placeTracer(tracer, age);
     }
 
     for (let i = this.effects.length - 1; i >= 0; i -= 1) {
@@ -583,11 +741,12 @@ export class CombatEffects {
 
   public dispose(): void {
     for (const tracer of this.tracers) {
-      this.scene.remove(tracer.line);
-      tracer.line.geometry.dispose();
-      tracer.material.dispose();
+      this.scene.remove(tracer.mesh);
     }
     this.tracers.length = 0;
+    this.tracerGeometry.dispose();
+    this.tracerMaterial.map?.dispose();
+    this.tracerMaterial.dispose();
 
     for (const effect of this.effects) {
       this.scene.remove(effect.object);

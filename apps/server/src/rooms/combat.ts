@@ -303,6 +303,9 @@ function applySpread(dir: Vec3, right: Vec3, sample: SpreadSample): Vec3 {
  * @param spread 服务端权威扩散采样（单位盘坐标 + 半角），缺省为无扩散。
  *   **必须由服务端生成**：客户端算扩散等于让作弊端把 spread 置 0 变激光枪。
  *   采样只改方向、不改起点——扩散是"打偏"，不是"从别的地方开枪"。
+ * @param shotSeq 客户端开火序号（原样回显）。客户端用它把这一发和自己抠扳机瞬间
+ *   记下的枪口快照对上号，缺省 0。服务端只负责搬运，不做任何校验——
+ *   它不参与判定，乱填也只会让作弊者自己的曳光画歪。
  */
 export function computeShot(
   players: Iterable<CombatantView>,
@@ -312,6 +315,7 @@ export function computeShot(
   maxRange: number = WEAPON_RANGE,
   originOverride?: { x: number; y: number; z: number } | null,
   spread?: SpreadSample | null,
+  shotSeq: number = 0,
 ): ShotMessage | null {
   const all: CombatantView[] = Array.from(players);
 
@@ -413,5 +417,6 @@ export function computeShot(
     damage,
     weaponSlot: shooter.weaponSlot ?? 0,
     spreadDeg: spread === undefined || spread === null ? 0 : spread.halfAngleDeg,
+    shotSeq: Number.isFinite(shotSeq) ? Math.max(0, Math.trunc(shotSeq)) : 0,
   };
 }

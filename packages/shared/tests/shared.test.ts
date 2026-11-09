@@ -68,6 +68,19 @@ import {
   switchDurationOf,
   teamSpawnPoints,
   throwableTypeOfSlot,
+  CROSSHAIR_COLORS,
+  CROSSHAIR_DEFAULT,
+  CROSSHAIR_DEFAULT_COLOR,
+  CROSSHAIR_GAP_DEFAULT,
+  CROSSHAIR_GAP_MAX,
+  CROSSHAIR_GAP_MIN,
+  CROSSHAIR_LENGTH_MAX,
+  CROSSHAIR_THICKNESS_MAX,
+  CROSSHAIR_THICKNESS_MIN,
+  clampCrosshair,
+  clampCrosshairColor,
+  parseSettings,
+  serializeSettings,
 } from "../src/index.js";
 
 describe("时间与频率常量", () => {
@@ -403,8 +416,120 @@ describe("灵敏度持久化", () => {
   });
 });
 
-describe("默认灵敏度必须等于旧手感", () => {
-  it("BASE_SENSITIVITY 应等于旧版写死的 0.0023", () => {
+/* ------------------------------------------------------------------ *
+ * S6.1：准星外观（纯表现，可调可存盘）
+ * ------------------------------------------------------------------ */
+
+describe("准星设置钳制 clampCrosshair", () => {
+  it("默认值必须是一份自洽的合法设置", () => {
+    assert.deepEqual(clampCrosshair(CROSSHAIR_DEFAULT), CROSSHAIR_DEFAULT);
+    assert.match(CROSSHAIR_DEFAULT.color, /^#[0-9a-f]{6}$/);
+    assert.equal(CROSSHAIR_DEFAULT.gap, CROSSHAIR_GAP_DEFAULT);
+    assert.ok(CROSSHAIR_DEFAULT.thickness >= CROSSHAIR_THICKNESS_MIN);
+    assert.ok(CROSSHAIR_DEFAULT.thickness <= CROSSHAIR_THICKNESS_MAX);
+    assert.ok(CROSSHAIR_DEFAULT.gap >= CROSSHAIR_GAP_MIN);
+    assert.ok(CROSSHAIR_DEFAULT.gap <= CROSSHAIR_GAP_MAX);
+  });
+
+  it("非对象 / null / 字符串输入一律回退默认（不抛错）", () => {
+    for (const raw of [null, undefined, 42, "green", [], true]) {
+      assert.deepEqual(clampCrosshair(raw), CROSSHAIR_DEFAULT);
+    }
+  });
+
+  it("越界尺寸被夹住，不是整包丢弃", () => {
+    const huge = clampCrosshair({ ...CROSSHAIR_DEFAULT, length: 999, thickness: 0, gap: -3 });
+    assert.equal(huge.length, CROSSHAIR_LENGTH_MAX);
+    assert.equal(huge.thickness, CROSSHAIR_THICKNESS_MIN);
+    assert.equal(huge.gap, CROSSHAIR_GAP_MIN);
+    // 没被改动的字段必须原样保留
+    assert.equal(huge.color, CROSSHAIR_DEFAULT.color);
+  });
+
+  it("逐字段降级：坏字段只修自己，好字段保留", () => {
+    const mixed = clampCrosshair({
+      color: "#12AB34",
+      length: "8",
+      thickness: "粗",
+      gap: 6,
+      dot: true,
+      outline: "yes",
+      dynamic: false,
+    });
+    assert.equal(mixed.color, "#12ab34", "颜色统一小写");
+    assert.equal(mixed.length, 8, "数字字符串应收敛成数字");
+    assert.equal(mixed.thickness, CROSSHAIR_DEFAULT.thickness, "非法值只回退这一个字段");
+    assert.equal(mixed.gap, 6);
+    assert.equal(mixed.dot, true);
+    assert.equal(mixed.outline, CROSSHAIR_DEFAULT.outline);
+    assert.equal(mixed.dynamic, false);
+  });
+
+  it("颜色只接受 #rrggbb，其它一律回默认色", () => {
+    assert.equal(clampCrosshairColor("#FF0000"), "#ff0000");
+    assert.equal(clampCrosshairColor("red"), CROSSHAIR_DEFAULT_COLOR);
+    assert.equal(clampCrosshairColor("#f00"), CROSSHAIR_DEFAULT_COLOR);
+    assert.equal(clampCrosshairColor("#gg0000"), CROSSHAIR_DEFAULT_COLOR);
+    assert.equal(clampCrosshairColor(null), CROSSHAIR_DEFAULT_COLOR);
+    // 预设色板里的每个颜色都必须本身合法
+    for (const color of CROSSHAIR_COLORS) {
+      assert.equal(clampCrosshairColor(color), color);
+    }
+  });
+
+  it("小数尺寸应取整到像素", () => {
+    assert.equal(clampCrosshair({ ...CROSSHAIR_DEFAULT, gap: 4.6 }).gap, 5);
+    assert.equal(clampCrosshair({ ...CROSSHAIR_DEFAULT, length: 5.2 }).length, 5);
+  });
+});
+
+describe("整包设置持久化（灵敏度 + 准星）", () => {
+  it("只存了灵敏度的旧记录必须能读，准星用默认值补上", () => {
+    const parsed = parseSettings('{"sensitivity":1.85}');
+    assert.equal(parsed.sensitivity, 1.85);
+    assert.deepEqual(parsed.crosshair, CROSSHAIR_DEFAULT);
+  });
+
+  it("只存了准星的记录必须能读，灵敏度回默认", () => {
+    const parsed = parseSettings('{"crosshair":{"color":"#00ff00","gap":7}}');
+    assert.equal(parsed.sensitivity, SENSITIVITY_DEFAULT);
+    assert.equal(parsed.crosshair.color, "#00ff00");
+    assert.equal(parsed.crosshair.gap, 7);
+    assert.equal(parsed.crosshair.thickness, CROSSHAIR_DEFAULT.thickness);
+  });
+
+  it("空 / 非法 JSON / 非对象一律回全默认（不抛错、不清数据）", () => {
+    for (const raw of [null, undefined, "", "not json", "42", "[]"]) {
+      const parsed = parseSettings(raw);
+      assert.equal(parsed.sensitivity, SENSITIVITY_DEFAULT);
+      assert.deepEqual(parsed.crosshair, CROSSHAIR_DEFAULT);
+    }
+  });
+
+  it("序列化 → 解析应往返一致（含越界输入的钳制）", () => {
+    const settings = {
+      sensitivity: 1.35,
+      crosshair: { ...CROSSHAIR_DEFAULT, color: "#38bdf8", gap: 9, dot: true, dynamic: false },
+    };
+    const roundTrip = parseSettings(serializeSettings(settings));
+    assert.equal(roundTrip.sensitivity, 1.35);
+    assert.deepEqual(roundTrip.crosshair, settings.crosshair);
+
+    const clamped = parseSettings(serializeSettings({ sensitivity: 99, crosshair: { ...CROSSHAIR_DEFAULT, gap: 999 } }));
+    assert.equal(clamped.sensitivity, SENSITIVITY_MAX);
+    assert.equal(clamped.crosshair.gap, CROSSHAIR_GAP_MAX);
+  });
+
+  it("序列化后的 JSON 必须同时带两个字段（新版结构）", () => {
+    const raw = serializeSettings({ sensitivity: 1.2, crosshair: CROSSHAIR_DEFAULT });
+    const parsed = JSON.parse(raw) as { sensitivity: number; crosshair: Record<string, unknown> };
+    assert.equal(parsed.sensitivity, 1.2);
+    assert.equal(parsed.crosshair.gap, CROSSHAIR_GAP_DEFAULT);
+    assert.equal(typeof parsed.crosshair.color, "string");
+  });
+});
+
+describe("默认灵敏度必须等于旧手感", () => {  it("BASE_SENSITIVITY 应等于旧版写死的 0.0023", () => {
     assert.equal(BASE_SENSITIVITY, 0.0023);
   });
 

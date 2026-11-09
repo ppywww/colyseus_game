@@ -506,6 +506,17 @@ export interface ShotMessage {
    * 提供了"等偏到人身上再开枪"的能力。只发结果角度，足够客户端画准星和调试。
    */
   spreadDeg: number;
+  /**
+   * 客户端开火序号：FIRE 里带上来、原样回显，**只有开火者本人用得上**。
+   *
+   * 客户端在扣扳机的瞬间把「枪口世界坐标 + 本帧相机矩阵」塞进一个待确认队列，
+   * 收到这一发时按序号取回那份快照来画曳光。没有序号就只能按 FIFO 猜：
+   * 服务端因为限流 / 空仓 / 换弹中丢掉的任何一发都会让队列错位，
+   * 之后每一发曳光都会用上一发的枪口——移动中连发时这正是"子弹不是从枪口出来"。
+   *
+   * 服务端没收到 `seq`（旧客户端 / 作弊客户端）时为 0。
+   */
+  shotSeq: number;
 }
 
 /** 服务端广播的击杀事件。 */
@@ -1558,4 +1569,180 @@ export function serializeSensitivity(sensitivity: number): string {
 /** 灵敏度 → 滑块可用的字符串（`1.00` / `0.35`）。 */
 export function formatSensitivity(sensitivity: number): string {
   return clampSensitivity(sensitivity).toFixed(2);
+}
+
+/* ------------------------------------------------------------------ *
+ * S6.1：准星外观（纯表现，不参与任何判定）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 准星设置。
+ *
+ * 全部是**纯外观**：服务端看不见、也不参与弹道计算。但"准星撒不撒谎"另有一条铁律——
+ * 张开量的动态部分必须由 {@link spreadToPixels} 从**服务端同一个半角**换算
+ * （见 `Game#crosshairSpreadPx`），`gap` 只是玩家喜好的静态基准间距。
+ */
+export interface CrosshairSettings {
+  /** 颜色，统一存成小写 `#rrggbb`。 */
+  color: string;
+  /** 每条臂的长度（px）。0 = 不画臂（只剩中心点）。 */
+  length: number;
+  /** 臂宽 = 中心点边长（px）。 */
+  thickness: number;
+  /** 中心到臂内侧的**基准**空隙（px），静态准星的间距就是它。 */
+  gap: number;
+  /** 是否画中心点。 */
+  dot: boolean;
+  /** 是否描黑边（浅色背景下准星也得看得见）。 */
+  outline: boolean;
+  /** 是否随扩散张开。关掉 = 间距恒为 {@link CrosshairSettings.gap}。 */
+  dynamic: boolean;
+}
+
+export const CROSSHAIR_LENGTH_MIN: number = 0;
+export const CROSSHAIR_LENGTH_MAX: number = 16;
+export const CROSSHAIR_LENGTH_DEFAULT: number = 6;
+
+export const CROSSHAIR_THICKNESS_MIN: number = 1;
+export const CROSSHAIR_THICKNESS_MAX: number = 5;
+export const CROSSHAIR_THICKNESS_DEFAULT: number = 2;
+
+export const CROSSHAIR_GAP_MIN: number = 0;
+export const CROSSHAIR_GAP_MAX: number = 12;
+/**
+ * 默认间距 5px。
+ *
+ * 旧版 CSS 里臂的内边距其实是 `5px（容器几何）+ 3px（--spread 最小值）`，
+ * 也就是说"静态准星"看上去是 8px 开口——比真实的静止圆锥（1080p 下约 2.3px）
+ * 宽了 5px 以上。现在把基准间距交还给玩家，默认 5px：既接近旧观感，
+ * 又保证"准星开口 ≥ 真实圆锥"，永远不会往"枪比准星更准"的方向撒谎。
+ */
+export const CROSSHAIR_GAP_DEFAULT: number = 5;
+
+/** 预设色板（CS2 常见的高对比色）：默认第一个是原版的近白色。 */
+export const CROSSHAIR_COLORS: readonly string[] = [
+  "#e6edf3",
+  "#2ee6a8",
+  "#3bf0a0",
+  "#a3e635",
+  "#fde047",
+  "#38bdf8",
+  "#f472b6",
+  "#ef4444",
+] as const;
+
+export const CROSSHAIR_DEFAULT_COLOR: string = "#e6edf3";
+
+/** 默认准星 = 与旧版 `#crosshair` 的静态观感对齐（长 6 / 粗 2 / 间距 5）。 */
+export const CROSSHAIR_DEFAULT: CrosshairSettings = {
+  color: CROSSHAIR_DEFAULT_COLOR,
+  length: CROSSHAIR_LENGTH_DEFAULT,
+  thickness: CROSSHAIR_THICKNESS_DEFAULT,
+  gap: CROSSHAIR_GAP_DEFAULT,
+  dot: false,
+  outline: true,
+  dynamic: true,
+};
+
+const CROSSHAIR_COLOR_PATTERN = /^#[0-9a-f]{6}$/;
+
+/** 颜色：只接受 `#rrggbb`（大小写都收），其它一律回退默认色。 */
+export function clampCrosshairColor(raw: unknown): string {
+  if (typeof raw !== "string") {
+    return CROSSHAIR_DEFAULT_COLOR;
+  }
+  const value: string = raw.trim().toLowerCase();
+  return CROSSHAIR_COLOR_PATTERN.test(value) ? value : CROSSHAIR_DEFAULT_COLOR;
+}
+
+/** 整数像素参数：取整 → 夹到区间；非数字回退 fallback（不是默认值，便于单字段修复）。 */
+function clampCrosshairPx(raw: unknown, min: number, max: number, fallback: number): number {
+  const value: number = typeof raw === "string" ? Number(raw) : typeof raw === "number" ? raw : Number.NaN;
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+/**
+ * 把任意输入修补成一份合法准星设置。
+ *
+ * **逐字段降级**：旧版本存的对象里没有 crosshair、或者某个字段被人手改成字符串，
+ * 只修那一个字段，其余保留——不要整包丢弃回默认（玩家会以为"我调的全没了"）。
+ */
+export function clampCrosshair(raw: unknown): CrosshairSettings {
+  // 数组要单独排除：`[]` 也是 object，而且它自带 `length` 属性——
+  // 不挡住的话 `clampCrosshair([])` 会读出 length = 0，把准星臂长静默改成 0。
+  const source: Record<string, unknown> =
+    typeof raw === "object" && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+
+  const bool = (value: unknown, fallback: boolean): boolean =>
+    typeof value === "boolean" ? value : fallback;
+
+  return {
+    color: source.color === undefined ? CROSSHAIR_DEFAULT_COLOR : clampCrosshairColor(source.color),
+    length:
+      source.length === undefined
+        ? CROSSHAIR_LENGTH_DEFAULT
+        : clampCrosshairPx(source.length, CROSSHAIR_LENGTH_MIN, CROSSHAIR_LENGTH_MAX, CROSSHAIR_LENGTH_DEFAULT),
+    thickness:
+      source.thickness === undefined
+        ? CROSSHAIR_THICKNESS_DEFAULT
+        : clampCrosshairPx(
+            source.thickness,
+            CROSSHAIR_THICKNESS_MIN,
+            CROSSHAIR_THICKNESS_MAX,
+            CROSSHAIR_THICKNESS_DEFAULT,
+          ),
+    gap:
+      source.gap === undefined
+        ? CROSSHAIR_GAP_DEFAULT
+        : clampCrosshairPx(source.gap, CROSSHAIR_GAP_MIN, CROSSHAIR_GAP_MAX, CROSSHAIR_GAP_DEFAULT),
+    dot: bool(source.dot, CROSSHAIR_DEFAULT.dot),
+    outline: bool(source.outline, CROSSHAIR_DEFAULT.outline),
+    dynamic: bool(source.dynamic, CROSSHAIR_DEFAULT.dynamic),
+  };
+}
+
+/** 落盘用的完整设置包（灵敏度 + 准星）。后续加音量/画质继续往这里塞字段即可。 */
+export interface StoredSettings {
+  sensitivity: number;
+  crosshair: CrosshairSettings;
+}
+
+/**
+ * 解析整包设置。
+ *
+ * 注意它**同时兼容只有 `{sensitivity}` 的老记录**：缺 crosshair 就用默认准星，
+ * 缺 sensitivity 就用默认灵敏度，解析失败时两个都回默认——但调用方绝不能因此
+ * 删除 localStorage 里的原记录（那是玩家还没升级的其它设置）。
+ */
+export function parseSettings(raw: string | null | undefined): StoredSettings {
+  const fallback: StoredSettings = { sensitivity: SENSITIVITY_DEFAULT, crosshair: { ...CROSSHAIR_DEFAULT } };
+  if (raw === null || raw === undefined || raw.length === 0) {
+    return fallback;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return fallback;
+  }
+  const record = parsed as { sensitivity?: unknown; crosshair?: unknown };
+  return {
+    sensitivity: record.sensitivity === undefined ? SENSITIVITY_DEFAULT : clampSensitivity(record.sensitivity),
+    crosshair: clampCrosshair(record.crosshair),
+  };
+}
+
+/** 序列化整包设置（准星字段定长、值域固定，便于人眼核对）。 */
+export function serializeSettings(settings: StoredSettings): string {
+  const crosshair: CrosshairSettings = clampCrosshair(settings.crosshair);
+  return JSON.stringify({
+    sensitivity: clampSensitivity(settings.sensitivity),
+    crosshair,
+  });
 }

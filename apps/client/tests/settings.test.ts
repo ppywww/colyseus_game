@@ -11,7 +11,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { SETTINGS_STORAGE_KEY, SENSITIVITY_MAX, SENSITIVITY_MIN } from "@colyseus-fps/shared";
+import {
+  SETTINGS_STORAGE_KEY,
+  SENSITIVITY_MAX,
+  SENSITIVITY_MIN,
+  CROSSHAIR_DEFAULT,
+  CROSSHAIR_GAP_MAX,
+} from "@colyseus-fps/shared";
 
 import {
   SETTINGS_DEBOUNCE_MS,
@@ -185,6 +191,107 @@ describe("订阅同步（大厅 ⇄ 游戏内两个滑块）", () => {
     const snapshot = store.get();
     snapshot.sensitivity = 3;
     assert.equal(store.getSensitivity(), 1);
+    store.dispose();
+  });
+});
+
+describe("准星设置（与灵敏度同源存储）", () => {
+  it("空存储应使用默认准星", () => {
+    const store = createSettingsStore(new MemoryStorage(), { debounceMs: 0 });
+    assert.deepEqual(store.getCrosshair(), CROSSHAIR_DEFAULT);
+    store.dispose();
+  });
+
+  it("局部更新只改给出的字段", () => {
+    const store = createSettingsStore(new MemoryStorage(), { debounceMs: 0 });
+    store.setCrosshair({ color: "#38bdf8" });
+    const afterColor = store.getCrosshair();
+    assert.equal(afterColor.color, "#38bdf8");
+    assert.equal(afterColor.gap, CROSSHAIR_DEFAULT.gap, "没给的字段必须保持不变");
+
+    store.setCrosshair({ gap: 8, dot: true });
+    const afterGap = store.getCrosshair();
+    assert.equal(afterGap.gap, 8);
+    assert.equal(afterGap.dot, true);
+    assert.equal(afterGap.color, "#38bdf8", "之前改过的颜色不能丢");
+    store.dispose();
+  });
+
+  it("越界值写入前必须夹住，而不是写进内存", () => {
+    const store = createSettingsStore(new MemoryStorage(), { debounceMs: 0 });
+    store.setCrosshair({ gap: 9999, thickness: 0, color: "不是颜色" });
+    const crosshair = store.getCrosshair();
+    assert.equal(crosshair.gap, CROSSHAIR_GAP_MAX);
+    assert.equal(crosshair.thickness, 1);
+    assert.equal(crosshair.color, CROSSHAIR_DEFAULT.color);
+    store.dispose();
+  });
+
+  it("改动应当通知订阅者，且值没变时不重复通知/写盘", () => {
+    const storage = new MemoryStorage();
+    const store = createSettingsStore(storage, { debounceMs: 0 });
+    const seen: number[] = [];
+    store.subscribe((settings) => seen.push(settings.crosshair.gap));
+
+    store.setCrosshair({ gap: 7 });
+    assert.deepEqual(seen, [7]);
+    const writes = storage.writes;
+    store.setCrosshair({ gap: 7 });
+    assert.equal(seen.length, 1, "同值不应再通知");
+    assert.equal(storage.writes, writes, "同值不应再写盘");
+    store.dispose();
+  });
+
+  it("准星与灵敏度必须写进同一个 JSON（不会互相覆盖）", () => {
+    const storage = new MemoryStorage();
+    const store = createSettingsStore(storage, { debounceMs: 0 });
+    store.setSensitivity(1.45);
+    store.setCrosshair({ color: "#fde047", gap: 6 });
+    store.flush();
+
+    const raw = JSON.parse(storage.map.get(SETTINGS_STORAGE_KEY) as string) as {
+      sensitivity: number;
+      crosshair: { color: string; gap: number };
+    };
+    assert.equal(raw.sensitivity, 1.45);
+    assert.equal(raw.crosshair.color, "#fde047");
+    assert.equal(raw.crosshair.gap, 6);
+    store.dispose();
+
+    // 重新加载（模拟刷新页面）两个值都要在
+    const reloaded = createSettingsStore(storage, { debounceMs: 0 });
+    assert.equal(reloaded.getSensitivity(), 1.45);
+    assert.equal(reloaded.getCrosshair().color, "#fde047");
+    assert.equal(reloaded.getCrosshair().gap, 6);
+    reloaded.dispose();
+  });
+
+  it("旧记录（只有 sensitivity）升级后必须保留灵敏度、准星取默认", () => {
+    const storage = new MemoryStorage();
+    storage.map.set(SETTINGS_STORAGE_KEY, JSON.stringify({ sensitivity: 2.1 }));
+    const store = createSettingsStore(storage, { debounceMs: 0 });
+    assert.equal(store.getSensitivity(), 2.1, "升级不能把玩家调好的灵敏度冲掉");
+    assert.deepEqual(store.getCrosshair(), CROSSHAIR_DEFAULT);
+    store.dispose();
+  });
+
+  it("resetCrosshair 应回到默认，且不影响灵敏度", () => {
+    const store = createSettingsStore(new MemoryStorage(), { debounceMs: 0 });
+    store.setSensitivity(2.4);
+    store.setCrosshair({ color: "#ef4444", gap: 11, dot: true });
+    store.resetCrosshair();
+    assert.deepEqual(store.getCrosshair(), CROSSHAIR_DEFAULT);
+    assert.equal(store.getSensitivity(), 2.4);
+    store.dispose();
+  });
+
+  it("get() 返回的准星是深拷贝，改它不会污染仓库", () => {
+    const store = createSettingsStore(new MemoryStorage(), { debounceMs: 0 });
+    const snapshot = store.get();
+    snapshot.crosshair.color = "#000000";
+    snapshot.crosshair.gap = 12;
+    assert.equal(store.getCrosshair().color, CROSSHAIR_DEFAULT.color);
+    assert.equal(store.getCrosshair().gap, CROSSHAIR_DEFAULT.gap);
     store.dispose();
   });
 });

@@ -7,12 +7,14 @@
  */
 
 import {
+  CROSSHAIR_DEFAULT,
   SLOT_KEY,
   SLOT_LABEL,
   SLOT_ORDER,
   THROWABLE_TYPES,
   WEAPON_SLOTS,
   throwableTypeOfSlot,
+  type CrosshairSettings,
   type WeaponSlot,
 } from "@colyseus-fps/shared";
 
@@ -88,6 +90,8 @@ export class Hud {
   private flashPeak = 0;
   private lastSpread = -1;
   private lastWeaponSlot = -1;
+  /** 当前准星外观（玩家在设置里调的），只读副本。 */
+  private crosshairSettings: CrosshairSettings = { ...CROSSHAIR_DEFAULT };
 
   public constructor(container: HTMLElement) {
     this.root = document.createElement("div");
@@ -95,7 +99,12 @@ export class Hud {
 
     this.crosshair = document.createElement("div");
     this.crosshair.id = "crosshair";
-    this.crosshair.innerHTML = "<span></span><span></span><span></span><span></span>";
+    // 类名 `.xh` 与设置面板里的预览框共用同一套 CSS：改一处两处都对，
+    // 不会出现"面板里看着是绿的，进游戏准星还是白的"。
+    this.crosshair.className = "xh";
+    // 四个方向的臂 + 中心点（中心点默认隐藏，由 `.has-dot` 控制）
+    this.crosshair.innerHTML =
+      "<span></span><span></span><span></span><span></span><span class=\"xh-dot\"></span>";
 
     this.hitmarker = document.createElement("div");
     this.hitmarker.id = "hitmarker";
@@ -255,6 +264,25 @@ export class Hud {
    */
   public get settingsContainer(): HTMLElement {
     return this.lockSettings;
+  }
+
+  /**
+   * 应用准星外观（设置面板 / 大厅滑块改动后立刻调用）。
+   *
+   * 全部走 CSS 变量：只改 5 个自定义属性 + 2 个类名，不重建 DOM、不触发整棵子树重排，
+   * 所以拖动滑块时每一帧都能安全调用。
+   */
+  public setCrosshair(settings: CrosshairSettings): void {
+    this.crosshairSettings = { ...settings };
+    const style = this.crosshair.style;
+    style.setProperty("--xh-color", settings.color);
+    style.setProperty("--xh-len", `${settings.length}px`);
+    style.setProperty("--xh-thick", `${settings.thickness}px`);
+    style.setProperty("--xh-gap", `${settings.gap}px`);
+    this.crosshair.classList.toggle("has-dot", settings.dot);
+    this.crosshair.classList.toggle("outline", settings.outline);
+    // 间距/动态开关变化后要强制重算一次 --spread，否则要等下一次扩散值变化才生效
+    this.lastSpread = -1;
   }
 
   public setPlayers(players: readonly HudPlayerRow[], selfId: string): void {
@@ -442,10 +470,16 @@ export class Hud {
     }
 
     // 动态准星扩散（只在不同值时写样式，避免每帧重排）
-    const spread = Math.round(snapshot.spread);
-    if (spread !== this.lastSpread) {
-      this.lastSpread = spread;
-      this.crosshair.style.setProperty("--spread", `${spread}px`);
+    //
+    // `snapshot.spread` 是**含静态间距的总开口**（`max(gap, 动态值)`，见
+    // `Game#crosshairSpreadPx`）。CSS 里 `--xh-gap` 已经是 gap 了，
+    // 所以这里只传"超出 gap 的部分"，否则会写成 gap + 总开口 = gap 被算两遍。
+    const dynamicSpread: number = this.crosshairSettings.dynamic
+      ? Math.max(0, Math.round(snapshot.spread) - this.crosshairSettings.gap)
+      : 0;
+    if (dynamicSpread !== this.lastSpread) {
+      this.lastSpread = dynamicSpread;
+      this.crosshair.style.setProperty("--spread", `${dynamicSpread}px`);
     }
 
     this.deathOverlay.classList.toggle("visible", !snapshot.selfAlive);

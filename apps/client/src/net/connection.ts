@@ -162,11 +162,14 @@ export class LobbyConnection {
    *   - 位置（x/y/z）：把"起点陈旧"同样压到 ~0。少了它，全速奔跑时服务端算出的
    *     射线起点会落后约 18cm，表现为移动中开枪"子弹不是从枪口出来、还打不准"。
    *     服务端会做距离/掩体校验，不合法就忽略这三个字段、回退自己的位置。
+   *   - 序号（seq）：服务端原样回显到 SHOT 广播里，客户端据此把"这一发"和
+   *     "抠扳机那一刻的枪口坐标"精确配对（见 `Game#pendingShots`）。
    */
   public sendFire(
     yaw: number,
     pitch: number,
     origin?: { x: number; y: number; z: number } | null,
+    seq: number = 0,
   ): void {
     if (this.room === null) {
       return;
@@ -177,7 +180,8 @@ export class LobbyConnection {
       x?: number;
       y?: number;
       z?: number;
-    } = { yaw, pitch };
+      seq: number;
+    } = { yaw, pitch, seq };
     if (origin !== undefined && origin !== null) {
       payload.x = origin.x;
       payload.y = origin.y;

@@ -31,8 +31,19 @@ const MAX_Y: number = 10;
 /** 障碍物校验的垂直容差（米）：脚底比盒顶低这么多以内，视为"站在盒顶"而不是"嵌进去"。 */
 export const OBSTACLE_FOOT_TOLERANCE: number = 0.05;
 
-/** 开火视角快照允许偏离已存视角的最大角度（3°）。 */
-export const AIM_SNAPSHOT_TOLERANCE_RAD: number = (3 * Math.PI) / 180;
+/**
+ * 开火视角快照允许偏离已存视角的最大角度。
+ *
+ * 从 3° 放宽到 25° 的原因（这是「移动/转身时开枪弹道不对」的一半根因）：
+ * 服务端保存的视角来自 30Hz 的 transform 上报，最多陈旧 33ms。快速甩枪 700°/s 时
+ * 33ms 就是 23°——3° 的阈值会把**合法**的开火视角直接拒掉，回退成 33ms 前的旧朝向，
+ * 玩家看到的就是"准星明明对着人，子弹却从旁边飞过去"。25° 对应的转动速率是 757°/s，
+ * 正常人甩枪不会持续超过它，而作弊者想靠"瞬移视角"获益也仍然要受位置校验约束。
+ */
+export const AIM_SNAPSHOT_TOLERANCE_RAD: number = (25 * Math.PI) / 180;
+
+/** 开火位置快照与已存位置之间允许的最大距离（米）。 */
+export const FIRE_ORIGIN_MAX_DISTANCE: number = 1.2;
 
 /**
  * 校验并钳制一条客户端上报的位置消息。
@@ -104,7 +115,7 @@ export function overlapsObstacle(
  *
  * @param raw 客户端随 FIRE 上行的 `{ yaw, pitch }`（可能缺失 / 非法）
  * @param stored 服务端已保存的最近一次 transform 视角
- * @returns 采信时返回归一化后的快照；超出 3° 或非法时返回 null（调用方回退已存视角）
+ * @returns 采信时返回归一化后的快照；超出 25° 或非法时返回 null（调用方回退已存视角）
  */
 export function acceptAimSnapshot(
   raw: unknown,
@@ -132,6 +143,57 @@ export function acceptAimSnapshot(
     return null;
   }
   return { yaw: normalizedYaw, pitch: clampedPitch };
+}
+
+/**
+ * 开火位置快照的采信判定（修「移动时弹道不是从枪口出来」）。
+ *
+ * 判定射线必须从**玩家屏幕上看到的位置**出发。服务端保存的位置来自 30Hz 上报，
+ * 最多陈旧 33ms；全速奔跑 5.5m/s 下就是 18cm，冲刺更快。这 18cm 会让弹道的
+ * 起点整体偏移——客户端画的 Tracer 从枪口出发，而服务端从背后一点的位置算命中，
+ * 表现就是"移动时子弹不是从枪口出、还打不准"。
+ *
+ * 采信规则（三条都过才用快照，否则调用方回退已存位置）：
+ *   1. 三个分量都是有限数、且在可玩区范围内；
+ *   2. 与已存位置的直线距离 ≤ {@link FIRE_ORIGIN_MAX_DISTANCE}——防止客户端靠一份
+ *      伪造的坐标把射线搬到地图另一边；
+ *   3. 快照点不在任何掩体内部——防止"把枪口塞进墙里打穿墙"。
+ */
+export function acceptFireOrigin(
+  raw: unknown,
+  stored: { x: number; y: number; z: number },
+  colliders: readonly Aabb[],
+): { x: number; y: number; z: number } | null {
+  if (typeof raw !== "object" || raw === null) {
+    return null;
+  }
+
+  const message = raw as { x?: unknown; y?: unknown; z?: unknown };
+  const { x, y, z } = message;
+  if (typeof x !== "number" || typeof y !== "number" || typeof z !== "number") {
+    return null;
+  }
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    return null;
+  }
+
+  if (Math.abs(x) > ARENA_RADIUS || Math.abs(z) > ARENA_RADIUS) {
+    return null;
+  }
+  if (y < 0 || y > MAX_Y) {
+    return null;
+  }
+
+  const distance: number = Math.hypot(x - stored.x, y - stored.y, z - stored.z);
+  if (distance > FIRE_ORIGIN_MAX_DISTANCE) {
+    return null;
+  }
+
+  if (overlapsObstacle(x, y, z, colliders)) {
+    return null;
+  }
+
+  return { x, y, z };
 }
 
 function clampToArena(value: number): number {

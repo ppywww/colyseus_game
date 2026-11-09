@@ -730,6 +730,19 @@ export class ViewModel {
     return { x: local.x, y: local.y, z: local.z };
   }
 
+  /**
+   * 枪口在**世界坐标系**中的位置（同样跟随后坐/换弹/投掷/切枪动画）。
+   *
+   * 供弹道线使用：Tracer 必须从玩家屏幕上看到的枪口出发。用服务端回的 `origin`
+   * （眼睛 + 固定偏移）在移动/后坐/换弹时都会和实际枪口错开，看起来就是"子弹从
+   * 别处飞出来"。
+   */
+  public getMuzzleWorldPosition(): Vec3Like {
+    const anchor: THREE.Object3D = this.currentSlot === WEAPON_SLOTS.PISTOL ? this.pistolMuzzle : this.muzzleAnchor;
+    const world = anchor.getWorldPosition(new THREE.Vector3());
+    return { x: world.x, y: world.y, z: world.z };
+  }
+
   /** 每帧推进动画并写回 holder（位置与旋转都是 BASE + 增量，绝不覆盖基准姿态）。 */
   public update(dtSeconds: number, state: ViewmodelUpdateState): void {
     const dt = Math.min(Math.max(dtSeconds, 0), 0.1);

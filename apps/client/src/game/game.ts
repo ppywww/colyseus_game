@@ -32,6 +32,7 @@ import {
   fireProfileOf,
   isGunSlot,
   nextSlot,
+  recoilDeltaOf,
   slotOfThrowable,
   switchDurationOf,
   throwableTypeOfSlot,
@@ -42,9 +43,11 @@ import {
   type KillMessage,
   type KnifeResultMessage,
   type PlayerTransformMessage,
+  type RecoilDelta,
   type ShotMessage,
   type SmokeCloudView,
   type ThrowableType,
+  type WeaponFireProfile,
   type WeaponSlot,
 } from "@colyseus-fps/shared";
 
@@ -187,6 +190,15 @@ export class Game {
   // 表现状态（纯本地）
   private recoilPitch = 0;
   private recoilYaw = 0;
+  /**
+   * 当前连发已打出的发数（0 = 这一串还没开火）。
+   *
+   * 它是"喷弹形走到第几格"的游标：第 N 发的视角冲量 = `pattern[N] − pattern[N-1]`。
+   * 停火后按 `sprayResetRate` 回退，让下一串从头开始——这就是"点一下重新起步"。
+   */
+  private shotIndex = 0;
+  /** 上一发的时刻，用于判断停火间隔、驱动 `shotIndex` 回退。 */
+  private lastShotAtMs = 0;
   private shake = 0;
   private spread = SPREAD_BASE;
   private readonly previousPressed = new Set<string>();
@@ -368,24 +380,47 @@ export class Game {
     }
 
     this.lastFireAt = nowMs;
-    // 携带开火瞬间的视角快照（与屏幕准星同源：含后坐偏移），服务端 ±3° 内采信
-    this.connection.sendFire(this.kinematics.yaw + this.recoilYaw, this.kinematics.pitch + this.recoilPitch);
+    // 携带开火瞬间的**视角 + 位置**快照（与屏幕准星同源：含后坐偏移），
+    // 服务端按 25° / 1.2m 的阈值采信，超出则回退已存值。
+    this.connection.sendFire(
+      this.kinematics.yaw + this.recoilYaw,
+      this.kinematics.pitch + this.recoilPitch,
+      { x: this.kinematics.x, y: this.kinematics.y, z: this.kinematics.z },
+    );
 
     // 本地即时反馈（不等服务端回包，才有"跟手"的开枪感）
     this.setCurrentMag(mag - 1);
     this.effects.muzzleFlash(nowMs);
     this.audio.gunshot();
     this.viewModel.recoil(nowMs);
-    // 每把枪独立的后坐力（弧度由参数表的"度"折算）：
-    //   AK  0.85°/发、横向 ±0.35°、回正 5.5/s → 压着扫会缓慢爬升，必须往下压
-    //   手枪 1.30°/发、横向 ±0.15°、回正 12/s  → 单发上跳大但立刻复位，逼玩家点射
-    this.recoilPitch -= profile.recoilVertDeg * DEG2RAD;
-    this.recoilYaw += (Math.random() - 0.5) * profile.recoilHorizDeg * DEG2RAD * 2;
+    this.applyRecoilImpulse(profile, nowMs);
     this.shake = Math.min(1, this.shake + 0.18);
     this.spread = Math.min(26, this.spread + SPREAD_PER_SHOT);
     if (this.currentMag() === 0 && this.currentReserve() > 0) {
       this.requestReload();
     }
+  }
+
+  /**
+   * 施加一发的后坐冲量。
+   *
+   * 方向必须与"抬头"同号：`pitch` 增大 = 视线抬高（three.js 的 YXZ 相机里
+   * `rotation.x > 0` 让 −Z 转向 +Y）。历史实现写成了 `-=`，等于每开一枪把枪口
+   * **下压** 0.85°——幅度小、又被视模型的枪身后坐盖住，所以一直没被发现。
+   *
+   * 有喷弹形的枪（AK）按表走：第 N 发的冲量 = `pattern[N] − pattern[N-1]`，
+   * 于是连发累计偏移严格等于表里第 N 格，图案可复现、可练习、可压枪。
+   * 没有表的枪（半自动手枪）用单发随机，每次点击独立。
+   */
+  private applyRecoilImpulse(profile: WeaponFireProfile, nowMs: number): void {
+    this.lastShotAtMs = nowMs;
+    const delta: RecoilDelta = recoilDeltaOf(profile, this.shotIndex);
+    // `pitch` 增大 = 视线抬高（three.js 的 YXZ 相机里 `rotation.x > 0` 让 −Z 转向 +Y），
+    // 所以抬头角是**加**。历史实现写成了 `-=`，等于每开一枪把枪口下压 0.85°——
+    // 幅度小、又被视模型的枪身后坐盖住，一直没被发现。
+    this.recoilPitch += delta.pitchDeg * DEG2RAD;
+    this.recoilYaw += delta.yawDeg * DEG2RAD;
+    this.shotIndex = delta.nextIndex;
   }
 
   private requestReload(): void {
@@ -512,6 +547,9 @@ export class Game {
     this.switchDurationMs = durationMs;
     this.switchStartAt = performance.now();
     this.switchEndAt = durationMs <= 0 ? 0 : Date.now() + durationMs;
+    // 换枪即重置喷弹形：新枪的第一发必须是表头（几乎没有偏移），
+    // 否则切枪后会接着上一把枪的图案打，出现"第一发就飞"的怪异手感。
+    this.shotIndex = 0;
   }
 
   /**
@@ -590,7 +628,16 @@ export class Game {
    *   爆头 → 红色大 ✕ + 部位读数「头部 −100」；身体 → 白色 ✕ + 部位读数；击杀 → 由 KILL 触发放大版。
    */
   public handleShot(message: ShotMessage): void {
-    this.effects.addTracer(message.origin, message.hit);
+    // 自己的弹道从**本地视模型枪口**出发。
+    //
+    // 服务端回的 `origin` 是"眼睛 + 固定偏移"算出来的理论枪口，而屏幕上真正的枪口
+    // 会随后坐、换弹、投掷、切枪一路动——两者在移动和连发时能差十几厘米。这正是
+    // 「子弹不是从枪口出来」的观感来源：判定没错，画错了。
+    const origin =
+      message.shooterId === this.selfSessionId
+        ? this.viewModel.getMuzzleWorldPosition()
+        : message.origin;
+    this.effects.addTracer(origin, message.hit);
 
     if (message.hitPlayerId !== null) {
       this.effects.bloodBurst(message.hit);
@@ -604,12 +651,13 @@ export class Game {
       return;
     }
 
-    // 打空/打墙：命中点火花，法线近似取弹道反方向
-    const dx = message.hit.x - message.origin.x;
-    const dy = message.hit.y - message.origin.y;
-    const dz = message.hit.z - message.origin.z;
-    const length = Math.hypot(dx, dy, dz) || 1;
-    this.effects.impact(message.hit, { x: -dx / length, y: -dy / length, z: -dz / length });
+    // 打空（射线飞到射程尽头）不画任何东西；
+    // 打墙/打地则同时出火花与弹孔，弹孔用**服务端返回的真实面法向**贴合。
+    if (message.hitSurface !== "wall" || message.hitNormal === null) {
+      return;
+    }
+    this.effects.impact(message.hit, message.hitNormal);
+    this.effects.bulletHole(message.hit, message.hitNormal);
   }
 
   /** 击杀广播：写入播报；自己击杀时给横幅、放大的击杀标记与确认音。 */
@@ -719,6 +767,7 @@ export class Game {
       this.kinematics.pitch = 0;
       this.recoilPitch = 0;
       this.recoilYaw = 0;
+      this.shotIndex = 0;
     }
 
     // 死亡即断扳机：否则落地那一刻仍然按着左键，重生后第一帧就会"自动"打出一发
@@ -787,9 +836,15 @@ export class Game {
     }
     // 后坐偏移回正：速率按枪各不同（AK 5.5 慢、手枪 12 快）。
     // 刀/投掷物没有 profile，退回 9（与历史行为一致）。
-    const recoilRate: number = fireProfileOf(this.weaponSlot)?.recoilRecoverRate ?? 9;
+    const recoilProfile = fireProfileOf(this.weaponSlot);
+    const recoilRate: number = recoilProfile?.recoilRecoverRate ?? 9;
     this.recoilPitch *= Math.exp(-dtSeconds * recoilRate);
     this.recoilYaw *= Math.exp(-dtSeconds * recoilRate);
+    // 停火够久 → 喷弹形从头开始。CS 里"点一下重新起步"就是这个机制：
+    // 松手 320ms 后下一枪是第一格（几乎无偏移），所以点射永远比乱扫准。
+    if (this.shotIndex > 0 && recoilProfile !== null && nowMs - this.lastShotAtMs > recoilProfile.sprayResetMs) {
+      this.shotIndex = 0;
+    }
     const pitchWithRecoil = Math.min(MAX_PITCH, Math.max(-MAX_PITCH, this.kinematics.pitch + this.recoilPitch));
     const yawWithRecoil = this.kinematics.yaw + this.recoilYaw;
 

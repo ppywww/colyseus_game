@@ -289,7 +289,7 @@ describe("computeShot 分区结算", () => {
     assert.ok(Math.abs(length - 1) < 1e-9);
   });
 
-  it("视角快照可覆盖服务端已存视角（3° 内的「打哪中哪」）", () => {
+  it("视角快照可覆盖服务端已存视角（容差内的「打哪中哪」）", () => {
     const players = [shooter("A", 0, 6, 0, 0), shooter("B", 0, 0)];
     const withoutSnapshot = computeShot(players, "A", []);
     const withSnapshot = computeShot(players, "A", [], { yaw: 0, pitch: 0.0117 });

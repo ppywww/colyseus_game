@@ -47,6 +47,7 @@ import {
   WEAPON_COOLDOWN_MS,
   WEAPON_MAG_SIZE,
   WEAPON_RANGE,
+  AK_SPRAY_PATTERN,
   clampPitch,
   clampSensitivity,
   fireProfileOf,
@@ -56,6 +57,7 @@ import {
   nextSlot,
   normalizeYaw,
   parseSensitivity,
+  recoilDeltaOf,
   serializeSensitivity,
   slotOfThrowable,
   switchDurationOf,
@@ -412,5 +414,101 @@ describe("默认灵敏度必须等于旧手感", () => {
     const one = 100 * BASE_SENSITIVITY * 1;
     const two = 100 * BASE_SENSITIVITY * 2;
     assert.equal(two, one * 2);
+  });
+});
+
+describe("后坐力：喷弹形与冲量方向", () => {
+  const ak = fireProfileOf(0);
+  const pistol = fireProfileOf(1);
+
+  it("AK 必须有 30 发喷弹形，手枪没有（半自动靠单发随机）", () => {
+    assert.ok(ak !== null);
+    assert.ok(pistol !== null);
+    assert.equal(ak.sprayPattern.length, 30);
+    assert.equal(AK_SPRAY_PATTERN.length, 30);
+    assert.equal(pistol.sprayPattern.length, 0);
+  });
+
+  it("第一发必须几乎不偏（表头 = 原点），否则「点射第一发」就没有意义", () => {
+    const head = AK_SPRAY_PATTERN[0];
+    assert.ok(head !== undefined);
+    assert.equal(head.x, 0);
+    assert.equal(head.y, 0);
+  });
+
+  it("连发累计偏移必须严格等于表里第 N 格（图案可练习、可复现）", () => {
+    assert.ok(ak !== null);
+    let pitch = 0;
+    let yaw = 0;
+    let index = 0;
+    for (let shot = 0; shot < 30; shot += 1) {
+      const delta = recoilDeltaOf(ak, index);
+      // 方向约定：pitchDeg 正 = 抬头，调用方按 `pitch += pitchDeg` 施加
+      pitch += delta.pitchDeg;
+      yaw += delta.yawDeg;
+      index = delta.nextIndex;
+
+      // 第 N 发打完之后，累计偏移必须等于表里第 N 格（表头是"未开火"状态）
+      const expected = AK_SPRAY_PATTERN[Math.min(shot + 1, AK_SPRAY_PATTERN.length - 1)];
+      assert.ok(expected !== undefined, `第 ${shot + 1} 发应有表项`);
+      assert.ok(
+        Math.abs(pitch - expected.y) < 1e-9,
+        `第 ${shot + 1} 发垂直累计 ${pitch} 应等于表值 ${expected.y}`,
+      );
+      assert.ok(
+        Math.abs(yaw - expected.x) < 1e-9,
+        `第 ${shot + 1} 发水平累计 ${yaw} 应等于表值 ${expected.x}`,
+      );
+    }
+  });
+
+  it("每一发都必须向上（后坐力绝不能把枪口压下去）", () => {
+    assert.ok(ak !== null);
+    let index = 0;
+    for (let shot = 0; shot < 30; shot += 1) {
+      const delta = recoilDeltaOf(ak, index);
+      assert.ok(delta.pitchDeg >= 0, `第 ${shot + 1} 发上抬量不能为负（实际 ${delta.pitchDeg}）`);
+      index = delta.nextIndex;
+    }
+  });
+
+  it("30 发总上抬应落在 14°–22°（太小学不到，太大不可压）", () => {
+    const last = AK_SPRAY_PATTERN[AK_SPRAY_PATTERN.length - 1];
+    assert.ok(last !== undefined);
+    assert.ok(last.y >= 14 && last.y <= 22, `总上抬 ${last.y}° 超出可玩区间`);
+  });
+
+  it("前 5 发必须近乎纯垂直（横向摆幅 ≤ 0.5°），这是 AK 的辨识度", () => {
+    for (let i = 0; i < 5; i += 1) {
+      const step = AK_SPRAY_PATTERN[i];
+      assert.ok(step !== undefined);
+      assert.ok(Math.abs(step.x) <= 0.5, `第 ${i + 1} 发横向偏移 ${step.x}° 过大`);
+    }
+  });
+
+  it("横向必须真的左右摆（曾有实现退化成白噪声/单侧漂移）", () => {
+    const xs = AK_SPRAY_PATTERN.map((step) => step.x);
+    const min = Math.min(...xs);
+    const max = Math.max(...xs);
+    assert.ok(min < -2, `向左摆幅不足（min=${min}）`);
+    assert.ok(max > 1.5, `向右摆幅不足（max=${max}）`);
+  });
+
+  it("手枪单发上跳大、横向在 ±half 内，且不推进游标", () => {
+    assert.ok(pistol !== null);
+    const delta = recoilDeltaOf(pistol, 0, () => 0);
+    assert.equal(delta.pitchDeg, pistol.recoilVertDeg);
+    assert.equal(delta.yawDeg, -pistol.recoilHorizDeg);
+    assert.equal(delta.nextIndex, 0);
+
+    const high = recoilDeltaOf(pistol, 0, () => 1);
+    assert.equal(high.yawDeg, pistol.recoilHorizDeg);
+  });
+
+  it("游标越过表长后必须钳在最后一格，不能读越界", () => {
+    assert.ok(ak !== null);
+    const end = recoilDeltaOf(ak, 999);
+    assert.equal(end.nextIndex, 29);
+    assert.equal(end.pitchDeg, 0, "已经到最后一格，再打也不应继续上抬");
   });
 });

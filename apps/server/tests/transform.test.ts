@@ -9,7 +9,9 @@ import { ARENA_RADIUS, type Aabb, type PlayerTransformMessage } from "@colyseus-
 
 import {
   AIM_SNAPSHOT_TOLERANCE_RAD,
+  FIRE_ORIGIN_MAX_DISTANCE,
   acceptAimSnapshot,
+  acceptFireOrigin,
   overlapsObstacle,
   sanitizeTransform,
 } from "../src/rooms/transform.js";
@@ -97,7 +99,7 @@ describe("overlapsObstacle（服务端障碍物校验）", () => {
   });
 });
 
-describe("acceptAimSnapshot（开火视角快照 3° 校验）", () => {
+describe("acceptAimSnapshot（开火视角快照 25° 校验）", () => {
   const stored = { yaw: 0, pitch: 0 };
 
   it("缺失 / 非法 / 非有限数一律不采信", () => {
@@ -108,7 +110,7 @@ describe("acceptAimSnapshot（开火视角快照 3° 校验）", () => {
     assert.equal(acceptAimSnapshot("x", stored), null);
   });
 
-  it("3° 以内采信，并做过归一化 / 钳制", () => {
+  it("容差以内采信，并做过归一化 / 钳制", () => {
     const inside = acceptAimSnapshot({ yaw: 0.05, pitch: -0.05 }, stored);
     assert.ok(inside !== null);
     assert.ok(Math.abs(inside.yaw - 0.05) < 1e-9);
@@ -120,16 +122,67 @@ describe("acceptAimSnapshot（开火视角快照 3° 校验）", () => {
     assert.equal(wrapped.pitch, Math.PI / 2);
   });
 
-  it("超过 3° 不采信（防瞬移视野爆头）", () => {
+  it("超过容差不采信（防瞬移视野爆头）", () => {
     const tooMuch = AIM_SNAPSHOT_TOLERANCE_RAD + 0.01;
     assert.equal(acceptAimSnapshot({ yaw: tooMuch, pitch: 0 }, stored), null);
     assert.equal(acceptAimSnapshot({ yaw: 0, pitch: -tooMuch }, stored), null);
     assert.equal(acceptAimSnapshot({ yaw: Math.PI, pitch: 0 }, stored), null);
   });
 
-  it("负向回绕的 3° 也应被正确测量（不因 ±π 边界误判）", () => {
+  it("负向回绕的小角度也应被正确测量（不因 ±π 边界误判）", () => {
     const nearPi = { yaw: Math.PI - 0.01, pitch: 0 };
     const wrapped = acceptAimSnapshot({ yaw: -Math.PI + 0.005, pitch: 0 }, nearPi);
     assert.ok(wrapped !== null, "相差 0.015 rad ≈ 0.86°，应采信");
+  });
+});
+
+describe("acceptFireOrigin（开火位置快照）", () => {
+  const stored = { x: 0, y: 0, z: 0 };
+
+  it("缺失 / 非法 / 非有限数一律不采信（调用方回退已存位置）", () => {
+    assert.equal(acceptFireOrigin(undefined, stored, []), null);
+    assert.equal(acceptFireOrigin({}, stored, []), null);
+    assert.equal(acceptFireOrigin({ x: 0, y: 0 }, stored, []), null);
+    assert.equal(acceptFireOrigin({ x: NaN, y: 0, z: 0 }, stored, []), null);
+    assert.equal(acceptFireOrigin("x", stored, []), null);
+  });
+
+  it("合理位移（一个 30Hz 上报周期内）必须采信", () => {
+    // 5.5m/s 跑 33ms ≈ 0.18m；留足网络抖动，取 0.4m
+    const result = acceptFireOrigin({ x: 0.32, y: 0, z: 0.24 }, stored, []);
+    assert.deepEqual(result, { x: 0.32, y: 0, z: 0.24 });
+  });
+
+  it("跳得太远必须拒绝（防伪造坐标把射线搬到地图另一边）", () => {
+    const tooFar = FIRE_ORIGIN_MAX_DISTANCE + 0.2;
+    assert.equal(acceptFireOrigin({ x: tooFar, y: 0, z: 0 }, stored, []), null);
+    assert.equal(acceptFireOrigin({ x: 0, y: 0, z: -tooFar }, stored, []), null);
+  });
+
+  it("正好卡在上限上应采信（闭区间），越一点点就拒绝", () => {
+    assert.ok(acceptFireOrigin({ x: FIRE_ORIGIN_MAX_DISTANCE, y: 0, z: 0 }, stored, []) !== null);
+    assert.equal(
+      acceptFireOrigin({ x: FIRE_ORIGIN_MAX_DISTANCE + 1e-6, y: 0, z: 0 }, stored, []),
+      null,
+    );
+  });
+
+  it("落在掩体内部必须拒绝（防「把枪口塞进墙里打穿墙」）", () => {
+    // CRATE: x ∈ [−2,2], y ∈ [0,1.1], z ∈ [−0.5,0.5]
+    assert.equal(acceptFireOrigin({ x: 0, y: 0, z: 0 }, stored, [CRATE]), null);
+    // 同一点、没有掩体时是合法的（对照）
+    assert.ok(acceptFireOrigin({ x: 0, y: 0, z: 0 }, stored, []) !== null);
+  });
+
+  it("站在箱顶（脚底 = 箱高）算合法，不算嵌进去", () => {
+    const result = acceptFireOrigin({ x: 0, y: 1.1, z: 0 }, stored, [CRATE]);
+    assert.ok(result !== null, "脚底恰好在箱顶平面时是站上去，不是嵌进去");
+  });
+
+  it("超出可玩区或高度异常必须拒绝", () => {
+    const outside = ARENA_RADIUS + 5;
+    assert.equal(acceptFireOrigin({ x: outside, y: 0, z: 0 }, { x: outside - 0.1, y: 0, z: 0 }, []), null);
+    assert.equal(acceptFireOrigin({ x: 0, y: -1, z: 0 }, stored, []), null);
+    assert.equal(acceptFireOrigin({ x: 0, y: 50, z: 0 }, stored, []), null);
   });
 });

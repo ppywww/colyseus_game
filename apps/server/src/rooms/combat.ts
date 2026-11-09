@@ -84,10 +84,27 @@ export function rightFromYaw(yaw: number): Vec3 {
   return { x: Math.cos(yaw), y: 0, z: -Math.sin(yaw) };
 }
 
-/** 射线与 AABB 求交（slab 法），返回进入距离 t；不相交返回 null。 */
-export function rayAabb(origin: Vec3, dir: Vec3, box: Aabb, maxT: number): number | null {
+/** 射线与 AABB 求交的结果：进入距离 + 命中面的外法向。 */
+export interface AabbHit {
+  /** 从射线起点到进入面的距离。 */
+  t: number;
+  /** 命中面的单位外法向（指向射线来的一侧）。 */
+  normal: Vec3;
+}
+
+/**
+ * 射线与 AABB 求交（slab 法），同时求出**命中面的法向**。
+ *
+ * 法向是弹孔贴合的前提：只知道命中点、不知道贴哪个面，斜着打墙时弹孔会浮空或埋进墙里。
+ * 实现上记录"是哪个轴把 tMin 顶上去的"，该轴按射线方向的符号取反即为外法向。
+ *
+ * 起点落在盒内（`axis === -1`）时没有有意义的外法向，退化为 −dir（迎着射线），
+ * 这样弹孔仍然贴在玩家这一侧的表面上，而不是消失。
+ */
+export function rayAabbHit(origin: Vec3, dir: Vec3, box: Aabb, maxT: number): AabbHit | null {
   let tMin = 0;
   let tMax = maxT;
+  let axis = -1;
 
   const axes: Array<[number, number, number, number]> = [
     [origin.x, dir.x, box.minX, box.maxX],
@@ -95,9 +112,9 @@ export function rayAabb(origin: Vec3, dir: Vec3, box: Aabb, maxT: number): numbe
     [origin.z, dir.z, box.minZ, box.maxZ],
   ];
 
-  for (const [o, d, min, max] of axes) {
+  for (let i = 0; i < axes.length; i += 1) {
+    const [o, d, min, max] = axes[i] as [number, number, number, number];
     if (Math.abs(d) < 1e-9) {
-      // 与该轴平行：起点不在板内则永不相交
       if (o < min || o > max) {
         return null;
       }
@@ -109,14 +126,38 @@ export function rayAabb(origin: Vec3, dir: Vec3, box: Aabb, maxT: number): numbe
     if (t1 > t2) {
       [t1, t2] = [t2, t1];
     }
-    tMin = Math.max(tMin, t1);
+    if (t1 > tMin) {
+      tMin = t1;
+      axis = i;
+    }
     tMax = Math.min(tMax, t2);
     if (tMin > tMax) {
       return null;
     }
   }
 
-  return tMin >= 0 && tMin <= maxT ? tMin : null;
+  if (tMin < 0 || tMin > maxT) {
+    return null;
+  }
+
+  if (axis === -1) {
+    return { t: tMin, normal: { x: -dir.x, y: -dir.y, z: -dir.z } };
+  }
+  const normal: Vec3 = { x: 0, y: 0, z: 0 };
+  if (axis === 0) {
+    normal.x = dir.x > 0 ? -1 : 1;
+  } else if (axis === 1) {
+    normal.y = dir.y > 0 ? -1 : 1;
+  } else {
+    normal.z = dir.z > 0 ? -1 : 1;
+  }
+  return { t: tMin, normal };
+}
+
+/** 射线与 AABB 求交（slab 法），返回进入距离 t；不相交返回 null。 */
+export function rayAabb(origin: Vec3, dir: Vec3, box: Aabb, maxT: number): number | null {
+  const hit: AabbHit | null = rayAabbHit(origin, dir, box, maxT);
+  return hit === null ? null : hit.t;
 }
 
 /**
@@ -230,6 +271,8 @@ export function rayPlayerHitboxes(
  * @param obstacles 掩体 AABB 清单（64 条，来自 shared `obstacleColliders()`）
  * @param aim 开火视角快照（已在调用方做过 3° 校验与归一化）；缺省用服务端已存视角
  * @param maxRange 本次开火的射程上限（米）；缺省 {@link WEAPON_RANGE}（步枪）
+ * @param originOverride 开火瞬间的脚底坐标（已在调用方做过速度合理性校验）；
+ *   缺省用服务端保存的位置。移动中开火必须用它，否则判定起点落后于画面
  */
 export function computeShot(
   players: Iterable<CombatantView>,
@@ -237,6 +280,7 @@ export function computeShot(
   obstacles: readonly Aabb[],
   aim?: AimSnapshot,
   maxRange: number = WEAPON_RANGE,
+  originOverride?: { x: number; y: number; z: number } | null,
 ): ShotMessage | null {
   const all: CombatantView[] = Array.from(players);
 
@@ -253,10 +297,13 @@ export function computeShot(
 
   const yaw: number = aim?.yaw ?? shooter.yaw;
   const pitch: number = aim?.pitch ?? shooter.pitch;
+  const feetX: number = originOverride?.x ?? shooter.x;
+  const feetY: number = originOverride?.y ?? shooter.y;
+  const feetZ: number = originOverride?.z ?? shooter.z;
 
   const dir: Vec3 = directionFromYawPitch(yaw, pitch);
   // 判定射线起点 = 眼睛（不能挪到枪口：贴脸时会先打中自己的枪口模型/掩体边角）
-  const rayOrigin: Vec3 = { x: shooter.x, y: shooter.y + EYE_HEIGHT, z: shooter.z };
+  const rayOrigin: Vec3 = { x: feetX, y: feetY + EYE_HEIGHT, z: feetZ };
   // 广播用视觉枪口 = 眼睛 + 右向偏移 + 向下偏移 + 前向偏移（与第一人称视模型姿态对齐）
   const right: Vec3 = rightFromYaw(yaw);
   const up: Vec3 = {
@@ -270,12 +317,25 @@ export function computeShot(
     z: rayOrigin.z + right.z * MUZZLE_OFFSET.right + up.z * -MUZZLE_OFFSET.down + dir.z * MUZZLE_OFFSET.forward,
   };
 
-  // 最近掩体遮挡距离
+  // 最近遮挡距离：先在掩体里找，再单独算地面。
+  //
+  // 地面必须单独算：地板不是 AABB（它是渲染层的一个平面），不在 `obstacleColliders()` 里。
+  // 漏掉它的后果不是"弹孔少一点"，而是朝下开枪时射线穿过地板一直飞到 maxRange，
+  // 弹着点出现在地图外——玩家看到的是"打地面什么反应都没有"。
   let wallT: number = maxRange;
+  let wallNormal: Vec3 | null = null;
   for (const box of obstacles) {
-    const t: number | null = rayAabb(rayOrigin, dir, box, wallT);
-    if (t !== null && t < wallT) {
-      wallT = t;
+    const hit: AabbHit | null = rayAabbHit(rayOrigin, dir, box, wallT);
+    if (hit !== null && hit.t < wallT) {
+      wallT = hit.t;
+      wallNormal = hit.normal;
+    }
+  }
+  if (dir.y < -1e-6) {
+    const groundT: number = (0 - rayOrigin.y) / dir.y;
+    if (groundT > 0 && groundT < wallT) {
+      wallT = groundT;
+      wallNormal = { x: 0, y: 1, z: 0 };
     }
   }
 
@@ -297,6 +357,8 @@ export function computeShot(
 
   const damage: number = hitZone === null ? 0 : ZONE_DAMAGE[hitZone];
   const endT: number = hitPlayerId === null ? wallT : hitT;
+  const hitSurface: ShotMessage["hitSurface"] =
+    hitPlayerId !== null ? "player" : wallNormal === null ? "none" : "wall";
 
   return {
     shooterId,
@@ -308,6 +370,8 @@ export function computeShot(
       y: rayOrigin.y + dir.y * endT,
       z: rayOrigin.z + dir.z * endT,
     },
+    hitNormal: hitPlayerId === null ? wallNormal : null,
+    hitSurface,
     hitPlayerId,
     hitZone,
     damage,

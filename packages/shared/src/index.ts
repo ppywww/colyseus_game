@@ -151,12 +151,23 @@ export const PLAYER_HEIGHT: number = 1.8;
  */
 export const PLAYER_TRANSFORM_RATE_HZ: number = 30;
 
-/** 客户端上行：开火请求（携带视角快照，服务端在 3° 内采用，超出则回退已存视角）。 */
+/**
+ * 客户端上行：开火请求。
+ *
+ * 除了视角，还携带**开火瞬间的脚底世界坐标**。原因是服务端保存的位置来自 30Hz 的
+ * transform 上报，最多陈旧 33ms；全速奔跑 5.5m/s 下就是 18cm，冲刺更快——射线的起点
+ * 因此落后于玩家屏幕上看到的自己，Tracer 看起来"不是从枪口出来"。带上位置快照后，
+ * 服务端在合理速度范围内采信快照，判定与画面才对得上。
+ */
 export interface FireMessage {
   /** 开火瞬间的朝向（弧度）。可由服务端 `normalizeYaw` 归一化。 */
   yaw: number;
   /** 开火瞬间的俯仰（弧度）。可由服务端 `clampPitch` 钳制。 */
   pitch: number;
+  /** 开火瞬间的脚底坐标；缺省（或校验不通过）时服务端回退自己保存的位置。 */
+  x?: number;
+  y?: number;
+  z?: number;
 }
 
 /** 客户端上行：切枪请求（槽位见 {@link WEAPON_SLOTS}）。 */
@@ -471,6 +482,15 @@ export interface ShotMessage {
   dir: { x: number; y: number; z: number };
   /** 弹道终点：命中玩家 / 掩体 / 最大射程处。 */
   hit: { x: number; y: number; z: number };
+  /**
+   * 命中表面的真实单位法向（由 AABB 的进入面求出）；打空或命中玩家时为 null。
+   *
+   * 客户端弹孔必须贴着这个法向铺，否则斜着打墙时弹孔会浮在空中或埋进墙里——
+   * 旧实现拿"弹道反方向"当法向，只对正对墙面成立，一斜就错。
+   */
+  hitNormal: { x: number; y: number; z: number } | null;
+  /** 命中类型：玩家 / 掩体或地面 / 打空（到达射程尽头）。客户端据此决定画血雾还是弹孔。 */
+  hitSurface: "player" | "wall" | "none";
   /** 被命中的玩家 sessionId；未命中玩家（打空或打在掩体上）为 null。 */
   hitPlayerId: string | null;
   /** 命中部位；未命中玩家为 null。 */
@@ -801,6 +821,61 @@ export type FireMode = (typeof FIRE_MODES)[keyof typeof FIRE_MODES];
  */
 export const FIRE_COOLDOWN_TOLERANCE: number = 0.8;
 
+/**
+ * 喷弹形的一格：相对**第一发**的累计偏移（度）。
+ *
+ * `x` 为正 = 向右，`y` 为正 = 向上。客户端把相邻两格的差值作为该发的视角冲量，
+ * 于是第 N 发之后的总偏移恰好等于表里第 N 格——图案可复现、可学习，这就是压枪的物理基础。
+ */
+export interface SprayStep {
+  x: number;
+  y: number;
+}
+
+/**
+ * AK-47 的 30 发喷弹形（对照 CS2 的实际图案校准）。
+ *
+ * 形状来源：CS2 的 AK 前 4–5 发几乎**纯垂直**上抬，第 6 发开始向左漂，第 12 发前后
+ * 到达最左（约 −3.2°），随后向右回摆，第 24 发到最右（约 +2.5°），最后 6 发收在中间。
+ * 整体垂直累计 17.35°、横向摆幅 5.7°——比旧实现「每发固定上抬 0.85° + 随机横移」
+ * 强一个量级，因为旧实现在 600 RPM 下稳定值只有约 2.0°，屏幕上几乎看不出来。
+ *
+ * 为什么必须是**固定表**而不是随机：随机 = 白噪声，玩家学不会也压不住，打十局也不会变准；
+ * 固定表 = 可练习的技能曲线，这才是 CS 的立身之本。
+ */
+export const AK_SPRAY_PATTERN: readonly SprayStep[] = [
+  { x: 0.0, y: 0.0 },
+  { x: 0.0, y: 1.6 },
+  { x: -0.05, y: 3.15 },
+  { x: -0.1, y: 4.6 },
+  { x: -0.05, y: 5.95 },
+  { x: -0.3, y: 7.15 },
+  { x: -0.7, y: 8.25 },
+  { x: -1.2, y: 9.25 },
+  { x: -1.75, y: 10.15 },
+  { x: -2.3, y: 10.95 },
+  { x: -2.75, y: 11.65 },
+  { x: -3.05, y: 12.3 },
+  { x: -3.2, y: 12.9 },
+  { x: -3.15, y: 13.45 },
+  { x: -2.9, y: 13.95 },
+  { x: -2.45, y: 14.4 },
+  { x: -1.85, y: 14.8 },
+  { x: -1.15, y: 15.15 },
+  { x: -0.4, y: 15.45 },
+  { x: 0.35, y: 15.75 },
+  { x: 1.05, y: 16.0 },
+  { x: 1.65, y: 16.25 },
+  { x: 2.1, y: 16.45 },
+  { x: 2.4, y: 16.6 },
+  { x: 2.5, y: 16.75 },
+  { x: 2.4, y: 16.9 },
+  { x: 2.1, y: 17.05 },
+  { x: 1.65, y: 17.15 },
+  { x: 1.1, y: 17.25 },
+  { x: 0.55, y: 17.35 },
+];
+
 /** 单把枪的完整手感参数（服务端结算与客户端本地预测共用同一份，杜绝两端漂移）。 */
 export interface WeaponFireProfile {
   /** 槽位（{@link WEAPON_SLOTS}）。 */
@@ -827,6 +902,23 @@ export interface WeaponFireProfile {
    * 枪越重、回正越慢：AK 5.5（压枪窗口约 400ms，必须持续压）、手枪 12（打一枪立刻复位）。
    */
   recoilRecoverRate: number;
+  /**
+   * 确定性喷弹形（见 {@link SprayStep}）；空数组表示"每发独立随机"（手枪、以及半自动枪）。
+   *
+   * 有表的枪：第 N 发的视角冲量 = `pattern[N] - pattern[N-1]`，总偏移等于 `pattern[N]`。
+   * 无表的枪：直接用 {@link recoilVertDeg} / {@link recoilHorizDeg} 生成一发随机冲量。
+   */
+  sprayPattern: readonly SprayStep[];
+  /**
+   * 停火后喷弹形游标归零的时间（毫秒）。
+   *
+   * 与 {@link recoilRecoverRate} 是两件事：前者是"下一发接第几格"（决定图案接续），
+   * 后者是"当前视角偏移多快归零"（决定准星回落）。
+   *
+   * 取 3~4 个射击间隔：AK 320ms ≈ 3.2 发，也就是"松手稍微停一下，下一串从头开始"。
+   * 这正是 CS 里点射能重置图案的原因——玩家靠控制节奏把随机性压到最低。
+   */
+  sprayResetMs: number;
 }
 
 /** 有弹道（走射线判定）的槽位参数；刀与投掷物不在表内。 */
@@ -839,9 +931,13 @@ export const WEAPON_FIRE_PROFILES: Record<number, WeaponFireProfile> = {
     magSize: WEAPON_MAG_SIZE,
     reserveAmmo: WEAPON_RESERVE_AMMO,
     label: "AK",
-    recoilVertDeg: 0.85,
+    // 有表时 recoilVertDeg / recoilHorizDeg 不再逐发生效（改由 AK_SPRAY_PATTERN 决定），
+    // 保留数值只作为"该枪的单发量级"参考与无表分支的兜底。
+    recoilVertDeg: 1.6,
     recoilHorizDeg: 0.35,
     recoilRecoverRate: 5.5,
+    sprayPattern: AK_SPRAY_PATTERN,
+    sprayResetMs: 320,
   },
   1: {
     slot: 1,
@@ -851,11 +947,14 @@ export const WEAPON_FIRE_PROFILES: Record<number, WeaponFireProfile> = {
     magSize: PISTOL_MAG_SIZE,
     reserveAmmo: PISTOL_RESERVE_AMMO,
     label: "手枪",
-    // 手枪单发上跳比 AK 更大（1.30 vs 0.85），但回正快一倍多（12 vs 5.5）：
+    // 手枪单发上跳比 AK 更大（1.60 vs 1.60 的单发量级），但回正快一倍多（12 vs 5.5）：
     // 打一枪立刻复位，逼玩家一发一发点，而不是像 AK 那样压着扫。
-    recoilVertDeg: 1.3,
-    recoilHorizDeg: 0.15,
+    recoilVertDeg: 1.6,
+    recoilHorizDeg: 0.2,
     recoilRecoverRate: 12,
+    // 半自动枪没有"图案"可言：每次点击都是独立一发，用随机更符合直觉。
+    sprayPattern: [],
+    sprayResetMs: 220,
   },
 };
 
@@ -867,6 +966,45 @@ export function isGunSlot(slot: number): boolean {
 /** 取该槽位的弹道参数；刀 / 投掷物返回 null（它们各有各的 handler）。 */
 export function fireProfileOf(slot: number): WeaponFireProfile | null {
   return isGunSlot(slot) ? WEAPON_FIRE_PROFILES[slot] ?? null : null;
+}
+
+/** 一发子弹带来的后坐冲量（度）与下一枪的喷弹形游标。 */
+export interface RecoilDelta {
+  /** 抬头角（度，**正数 = 视线向上**）。调用方按 `pitch += pitchDeg` 施加。 */
+  pitchDeg: number;
+  /** 右偏角（度，正数 = 视线向右）。 */
+  yawDeg: number;
+  /** 下一发的游标（已按表长钳制）。 */
+  nextIndex: number;
+}
+
+/**
+ * 计算一发的后坐冲量（纯函数，便于单测——方向搞反过一次，肉眼极难发现）。
+ *
+ * 有喷弹形的枪：冲量 = 相邻两格之差，于是**连发累计偏移严格等于表里第 N 格**。
+ * 没有表（半自动手枪）：用单发固定上跳 + 单发随机横移，每次点击独立。
+ *
+ * @param shotIndex 这一发之前已经打出的发数（0 = 这一串的第一发）
+ * @param random 随机源，测试可注入确定性序列
+ */
+export function recoilDeltaOf(
+  profile: WeaponFireProfile,
+  shotIndex: number,
+  random: () => number = Math.random,
+): RecoilDelta {
+  const pattern: readonly SprayStep[] = profile.sprayPattern;
+  if (pattern.length > 0) {
+    const last: number = pattern.length - 1;
+    const index: number = Math.min(Math.max(shotIndex, 0) + 1, last);
+    const prev: SprayStep = pattern[Math.min(Math.max(shotIndex, 0), last)] as SprayStep;
+    const cur: SprayStep = pattern[index] as SprayStep;
+    return { pitchDeg: cur.y - prev.y, yawDeg: cur.x - prev.x, nextIndex: index };
+  }
+  return {
+    pitchDeg: profile.recoilVertDeg,
+    yawDeg: (random() - 0.5) * profile.recoilHorizDeg * 2,
+    nextIndex: 0,
+  };
 }
 
 /* ------------------------------------------------------------------ *

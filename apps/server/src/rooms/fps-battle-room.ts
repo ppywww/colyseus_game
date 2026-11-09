@@ -59,7 +59,13 @@ import {
 } from "./grenades.js";
 import { pickSpawnPoint, type SpawnSelection } from "./spawn.js";
 import { resolveKnife } from "./melee.js";
-import { acceptAimSnapshot, overlapsObstacle, sanitizeTransform, type AimSnapshot } from "./transform.js";
+import {
+  acceptAimSnapshot,
+  acceptFireOrigin,
+  overlapsObstacle,
+  sanitizeTransform,
+  type AimSnapshot,
+} from "./transform.js";
 
 export interface FPSBattleRoomOptions {
   maxClients?: number;
@@ -249,12 +255,20 @@ export class FPSBattleRoom extends Room<BattleState> {
       shooter[fields.mag] -= 1;
 
       const aim: AimSnapshot | null = acceptAimSnapshot(raw, { yaw: shooter.yaw, pitch: shooter.pitch });
+      // 开火瞬间的位置快照：判定射线必须从玩家屏幕上看到的位置出发，否则移动中开枪
+      // 的起点会落后一个 30Hz 上报周期（全速奔跑约 18cm），表现为"子弹不是从枪口出来"。
+      const fireOrigin = acceptFireOrigin(
+        raw,
+        { x: shooter.x, y: shooter.y, z: shooter.z },
+        this.obstacles,
+      );
       const shot = computeShot(
         this.state.players.values(),
         client.sessionId,
         this.obstacles,
         aim ?? undefined,
         profile.range,
+        fireOrigin,
       );
       if (shot === null) {
         return;

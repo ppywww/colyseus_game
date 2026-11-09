@@ -157,14 +157,33 @@ export class LobbyConnection {
   /**
    * 上报开火意图；弹道由服务端计算。
    *
-   * 携带开火瞬间的视角快照：服务端在 ±3° 内采信它，把"方向陈旧"从 ≤33ms 压到 ~0
-   * （协议 v2 的弹道一致性修复之一）。
+   * 携带两个快照：
+   *   - 视角（yaw/pitch）：把"方向陈旧"从 ≤33ms 压到 ~0；
+   *   - 位置（x/y/z）：把"起点陈旧"同样压到 ~0。少了它，全速奔跑时服务端算出的
+   *     射线起点会落后约 18cm，表现为移动中开枪"子弹不是从枪口出来、还打不准"。
+   *     服务端会做距离/掩体校验，不合法就忽略这三个字段、回退自己的位置。
    */
-  public sendFire(yaw: number, pitch: number): void {
+  public sendFire(
+    yaw: number,
+    pitch: number,
+    origin?: { x: number; y: number; z: number } | null,
+  ): void {
     if (this.room === null) {
       return;
     }
-    this.room.send(MESSAGE_TYPES.FIRE, { yaw, pitch });
+    const payload: {
+      yaw: number;
+      pitch: number;
+      x?: number;
+      y?: number;
+      z?: number;
+    } = { yaw, pitch };
+    if (origin !== undefined && origin !== null) {
+      payload.x = origin.x;
+      payload.y = origin.y;
+      payload.z = origin.z;
+    }
+    this.room.send(MESSAGE_TYPES.FIRE, payload);
   }
 
   /** 请求换弹；弹药结算由服务端完成。 */

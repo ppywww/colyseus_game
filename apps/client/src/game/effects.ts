@@ -1,8 +1,11 @@
 /**
- * 战斗特效：弹道、枪口火光、弹着火花/烟尘、爆炸冲击波与火光。
+ * 战斗特效：弹道、枪口火光、弹着火花/烟尘、**弹孔**、爆炸冲击波与火光。
  *
  * 所有特效都是短生命周期的临时对象，update() 中统一渐隐与释放，
  * 避免长时间对局后对象堆积导致掉帧。
+ *
+ * 弹孔是唯一的例外：它必须持久（这是玩家判断"我打中了哪里、这面墙能不能穿透"的唯一线索），
+ * 所以用固定容量的 {@link THREE.InstancedMesh} 环形复用，一次 draw call、零对象分配。
  */
 
 import * as THREE from "three";
@@ -22,6 +25,75 @@ interface Effect {
 }
 
 const TRACER_LIFE_MS = 110;
+
+/** 弹孔保留数量上限。超过后从最旧的开始覆盖（环形缓冲）。 */
+const BULLET_HOLE_CAPACITY = 96;
+
+/** 弹孔贴片沿法向的偏移（米）：太小会 z-fighting，太大会浮在表面。 */
+const BULLET_HOLE_OFFSET = 0.012;
+
+/** 弹孔直径区间（米）。 */
+const BULLET_HOLE_SIZE_MIN = 0.075;
+const BULLET_HOLE_SIZE_RANGE = 0.045;
+
+/**
+ * 程序化生成弹孔贴图：中心黑洞 + 环状崩裂 + 外圈浅色粉尘。
+ *
+ * 全部用 Canvas 画，不依赖外部资源——贴图资源一旦 404，弹孔会变成纯白方块，
+ * 比没有弹孔更难看。
+ */
+function bulletHoleTexture(size = 64): THREE.Texture {
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+  if (context !== null) {
+    const center = size / 2;
+
+    // 外圈粉尘：浅灰，边缘极淡，让弹孔"嵌"进墙面而不是贴纸
+    const dust = context.createRadialGradient(center, center, size * 0.12, center, center, center);
+    dust.addColorStop(0, "rgba(210,200,185,0.85)");
+    dust.addColorStop(0.55, "rgba(160,150,138,0.45)");
+    dust.addColorStop(1, "rgba(120,112,102,0)");
+    context.fillStyle = dust;
+    context.fillRect(0, 0, size, size);
+
+    // 中心黑洞：纯黑 + 微小的不规则边，避免看起来像几何圆
+    context.fillStyle = "rgba(12,10,9,0.96)";
+    context.beginPath();
+    const points = 14;
+    for (let i = 0; i < points; i += 1) {
+      const angle = (i / points) * Math.PI * 2;
+      const jitter = 0.28 + Math.random() * 0.12;
+      const radius = center * jitter;
+      const x = center + Math.cos(angle) * radius;
+      const y = center + Math.sin(angle) * radius;
+      if (i === 0) {
+        context.moveTo(x, y);
+      } else {
+        context.lineTo(x, y);
+      }
+    }
+    context.closePath();
+    context.fill();
+
+    // 崩裂细纹：从洞心向外发散的几条短线
+    context.strokeStyle = "rgba(90,82,74,0.5)";
+    context.lineWidth = 1;
+    for (let i = 0; i < 6; i += 1) {
+      const angle = Math.random() * Math.PI * 2;
+      const inner = center * (0.3 + Math.random() * 0.08);
+      const outer = center * (0.55 + Math.random() * 0.3);
+      context.beginPath();
+      context.moveTo(center + Math.cos(angle) * inner, center + Math.sin(angle) * inner);
+      context.lineTo(center + Math.cos(angle) * outer, center + Math.sin(angle) * outer);
+      context.stroke();
+    }
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
 
 /**
  * 枪口火光在相机坐标系中的基准位置（fov 80 单 pass 方案，见参考文档 2.6.1）。
@@ -66,6 +138,18 @@ export class CombatEffects {
   private readonly muzzle: THREE.Sprite;
   private readonly muzzleLight: THREE.PointLight;
   private muzzleUntil = 0;
+  /** 弹孔实例化网格（容量固定，环形复用，永不增长）。 */
+  private readonly bulletHoles: THREE.InstancedMesh;
+  /** 下一个要写入的弹孔槽位。 */
+  private bulletHoleCursor = 0;
+  /** 复用的临时对象，避免每发子弹都 new 一遍矩阵/四元数。 */
+  private readonly holeMatrix = new THREE.Matrix4();
+  private readonly holePosition = new THREE.Vector3();
+  private readonly holeQuaternion = new THREE.Quaternion();
+  private readonly holeScale = new THREE.Vector3();
+  private readonly holeNormal = new THREE.Vector3();
+  private readonly holeRotation = new THREE.Quaternion();
+  private readonly zAxis = new THREE.Vector3(0, 0, 1);
 
   public constructor(private readonly scene: THREE.Scene, private readonly camera: THREE.Camera) {
     this.sparkTexture = radialTexture("rgba(255,236,180,1)", "rgba(255,150,40,0)");
@@ -90,6 +174,31 @@ export class CombatEffects {
     this.muzzleLight = new THREE.PointLight(0xffd9a0, 0, 14, 2);
     this.muzzleLight.position.set(MUZZLE_LIGHT_OFFSET.x, MUZZLE_LIGHT_OFFSET.y, MUZZLE_LIGHT_OFFSET.z);
     this.camera.add(this.muzzleLight);
+
+    // 弹孔：一次 draw call 画满整个弹匣都不心疼。初始 count=0，打一发加一个实例。
+    const holeGeometry = new THREE.PlaneGeometry(1, 1);
+    const holeMaterial = new THREE.MeshBasicMaterial({
+      map: bulletHoleTexture(),
+      transparent: true,
+      depthWrite: false,
+      // 稍微往前推一点，避免和墙面共面时的深度精度打架
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
+    });
+    this.bulletHoles = new THREE.InstancedMesh(holeGeometry, holeMaterial, BULLET_HOLE_CAPACITY);
+    this.bulletHoles.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.bulletHoles.count = 0;
+    this.bulletHoles.frustumCulled = false;
+    this.bulletHoles.renderOrder = 1;
+    // 先把全部实例写成零缩放：某些 three 版本在 count 增长时会把未初始化的槽位
+    // 当成单位矩阵，在原点画出一堆大弹孔。
+    const hidden = new THREE.Matrix4().makeScale(0, 0, 0);
+    for (let i = 0; i < BULLET_HOLE_CAPACITY; i += 1) {
+      this.bulletHoles.setMatrixAt(i, hidden);
+    }
+    this.bulletHoles.instanceMatrix.needsUpdate = true;
+    this.scene.add(this.bulletHoles);
   }
 
   /**
@@ -129,6 +238,55 @@ export class CombatEffects {
     const scale = MUZZLE_SCALE_MIN + Math.random() * MUZZLE_SCALE_RANGE;
     this.muzzle.scale.set(scale, scale, 1);
     this.muzzleLight.intensity = 9;
+  }
+
+  /**
+   * 弹孔：在命中面上贴一枚持久的洞（容量 96，打满后覆盖最旧的）。
+   *
+   * 三个必须做对的细节：
+   *   1. **朝向用法向**，不是弹道方向。斜着打墙时"弹道反方向"会让贴片浮在空中；
+   *   2. 沿法向外推 {@link BULLET_HOLE_OFFSET}，否则与墙面共面会闪烁（z-fighting）；
+   *   3. 绕法向随机转一个角度，否则同一个洞反复贴会出现明显的重复图案。
+   */
+  public bulletHole(
+    point: { x: number; y: number; z: number },
+    normal: { x: number; y: number; z: number },
+  ): void {
+    this.holeNormal.set(normal.x, normal.y, normal.z);
+    if (this.holeNormal.lengthSq() < 1e-9) {
+      // 非法法向（理论上不会发生）：直接朝上，至少不会画出 NaN 矩阵
+      this.holeNormal.set(0, 1, 0);
+    }
+    this.holeNormal.normalize();
+
+    this.holePosition.set(
+      point.x + this.holeNormal.x * BULLET_HOLE_OFFSET,
+      point.y + this.holeNormal.y * BULLET_HOLE_OFFSET,
+      point.z + this.holeNormal.z * BULLET_HOLE_OFFSET,
+    );
+
+    // PlaneGeometry 的正面朝 +Z：把 +Z 旋到法向，再绕法向随机自转
+    this.holeQuaternion.setFromUnitVectors(this.zAxis, this.holeNormal);
+    this.holeRotation.setFromAxisAngle(this.holeNormal, Math.random() * Math.PI * 2);
+    this.holeQuaternion.premultiply(this.holeRotation);
+
+    const size = BULLET_HOLE_SIZE_MIN + Math.random() * BULLET_HOLE_SIZE_RANGE;
+    this.holeScale.set(size, size, 1);
+
+    this.holeMatrix.compose(this.holePosition, this.holeQuaternion, this.holeScale);
+    this.bulletHoles.setMatrixAt(this.bulletHoleCursor, this.holeMatrix);
+    this.bulletHoles.instanceMatrix.needsUpdate = true;
+
+    this.bulletHoleCursor = (this.bulletHoleCursor + 1) % BULLET_HOLE_CAPACITY;
+    if (this.bulletHoles.count < BULLET_HOLE_CAPACITY) {
+      this.bulletHoles.count += 1;
+    }
+  }
+
+  /** 清空全部弹孔（重开一局 / 换图时调用，避免上一局残留）。 */
+  public clearBulletHoles(): void {
+    this.bulletHoleCursor = 0;
+    this.bulletHoles.count = 0;
   }
 
   /** 弹着点：火花四溅 + 短暂烟尘（打墙/打空时使用）。 */

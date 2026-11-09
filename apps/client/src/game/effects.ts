@@ -42,12 +42,24 @@ interface Effect {
   dispose: () => void;
 }
 
-/** 曳光的视觉飞行速度（米/秒）。纯表现，与判定射程无关。 */
-const TRACER_SPEED = 260;
+/**
+ * 曳光的视觉飞行速度（米/秒）。纯表现，与判定射程无关。
+ *
+ * 260 → 340：CS2 的曳光几乎是"一闪而过"的细线。速度压得太低时，玩家能在空中
+ * 同时看到两三发并排的粗亮柱，主观感受就变成"我拿的是霰弹枪"——这也是上一版
+ * 「弹道看上去像散弹枪」的主要来源之一（另一条是半径 14mm 太粗）。
+ */
+const TRACER_SPEED = 340;
 /** 拖尾长度（米）：短到像"子弹"，长到在 30m 外也看得见一条亮线。 */
-const TRACER_STREAK = 2.4;
-/** 曳光半径（米）：太细在高 DPI 屏上会消失，太粗像激光。 */
-const TRACER_RADIUS = 0.014;
+const TRACER_STREAK = 3.6;
+/**
+ * 曳光半径（米）。14mm → 6mm。
+ *
+ * 14mm 在 1080p、30m 处的投影宽度接近 3 个像素，四根并排就是一根"光柱"；
+ * 6mm 投影像 1 个像素的细线——这才是 CS 里那条几乎看不见、只能靠亮度感知的曳光。
+ * 再细会在高 DPI 屏上被抗锯齿吃掉，所以留了 6mm 的下限。
+ */
+const TRACER_RADIUS = 0.006;
 /** 最短存活时间（毫秒）：贴脸打墙时不至于一帧都看不到。 */
 const TRACER_MIN_LIFE_MS = 40;
 /** 同时存在的曳光上限（对象池容量）。超了复用最老的一条，永不增长。 */
@@ -220,9 +232,11 @@ export class CombatEffects {
     this.tracerGeometry = new THREE.CylinderGeometry(1, 1, 1, 6, 1, true);
     this.tracerMaterial = new THREE.MeshBasicMaterial({
       map: tracerTexture(),
-      color: 0xfff3cf,
+      color: 0xffe6a8,
       transparent: true,
-      opacity: 0.92,
+      // 0.92 → 0.62：加色混合下 0.92 会把细线糊成一团亮斑，压到 0.62 才有"细而亮"的
+      // 观感；配合半径 6mm，远处就是一条一像素的暖色线。
+      opacity: 0.62,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });

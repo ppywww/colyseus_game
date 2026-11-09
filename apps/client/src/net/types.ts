@@ -30,6 +30,8 @@ export interface PlayerState {
   weaponSlot: number;
   /** 切枪结束时间戳（Date.now()）；0 表示不在切枪中。 */
   switchEndAt: number;
+  /** 是否下蹲（服务端权威）：弹道起点眼高、判定体压缩、远端化身蹲姿共用。 */
+  crouch?: boolean;
   /** 队伍（"T" / "CT"）：远端模型配色与出生朝向共用，协议 v2 新增。 */
   team: string;
 }

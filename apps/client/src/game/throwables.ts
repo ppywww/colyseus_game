@@ -76,10 +76,102 @@ export class ThrowableSystem {
   private readonly smoke = smokeTexture();
   private readonly grenadeGeometry = new THREE.SphereGeometry(GRENADE_RADIUS, 12, 10);
 
+  /* ---------------- 投掷抛物线辅助 ---------------- */
+
+  /** 辅助弧线上同时显示的点数（每 1/10 秒一个点，够看出落点又不会糊成一条实线）。 */
+  private static readonly ARC_DOTS = 40;
+  private readonly arcDots: THREE.InstancedMesh;
+  private readonly arcMaterial: THREE.MeshBasicMaterial;
+  private arcType: ThrowableType | null = null;
+
   public constructor(
     private readonly scene: THREE.Scene,
     private readonly effects: CombatEffects,
-  ) {}
+  ) {
+    this.arcMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffc46b,
+      transparent: true,
+      opacity: 0.62,
+      depthWrite: false,
+      // 弧线贴地但不抢戏：不参与深度写入，被墙挡住时会自然消失
+      side: THREE.DoubleSide,
+    });
+    this.arcDots = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(0.045, 6, 5),
+      this.arcMaterial,
+      ThrowableSystem.ARC_DOTS,
+    );
+    this.arcDots.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.arcDots.frustumCulled = false;
+    this.arcDots.visible = false;
+    this.arcDots.name = "throw-arc";
+    this.scene.add(this.arcDots);
+  }
+
+  /**
+   * 更新投掷抛物线辅助线。
+   *
+   * 用**与服务端完全相同的** {@link stepGrenadePhysics} 从出手点向前积分，
+   * 每隔 1/10 秒打一个点，直到落地或撞墙。这意味着辅助线画到哪里、手雷就飞到哪里：
+   * 它不是"提示"、不是"大概方向"，而是一条可复现的预测轨迹。
+   *
+   * 用 `InstancedMesh` 而不是 `Line`：单个 draw call、点数固定、不会每帧创建几何体。
+   */
+  public updateAimArc(
+    origin: { x: number; y: number; z: number },
+    dir: { x: number; y: number; z: number },
+    speed: number,
+    type: ThrowableType,
+  ): void {
+    if (this.arcType !== type) {
+      this.arcType = type;
+      // 三种投掷物用不同颜色，避免"以为拿的是闪、其实是烟"
+      this.arcMaterial.color.setHex(type === "frag" ? 0xffb066 : type === "flash" ? 0xffffff : 0x9fd4ff);
+    }
+
+    const body = {
+      x: origin.x,
+      y: origin.y,
+      z: origin.z,
+      vx: dir.x * speed,
+      vy: dir.y * speed,
+      vz: dir.z * speed,
+    };
+
+    const matrix = new THREE.Matrix4();
+    const position = new THREE.Vector3();
+    const quaternion = new THREE.Quaternion();
+    const scale = new THREE.Vector3(1, 1, 1);
+    const stepSeconds = 1 / 60;
+    let dotted = 0;
+
+    for (let step = 0; step < 260 && dotted < ThrowableSystem.ARC_DOTS; step += 1) {
+      stepGrenadePhysics(body, stepSeconds, GRENADE_COLLIDERS);
+      // 每 6 帧一个点 ≈ 每 0.1 秒
+      if (step % 6 !== 0) {
+        continue;
+      }
+      // 越远越淡：用缩放代替透明度（InstancedMesh 共享材质，无法逐点改 opacity）
+      const shrink = 1 - (dotted / ThrowableSystem.ARC_DOTS) * 0.45;
+      position.set(body.x, body.y, body.z);
+      scale.setScalar(shrink);
+      matrix.compose(position, quaternion, scale);
+      this.arcDots.setMatrixAt(dotted, matrix);
+      dotted += 1;
+      // 已经静止在地上：后面的点会全叠在一处，没有信息量
+      if (body.y <= GRENADE_RADIUS + 0.02 && Math.abs(body.vy) < 0.8) {
+        break;
+      }
+    }
+
+    this.arcDots.count = Math.max(1, dotted);
+    this.arcDots.instanceMatrix.needsUpdate = true;
+    this.arcDots.visible = dotted > 0;
+  }
+
+  public hideAimArc(): void {
+    this.arcDots.visible = false;
+  }
 
   /** 服务端广播投掷：立刻生成本地预测的飞行体。 */
   public spawnLaunched(message: GrenadeLaunchedMessage): void {
@@ -234,5 +326,8 @@ export class ThrowableSystem {
     }
     this.grenadeGeometry.dispose();
     this.smoke.dispose();
+    this.scene.remove(this.arcDots);
+    this.arcDots.geometry.dispose();
+    this.arcMaterial.dispose();
   }
 }

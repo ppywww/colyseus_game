@@ -89,6 +89,9 @@ class RemotePlayerAvatar {
   private fallElapsedMs = 0;
   private alive = true;
   private lastWeaponSlot = -1;
+  /** 蹲姿插值 0..1（服务端 `crouch` 布尔值的平滑版本）。 */
+  private crouchAmount = 0;
+  private crouchTarget = 0;
 
   /** 右臂前甩的剩余 / 总时长（毫秒）。0 表示当前没有一次性动作。 */
   private armSwingRemainingMs = 0;
@@ -135,12 +138,15 @@ class RemotePlayerAvatar {
     this.armSwingRemainingMs = this.armSwingDurationMs;
   }
 
-  /** 同步非位置状态（武器槽 / 存活），立即生效，不做淡入。 */
+  /** 同步非位置状态（武器槽 / 存活 / 蹲姿），立即生效，不做淡入。 */
   public syncState(player: PlayerState): void {
     if (player.weaponSlot !== this.lastWeaponSlot) {
       this.lastWeaponSlot = player.weaponSlot;
       this.model.setWeaponSlot(player.weaponSlot);
     }
+
+    // 蹲姿是目标值，真正的插值在 render 里做（200ms 内平滑过渡，避免一帧内模型高度突变）
+    this.crouchTarget = player.crouch === true && player.alive ? 1 : 0;
 
     if (player.alive !== this.alive) {
       this.alive = player.alive;
@@ -186,6 +192,25 @@ class RemotePlayerAvatar {
       this.bobAmp += (target - this.bobAmp) * k;
       const airborne = transform.y > AIRBORNE_Y;
       this.model.poseLocomotion(this.bobPhase, this.bobAmp * (airborne ? 0.5 : 1));
+
+      // ---- 蹲姿 ----
+      // 压扁比例与服务端判定体一致（1 − 0.37 = CROUCH_HEIGHT_SCALE）：
+      // 玩家看到的"蹲下去多少"就是"判定体矮了多少"，不会出现"看着蹲了却被打头"。
+      // 屈膝/屈髋是纯视觉补充，让动作读起来是"蹲"而不是"缩小的模型"。
+      const crouchK = 1 - Math.exp(-dtSeconds / 0.07);
+      this.crouchAmount += (this.crouchTarget - this.crouchAmount) * crouchK;
+      const crouch = this.crouchAmount;
+      if (crouch > 0.002) {
+        this.model.root.scale.y = 1 - 0.37 * crouch;
+        const { hipL, hipR, kneeL, kneeR, torsoPivot } = this.model.rig;
+        hipL.rotation.x -= 0.85 * crouch;
+        hipR.rotation.x -= 0.85 * crouch;
+        kneeL.rotation.x += 1.6 * crouch;
+        kneeR.rotation.x += 1.6 * crouch;
+        torsoPivot.rotation.x += 0.22 * crouch;
+      } else if (this.model.root.scale.y !== 1) {
+        this.model.root.scale.y = 1;
+      }
 
       // 一次性动作（挥刀 / 投掷）在 poseLocomotion 之后再叠加：
       // 它每帧都会把 shoulderR.rotation.x 写回摆动值，所以这里的 -= 不会累积。

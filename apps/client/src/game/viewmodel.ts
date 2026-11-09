@@ -304,8 +304,17 @@ export function computeViewmodelPose(state: ViewmodelPoseState, tSeconds: number
     rz += 0.55 * reloadEase;
     dy += -0.1 * reloadEase;
     dz += 0.06 * reloadEase;
+    const progress = Math.min(1, state.reloadProgress);
+    // 弹匣入位的那一下：0.55–0.70 之间补一个快速下沉 + 上抬，动作才有"节奏点"。
+    // 没有它的话整个换弹是一条平缓的曲线，看起来像"枪自己慢慢沉下去"，不像人在操作。
+    if (progress > 0.55 && progress < 0.7) {
+      const shove = Math.sin(((progress - 0.55) / 0.15) * Math.PI);
+      dy += -0.022 * shove;
+      rx += -0.06 * shove;
+      dz += 0.012 * shove;
+    }
     // 收尾缓冲：末 8% 追加一次 6mm 的下沉再回弹
-    const tail = (Math.min(1, state.reloadProgress) - 0.92) / 0.08;
+    const tail = (progress - 0.92) / 0.08;
     if (tail > 0 && tail < 1) {
       dy += -0.006 * Math.sin(Math.PI * tail);
     }

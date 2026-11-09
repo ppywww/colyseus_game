@@ -78,6 +78,9 @@ export function sanitizeTransform(raw: unknown): PlayerTransformMessage | null {
     z: clampToArena(safeZ),
     yaw: normalizeYaw(safeYaw),
     pitch: clampPitch(safePitch),
+    // 只接受真正的布尔 true；缺失 / "true" / 1 一律按站立处理（不做隐式转换，
+    // 避免作弊客户端用奇怪类型让两端对 crouch 的理解分叉）。
+    crouch: message.crouch === true,
   };
 }
 

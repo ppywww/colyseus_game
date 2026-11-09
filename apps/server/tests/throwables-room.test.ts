@@ -126,8 +126,9 @@ describe("S4 投掷物与弹药", () => {
       const fragsBefore = stateOf(roomA).players.get(roomA.sessionId)!.frags;
       assert.equal(fragsBefore, THROWABLES.frag.initialCount, "初始应有手雷");
 
-      // 朝 -Z 略下压投掷（下压使手雷在 B 附近落地后滚动）
-      roomA.send(MESSAGE_TYPES.THROW, { type: THROWABLE_TYPES.FRAG, dirX: 0, dirY: -0.4, dirZ: -1 });
+      // 近投：21m/s 的出手速度下"平着扔"会直接飞过 B 二十多米，所以用大俯角
+      // （-0.99 竖直分量）把雷压到 A 身前 3–4m 落地，B 在 3.5m 外、稳在 9.5m 杀伤半径内。
+      roomA.send(MESSAGE_TYPES.THROW, { type: THROWABLE_TYPES.FRAG, dirX: 0, dirY: -1, dirZ: -0.15 });
       await waitFor(
         () => stateOf(roomA).players.get(roomA.sessionId)!.frags === fragsBefore - 1,
         "投出后手雷数量应减少",

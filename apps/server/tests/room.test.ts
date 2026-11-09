@@ -193,7 +193,7 @@ describe("双客户端联机闭环", () => {
       // 乱序消息：seq 相同，不应生效
       roomA.send(MESSAGE_TYPES.PLAYER_TRANSFORM, { seq: 1, x: 5, y: 0, z: 5, yaw: 0, pitch: 0 });
       // 合法消息
-      roomA.send(MESSAGE_TYPES.PLAYER_TRANSFORM, { seq: 2, x: 7.5, y: 0, z: -3.25, yaw: 1.2, pitch: 0.1 });
+      roomA.send(MESSAGE_TYPES.PLAYER_TRANSFORM, { seq: 2, x: 3.5, y: 0, z: 5.5, yaw: 1.2, pitch: 0.1 });
 
       const stateB = roomB.state as unknown as {
         players: Map<string, { x: number; z: number; seq: number }>;
@@ -208,8 +208,8 @@ describe("双客户端联机闭环", () => {
       );
 
       const player = stateB.players.get(sessionA);
-      assert.ok(Math.abs(player!.x - 7.5) < 0.01, `x 应为 7.5，实际 ${player!.x}`);
-      assert.ok(Math.abs(player!.z + 3.25) < 0.01, `z 应为 -3.25，实际 ${player!.z}`);
+      assert.ok(Math.abs(player!.x - 3.5) < 0.01, `x 应为 3.5，实际 ${player!.x}`);
+      assert.ok(Math.abs(player!.z - 5.5) < 0.01, `z 应为 5.5，实际 ${player!.z}`);
     } finally {
       await roomA.leave();
       await roomB.leave();

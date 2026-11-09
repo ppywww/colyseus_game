@@ -16,12 +16,13 @@
  */
 
 import {
-  EYE_HEIGHT,
   MUZZLE_OFFSET,
   PLAYER_HITBOXES,
   WEAPON_RANGE,
   ZONE_DAMAGE,
   ZONE_PRIORITY,
+  eyeHeightOf,
+  heightScaleOf,
   type Aabb,
   type HitZone,
   type ShotMessage,
@@ -45,6 +46,8 @@ export interface CombatantView {
   alive: boolean;
   /** 当前武器槽位；缺省按 0（步枪）处理，便于纯函数测试。 */
   weaponSlot?: number;
+  /** 是否下蹲（缺省 false）：决定射线起点眼高。 */
+  crouch?: boolean;
 }
 
 /** 命中体求交目标：只需要位置与朝向（朝向用于把手臂圆柱按 yaw 旋转到世界坐标）。 */
@@ -53,6 +56,8 @@ export interface HitboxTarget {
   y: number;
   z: number;
   yaw?: number;
+  /** 是否下蹲：判定体整体按 {@link heightScaleOf} 压缩（不是逐段重写，比例不变）。 */
+  crouch?: boolean;
 }
 
 /** 命中体求交结果：最近命中距离与命中部位。 */
@@ -234,6 +239,8 @@ export function rayPlayerHitboxes(
 ): HitboxHit | null {
   const yaw: number = target.yaw ?? 0;
   const right: Vec3 = rightFromYaw(yaw);
+  // 蹲下：判定体整体压扁（头/胸/腹/腿的比例保持不变），半径不动
+  const scale: number = heightScaleOf(target.crouch === true);
 
   let best: HitboxHit | null = null;
   for (const box of PLAYER_HITBOXES) {
@@ -245,8 +252,8 @@ export function rayPlayerHitboxes(
       centerX,
       target.y,
       centerZ,
-      box.yMin,
-      box.yMax,
+      box.yMin * scale,
+      box.yMax * scale,
       box.radius,
       maxT,
     );
@@ -343,8 +350,10 @@ export function computeShot(
   const dir: Vec3 = spread === undefined || spread === null || spread.halfAngleDeg <= 0
     ? baseDir
     : applySpread(baseDir, right, spread);
-  // 判定射线起点 = 眼睛（不能挪到枪口：贴脸时会先打中自己的枪口模型/掩体边角）
-  const rayOrigin: Vec3 = { x: feetX, y: feetY + EYE_HEIGHT, z: feetZ };
+  // 判定射线起点 = 眼睛（不能挪到枪口：贴脸时会先打中自己的枪口模型/掩体边角）。
+  // 蹲下时眼睛下沉到 CROUCH_EYE_HEIGHT——否则蹲在 1.1m 掩体后仍然"从箱顶上面开枪"，
+  // 视觉上枪口在箱沿以下、弹道却从箱沿以上出发，玩家会立刻发现不对。
+  const rayOrigin: Vec3 = { x: feetX, y: feetY + eyeHeightOf(shooter.crouch === true), z: feetZ };
   // 广播用视觉枪口 = 眼睛 + 右向偏移 + 向下偏移 + 前向偏移（与第一人称视模型姿态对齐）
   const up: Vec3 = {
     x: right.y * dir.z - right.z * dir.y,

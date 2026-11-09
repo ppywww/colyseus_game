@@ -103,6 +103,15 @@ export class Player extends Schema {
   @type("float64")
   public switchEndAt: number = 0;
 
+  /**
+   * 是否下蹲。
+   *
+   * 由客户端 30Hz 的 transform 上报携带（缺省 false）。服务端用它把弹道起点降到
+   * 蹲姿眼高、把判定体压扁；客户端用它让远端化身真的蹲下去。
+   */
+  @type("boolean")
+  public crouch: boolean = false;
+
   /** 护甲值（本期恒 0，预留字段避免下期二次改协议）。 */
   @type("uint8")
   public armor: number = 0;

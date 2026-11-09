@@ -33,11 +33,11 @@ const JUMPABLE_MAX_M = 1.15;
 const MUST_CIRCLE_MIN_M = 1.4;
 
 describe("地图尺寸与边界", () => {
-  it("外框应为 64×64，可玩区为 ±30，外墙厚 2m / 高 6m", () => {
-    assert.equal(MAP_SIZE, 64);
+  it("外框应为 80×80，可玩区为 ±38，外墙厚 2m / 高 6m", () => {
+    assert.equal(MAP_SIZE, 80);
     assert.equal(WALL_THICKNESS, 2);
     assert.equal(WALL_HEIGHT, 6);
-    assert.deepEqual(MAP_BOUNDS, { minX: -30, maxX: 30, minZ: -30, maxZ: 30 });
+    assert.deepEqual(MAP_BOUNDS, { minX: -38, maxX: 38, minZ: -38, maxZ: 38 });
     assert.equal(MAP_BOUNDS.maxX - MAP_BOUNDS.minX, MAP_SIZE - WALL_THICKNESS * 2);
     assert.equal(MAP_BOUNDS.maxZ - MAP_BOUNDS.minZ, MAP_SIZE - WALL_THICKNESS * 2);
   });
@@ -63,7 +63,7 @@ describe("地图尺寸与边界", () => {
 });
 
 describe("体块数据完整性", () => {
-  it("实心体块总数应 ≥ 60（当前为 25 段墙 + 39 个掩体）", () => {
+  it("实心体块总数应 ≥ 60（当前为 22 段墙 + 2 栋连接建筑 + 40 个掩体）", () => {
     assert.ok(OBSTACLES.length >= 60, `体块数量不足，实际 ${OBSTACLES.length}`);
   });
 
@@ -91,7 +91,7 @@ describe("体块数据完整性", () => {
     assert.equal(ids.size, OBSTACLES.length, "存在重复 id");
   });
 
-  it("体块应全部落在 64×64 外框内（含外墙自身）", () => {
+  it("体块应全部落在 80×80 外框内（含外墙自身）", () => {
     const half = MAP_SIZE / 2;
     for (const obstacle of OBSTACLES) {
       assert.ok(Math.abs(obstacle.x) + obstacle.width / 2 <= half + 1e-6, `${obstacle.id} 超出 X 外框`);

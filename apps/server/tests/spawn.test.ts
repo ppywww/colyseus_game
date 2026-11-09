@@ -139,11 +139,11 @@ describe("pickSpawnPoint 每队 4 点随机", () => {
   });
 
   it("敌人 12m 内通视的点会被否掉", () => {
-    // T 侧 4 点里 (0, 29) 已被排除，剩下 (−6,25) (−2,27.5) (2,26) (6,27.5)。
-    // 把敌人放在 (−2, 17) 朝 +Z（yaw=π）：只有 (−2, 27.5) 落在这条视线上，距离 10.5m < 12m，
-    // 中间无掩体 → 该点应被否掉，30 次随机里一次都不应出现。
-    const target = { x: -2, z: 27.5 };
-    const facingPlayer = player({ sessionId: "enemy", x: -2, z: 17, yaw: Math.PI });
+    // 新地图 T 侧 4 点是 (−6,34) (0,35.5) (6,34) (−10,31)。
+    // 把敌人放在 (0, 25) 朝 +Z（yaw=π）：只有 (0,35.5) 落在这条视线上，距离 10.5m < 12m，
+    // 中间是空的 T 出生点广场（SN1/SN2 在 z=23 的南侧，不挡视线）→ 该点应被否掉。
+    const target = { x: 0, z: 35.5 };
+    const facingPlayer = player({ sessionId: "enemy", x: 0, z: 25, yaw: Math.PI });
     let exposedPicked = 0;
     for (let i = 0; i < 30; i += 1) {
       const selection = pickSpawnPoint({
@@ -160,7 +160,7 @@ describe("pickSpawnPoint 每队 4 点随机", () => {
     assert.equal(exposedPicked, 0, "暴露在敌人视线内的出生点不应被选中");
 
     // 反向对照：敌人背对（yaw=0 朝 −Z）时该点重新可用，60 次里应至少被抽到一次
-    const awayPlayer = player({ sessionId: "enemy", x: -2, z: 17, yaw: 0 });
+    const awayPlayer = player({ sessionId: "enemy", x: 0, z: 25, yaw: 0 });
     let pickedWhenSafe = 0;
     for (let i = 0; i < 60; i += 1) {
       const selection = pickSpawnPoint({

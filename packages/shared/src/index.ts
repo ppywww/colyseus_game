@@ -111,10 +111,10 @@ export interface PongMessage {
  * 数值仍是 30，表示「可玩区从中心向四个方向各延伸 30 米」。
  * 需要矩形边界时请使用 {@link MAP_BOUNDS}。
  */
-export const ARENA_RADIUS: number = 30;
+export const ARENA_RADIUS: number = 38;
 
-/** 地图外框边长（米）：含 2m 外墙，x/z ∈ [−32, 32]。 */
-export const MAP_SIZE: number = 64;
+/** 地图外框边长（米）：含 2m 外墙，x/z ∈ [−40, 40]。 */
+export const MAP_SIZE: number = 80;
 
 /** 外墙高度（米）：足够阻断视线，玩家不可能跳出。 */
 export const WALL_HEIGHT: number = 6;
@@ -131,16 +131,54 @@ export interface MapBounds {
 }
 
 /**
- * 可玩区矩形（外墙内表面）：与外框 64×64 减去 2m 外墙后完全吻合。
- * 客户端 `stepPlayer` 与服务端 `sanitizeTransform` 都按 ±30 逐轴钳制，两端天然一致。
+ * 可玩区矩形（外墙内表面）：与外框 80×80 减去 2m 外墙后完全吻合。
+ * 客户端 `stepPlayer` 与服务端 `sanitizeTransform` 都按 ±38 逐轴钳制，两端天然一致。
  */
-export const MAP_BOUNDS: MapBounds = { minX: -30, maxX: 30, minZ: -30, maxZ: 30 };
+export const MAP_BOUNDS: MapBounds = { minX: -38, maxX: 38, minZ: -38, maxZ: 38 };
 
 /** 玩家眼睛高度（米）：本地相机与远端模型头顶标签的共同依据。 */
 export const EYE_HEIGHT: number = 1.6;
 
 /** 玩家身高（米）：远端模型与碰撞体的共同依据。 */
 export const PLAYER_HEIGHT: number = 1.8;
+
+/* ------------------------------------------------------------------ *
+ * 下蹲（Ctrl / C）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 蹲下后的眼睛高度（米）。
+ *
+ * 取站立眼高 1.6 的 0.6375 倍，落在 CS 系列「蹲下视线约降到 0.64」的比例上：
+ * 蹲在 1.1m 木箱后时头顶（1.15m）刚好低于箱沿，但抬高 1–2° 仍能越过箱顶对枪，
+ * 这是「蹲掩体」这个动作存在的全部意义。再低会让所有 1.1m 掩体变成绝对安全区，
+ * 攻方无解。
+ */
+export const CROUCH_EYE_HEIGHT: number = 1.02;
+
+/**
+ * 蹲下后判定体/化身模型的高度缩放。
+ *
+ * 判定圆柱按 {@link PLAYER_HITBOXES} 的 `y` 乘以该系数整体压缩（不是逐段重写），
+ * 所以头/胸/腹/腿的比例关系与原表严格一致，抬头压枪的手感不会因为蹲下而改变。
+ */
+export const CROUCH_HEIGHT_SCALE: number = 0.63;
+
+/** 蹲下时的移动速度倍率（CS 蹲走约 52u/s vs 走 250u/s，取 0.42 略快以便调整站位）。 */
+export const CROUCH_SPEED_SCALE: number = 0.42;
+
+/** 站立 ↔ 蹲下的过渡时长（毫秒）：作为客户端相机缓动与化身姿态插值的共同口径。 */
+export const CROUCH_TRANSITION_MS: number = 130;
+
+/** 按蹲/站取眼睛高度（服务端弹道起点与客户端相机共用同一个函数）。 */
+export function eyeHeightOf(crouched: boolean): number {
+  return crouched ? CROUCH_EYE_HEIGHT : EYE_HEIGHT;
+}
+
+/** 按蹲/站取判定体高度缩放（服务端命中判定与客户端化身模型共用）。 */
+export function heightScaleOf(crouched: boolean): number {
+  return crouched ? CROUCH_HEIGHT_SCALE : 1;
+}
 
 /**
  * 客户端上报自身位置/视角的频率（Hz）。
@@ -189,6 +227,14 @@ export interface PlayerTransformMessage {
   z: number;
   yaw: number;
   pitch: number;
+  /**
+   * 是否处于下蹲状态（缺省 false）。
+   *
+   * 服务端用它做两件事：① 判定射线起点按 {@link CROUCH_EYE_HEIGHT} 下沉；
+   * ② 命中判定把目标判定体按 {@link CROUCH_HEIGHT_SCALE} 压扁。
+   * 缺省 false 是为了让老客户端（不传该字段）照旧按站立结算，协议不破。
+   */
+  crouch?: boolean;
 }
 
 /** 归一化 yaw 到 (-π, π]。 */
@@ -609,110 +655,127 @@ interface ObstacleSeed {
 }
 
 /**
- * 沙漠迷城（Dust II 风格）实心体块：25 段墙 + 39 个掩体 = 64 个轴对齐盒。
+ * 沙漠迷城（原创沙漠城镇，三路 + 双包点结构）实心体块：22 段墙 + 2 栋连接建筑 + 40 个掩体。
+ *
+ * 布局（x 西→东，z 南→北；T 在南 z>0，CT 在北 z<0）：
+ *   - **A 大**：西侧 11m 宽长廊（x −38…−27），南端接 T 坡道，北端直接流进 A 点；
+ *   - **中路**：中央 12m 走廊（x −6…6），经「中门」（z = −9，6m 门洞）进入 CT 中路广场；
+ *   - **B 洞**：东侧 11m 宽长廊（x 27…38），南端接 T 坡道，北端进 B 点；
+ *   - **CT 中路广场**（x −14…14，z −24…−10）：三条路的铰链，向西经「A 小道门」进 A 点，
+ *     向东经「B 门」进 B 点，向北进 CT 出生点；
+ *   - 两栋 6m 高的连接建筑（BLD1/BLD2）把中路与两侧长廊之间的空隙填实，避免"隔墙偷看"。
+ *   - 两张包点各留一个 4m 门洞 + 一个宽出口，攻方有两条进场路线（长廊 / 中路转点）。
  *
  * 硬约束（不要破坏）：
  *   1. **只允许 AABB**：服务端射线遮挡（rayAabb）与客户端 MTA 推出都只认轴对齐盒；
  *   2. 高度必须落在「≤1.15m 可跳」或「≥1.4m 必绕」两档，1.16–1.39 是灰区（会表现成跳不上去的黏滑手感）；
- *   3. 门洞（中门 4m、A 坡道 4m、B 门 4m、A 小道门 2m、下沉通道 3m、B 洞出口 10m）由相邻墙段之间的空隙形成，
- *      挪动任何一段墙都会改掉枪线长度，改动前请重跑栅格化平面图。
- *
- * 与设计表的两处偏差（均为满足上面的第 2 条，视觉与玩法不变）：
- *   - 油桶 L2 / M3 / T4 的高度取 **1.4m**（真实油桶 42×42×56u ≈ 1.42m），设计表写 1.2m 落在 1.16–1.30 灰区；
- *   - 出生点 T1 的 z 取 25.0（设计表 26.0），否则与 P1 木箱有 0.15m 重叠。
+ *   3. 门洞由相邻墙段之间的空隙形成，挪动任何一段墙都会改掉枪线长度，改动前请重跑栅格化平面图；
+ *   4. 相邻墙段的共面要错开 2cm（如 BLD1 的 width 取 15.9），否则渲染层会 z-fighting。
  */
 const OBSTACLE_SEEDS: readonly ObstacleSeed[] = [
-  /* ---------------- 3.4 墙体清单（25 条） ---------------- */
-  // 外墙：外表面 x/z ∈ [−32, 32]，内表面 ±30，高 6m
-  { id: "N", type: "wall", x: 0, z: -31, width: 64, height: 6, depth: 2 },
-  { id: "S", type: "wall", x: 0, z: 31, width: 64, height: 6, depth: 2 },
-  { id: "W", type: "wall", x: -31, z: 0, width: 2, height: 6, depth: 64 },
-  { id: "E", type: "wall", x: 31, z: 0, width: 2, height: 6, depth: 64 },
-  // A 大道东墙（长门 → 拐角）
-  { id: "W1", type: "wall", x: -21, z: 7, width: 2, height: 4, depth: 30 },
-  // 市场建筑群：全图最大实心块，把中路与 A 侧彻底隔开
-  { id: "W2", type: "building", x: -14, z: 10, width: 12, height: 4, depth: 24 },
-  // A 小道北墙：两段之间留出 x −17…−15 的 2m 门洞
-  // width 5 → 4.96：西面从 x=−22 退到 x=−21.98，与 W1 西面错开 2cm，避免共面 z-fighting（东侧 2m 门洞因此变 2.02m，玩法无感）
-  { id: "W3a", type: "wall", x: -19.5, z: -8, width: 4.96, height: 4, depth: 2 },
-  { id: "W3b", type: "wall", x: -13.5, z: -8, width: 3, height: 4, depth: 2 },
-  { id: "W4", type: "wall", x: -11, z: -15, width: 2, height: 4, depth: 14 },
-  { id: "W5", type: "building", x: -8, z: -15, width: 4, height: 4, depth: 14 },
-  // 中路西墙：南段 z −22…−7，北段 z −2…8，中间 z −7…−2 为 A 小道口
-  { id: "W6a", type: "wall", x: -5, z: -14.5, width: 2, height: 4, depth: 15 },
-  { id: "W6b", type: "wall", x: -5, z: 3, width: 2, height: 4, depth: 10 },
-  // 中门：左右扇之间留出 x −2…2 的 4m 门洞（全图最长 31.3m 枪线）
-  { id: "W7a", type: "wall", x: -3.5, z: -12, width: 3, height: 4, depth: 1 },
-  { id: "W7b", type: "wall", x: 3.5, z: -12, width: 3, height: 4, depth: 1 },
-  // 中路东墙：南段 z −22…−6，北段 z 0…8，中间 z −6…0 为下沉通道口
-  { id: "W8a", type: "wall", x: 5, z: -14, width: 2, height: 4, depth: 16 },
-  { id: "W8b", type: "wall", x: 5, z: 4, width: 2, height: 4, depth: 8 },
-  { id: "W9", type: "building", x: 8, z: -15, width: 4, height: 4, depth: 14 },
-  // 上层通道西墙：北段 z −1…22，南段 z −6…−4，中间 z −4…−1 为洞口
-  { id: "W10a", type: "wall", x: 11, z: 10.5, width: 2, height: 4, depth: 23 },
-  { id: "W10c", type: "wall", x: 11, z: -5, width: 2, height: 4, depth: 2 },
-  // B 侧建筑体块（东侧长条）
-  { id: "W11", type: "building", x: 27, z: 10, width: 6, height: 6, depth: 40 },
-  // B 点南墙：西残段 + 东段，之间 x 14…24 为 10m 宽的 B 洞出口
-  { id: "W12a", type: "wall", x: 13, z: -8, width: 2, height: 4, depth: 2 },
-  // width 6 → 5.96：W12b 整体被 W11（x 24…30, z −10…30, h 6）包住，两侧 x 面原本与 W11 共面会 z-fighting；
-  // 内缩 2cm 后它的面全部落在 W11 体内（对外不可见），碰撞体与弹道遮挡由 W11 覆盖，玩法零影响。
-  { id: "W12b", type: "wall", x: 27, z: -8, width: 5.96, height: 4, depth: 2 },
-  { id: "W13", type: "wall", x: 11, z: -15, width: 2, height: 4, depth: 14 },
-  // A 坡道东侧、B 门南侧：只在 z −26…−22 开门洞
-  { id: "W14", type: "wall", x: -11, z: -28, width: 2, height: 4, depth: 4 },
-  { id: "W15", type: "wall", x: 11, z: -28, width: 2, height: 4, depth: 4 },
+  /* ---------------- 外墙（4 段，x/z ∈ ±39，内表面 ±38） ---------------- */
+  { id: "N", type: "wall", x: 0, z: -39, width: 80, height: 6, depth: 2 },
+  { id: "S", type: "wall", x: 0, z: 39, width: 80, height: 6, depth: 2 },
+  { id: "W", type: "wall", x: -39, z: 0, width: 2, height: 6, depth: 80 },
+  { id: "E", type: "wall", x: 39, z: 0, width: 2, height: 6, depth: 80 },
 
-  /* ---------------- 3.5 掩体清单（39 条） ---------------- */
-  // A 点：A1 电梯箱 + A3 箱堆夹出 Ninja 角；A6 矮墙是 A 点唯一可跳掩体
-  { id: "A1", type: "crate", x: -24, z: -18, width: 2.4, height: 2.0, depth: 2.4 },
-  { id: "A2", type: "crate", x: -27, z: -24, width: 1.8, height: 1.1, depth: 1.8 },
-  { id: "A3", type: "crate", x: -19, z: -22, width: 2.0, height: 1.6, depth: 2.0 },
-  { id: "A4", type: "palm", x: -15, z: -27, width: 0.6, height: 5.0, depth: 0.6 },
-  { id: "A5", type: "cart", x: -28, z: -12, width: 2.2, height: 1.5, depth: 1.2 },
-  { id: "A6", type: "wall", x: -13.5, z: -13, width: 4.0, height: 1.1, depth: 1.0 },
-  // A 小道：S1 箱 + S2 油桶把 14m 通视切成 9.3m
-  { id: "S1", type: "crate", x: -16, z: -5, width: 1.6, height: 0.9, depth: 1.6 },
-  { id: "S2", type: "barrel", x: -19.5, z: -3.5, width: 0.9, height: 1.0, depth: 0.9 },
-  { id: "S3", type: "arch", x: -9, z: -3, width: 0.8, height: 3.0, depth: 0.8 },
-  // A 大道：L1 蓝箱把 29m 长道切成 16.3m + 10.0m
-  { id: "L1", type: "crate", x: -27, z: 12, width: 2.5, height: 1.6, depth: 2.5 },
-  { id: "L2", type: "barrel", x: -29, z: 4, width: 1.2, height: 1.4, depth: 1.2 },
-  { id: "L3", type: "crate", x: -23, z: 18, width: 1.6, height: 1.1, depth: 1.6 },
-  { id: "L4", type: "wall", x: -24, z: -2, width: 3.0, height: 2.4, depth: 1.0 },
-  { id: "L5", type: "crate", x: -24.5, z: 6, width: 1.8, height: 1.1, depth: 1.8 },
-  // 中路：M1 Xbox 是中路唯一能跳上去的箱子（上猫道的踏脚石）
-  { id: "M1", type: "crate", x: 0.5, z: -8.5, width: 1.8, height: 1.1, depth: 1.8 },
-  { id: "M2", type: "crate", x: 3.2, z: -9.5, width: 1.4, height: 0.9, depth: 1.4 },
-  { id: "M3", type: "barrel", x: -3.5, z: 2, width: 0.9, height: 1.4, depth: 0.9 },
-  { id: "M4", type: "wall", x: 2.5, z: 6, width: 2.4, height: 0.9, depth: 1.0 },
-  { id: "M5", type: "crate", x: -2, z: -16, width: 1.6, height: 1.1, depth: 1.6 },
-  { id: "M6", type: "crate", x: 1, z: 12, width: 2.0, height: 1.6, depth: 2.0 },
-  { id: "M7", type: "wall", x: -4, z: -4, width: 0.9, height: 2.4, depth: 2.0 },
-  // 上层通道：T2/T3 拱门柱净宽 5.8m，构成 B 侧唯一长廊视野
-  { id: "T1", type: "crate", x: 16, z: 10, width: 1.8, height: 1.1, depth: 1.8 },
-  { id: "T2", type: "arch", x: 12.6, z: 3, width: 1.0, height: 4.0, depth: 1.0 },
-  { id: "T3", type: "arch", x: 19.4, z: 3, width: 1.0, height: 4.0, depth: 1.0 },
-  { id: "T4", type: "barrel", x: 18, z: 17, width: 1.1, height: 1.4, depth: 1.1 },
-  { id: "T5", type: "cart", x: 22, z: 14, width: 2.2, height: 1.4, depth: 1.2 },
-  // B 点：B2 平台（0.9m，5×4）是 B 点唯一的低台，制造「高打低」
-  { id: "B1", type: "crate", x: 20, z: -14, width: 2.6, height: 1.6, depth: 2.6 },
-  { id: "B2", type: "wall", x: 26, z: -20, width: 5.0, height: 0.9, depth: 4.0 },
-  { id: "B3", type: "cart", x: 15, z: -12, width: 2.4, height: 1.4, depth: 1.2 },
-  { id: "B4", type: "crate", x: 17, z: -24, width: 1.8, height: 1.1, depth: 1.8 },
-  { id: "B5", type: "palm", x: 28, z: -11, width: 0.6, height: 5.0, depth: 0.6 },
-  { id: "B6", type: "crate", x: 23, z: -26, width: 2.0, height: 2.0, depth: 2.0 },
-  { id: "B7", type: "wall", x: 14, z: -19, width: 1.0, height: 1.1, depth: 3.0 },
-  // CT 出生点两侧与 T 出生点周边的散件
-  { id: "C1", type: "crate", x: -8.5, z: -23.5, width: 1.6, height: 1.1, depth: 1.6 },
-  { id: "C2", type: "crate", x: 8.5, z: -23.5, width: 1.6, height: 1.1, depth: 1.6 },
-  { id: "P1", type: "crate", x: -7, z: 27, width: 1.6, height: 1.1, depth: 1.6 },
-  { id: "P2", type: "cart", x: 7, z: 26, width: 2.2, height: 1.4, depth: 1.2 },
-  { id: "P3", type: "palm", x: 9.5, z: 29, width: 0.6, height: 5.0, depth: 0.6 },
-  { id: "P4", type: "wall", x: -9, z: 23, width: 1.0, height: 1.1, depth: 3.0 },
+  /* ---------------- 结构性墙体：三条路 + 两个包点 ---------------- */
+  // A 大（西侧长廊）的东墙：z −13…18。南端留空给 T 坡道，北端留空进 A 点。
+  { id: "AW1", type: "wall", x: -26, z: 2.5, width: 2, height: 4, depth: 31 },
+  // A 点东墙：被 4m 的「A 小道门」（z −24…−20）切成两段，连通 CT 中路与 A 点
+  { id: "AW2a", type: "wall", x: -15, z: -30, width: 2, height: 4, depth: 12 },
+  { id: "AW2b", type: "wall", x: -15, z: -17, width: 2, height: 4, depth: 6 },
+  // A 点南墙：只封住 x −27…−16，x −37…−27 敞开让 A 大直接流进包点
+  { id: "AW3", type: "wall", x: -21.5, z: -13, width: 11, height: 4, depth: 2 },
+
+  // 中路两侧长墙（x = ∓7，z −10…22），中间 6m 净宽的走廊
+  { id: "MW1", type: "wall", x: -7, z: 6, width: 2, height: 4, depth: 32 },
+  { id: "MW2", type: "wall", x: 7, z: 6, width: 2, height: 4, depth: 32 },
+  // 中门：z = −9 的两扇墙，中央留 6m 门洞（中路唯一收窄点）
+  { id: "MD1", type: "wall", x: -8.5, z: -9, width: 11, height: 4, depth: 2 },
+  { id: "MD2", type: "wall", x: 8.5, z: -9, width: 11, height: 4, depth: 2 },
+
+  // B 点西墙：同样被 4m 的「B 门」（z −24…−20）切成两段
+  { id: "BW1a", type: "wall", x: 15, z: -30, width: 2, height: 4, depth: 12 },
+  { id: "BW1b", type: "wall", x: 15, z: -17, width: 2, height: 4, depth: 6 },
+  // B 点南墙：封住 x 15…27，x 27…37 敞开接 B 洞
+  { id: "BW2", type: "wall", x: 21, z: -13, width: 12, height: 4, depth: 2 },
+  // B 洞西墙：z −12…24，南端留空进包点
+  { id: "BW3", type: "wall", x: 26, z: 6, width: 2, height: 4, depth: 36 },
+
+  // CT 出生点两侧短墙（z −36…−26）
+  { id: "CW1", type: "wall", x: -11, z: -31, width: 2, height: 4, depth: 10 },
+  { id: "CW2", type: "wall", x: 11, z: -31, width: 2, height: 4, depth: 10 },
+  // T 出生点两侧短墙（只封 z 30…38，南侧地面给 T 坡道让路）
+  { id: "SW1", type: "wall", x: -14, z: 34, width: 2, height: 4, depth: 8 },
+  { id: "SW2", type: "wall", x: 14, z: 34, width: 2, height: 4, depth: 8 },
+  // T 出生点北墙：中央留 6m 直通中路
+  { id: "SN1", type: "wall", x: -8.5, z: 23, width: 11, height: 4, depth: 2 },
+  { id: "SN2", type: "wall", x: 8.5, z: 23, width: 11, height: 4, depth: 2 },
+
+  // 两条纵向「连接建筑」：把中路与 A 大 / B 洞之间的空地填实，形成真正的三路夹层
+  { id: "BLD1", type: "building", x: -17, z: 4, width: 15.9, height: 6, depth: 26 },
+  { id: "BLD2", type: "building", x: 17, z: 4, width: 15.9, height: 6, depth: 26 },
+
+  /* ---------------- A 点掩体 ---------------- */
+  { id: "A1", type: "crate", x: -29, z: -27, width: 2.4, height: 2.0, depth: 2.4 },
+  { id: "A2", type: "crate", x: -34, z: -32, width: 1.8, height: 1.1, depth: 1.8 },
+  { id: "A3", type: "crate", x: -21, z: -30, width: 2.0, height: 1.6, depth: 2.0 },
+  { id: "A4", type: "palm", x: -35, z: -17, width: 0.6, height: 5.0, depth: 0.6 },
+  { id: "A5", type: "cart", x: -31, z: -16, width: 2.2, height: 1.5, depth: 1.2 },
+  { id: "A6", type: "wall", x: -24, z: -16, width: 4.0, height: 1.1, depth: 1.0 },
+  // 双拱门柱：A 点北侧的装饰性门廊（横梁由 map.ts 连接，不参与碰撞）
+  { id: "A7", type: "arch", x: -22, z: -34, width: 1.0, height: 4.0, depth: 1.0 },
+  { id: "A8", type: "arch", x: -18, z: -34, width: 1.0, height: 4.0, depth: 1.0 },
+
+  /* ---------------- A 大（西长廊） ---------------- */
+  { id: "L1", type: "crate", x: -33, z: 10, width: 2.5, height: 1.6, depth: 2.5 },
+  { id: "L2", type: "barrel", x: -35.5, z: 2, width: 1.2, height: 1.4, depth: 1.2 },
+  { id: "L3", type: "crate", x: -30, z: -4, width: 1.6, height: 1.1, depth: 1.6 },
+  { id: "L4", type: "wall", x: -34, z: 14, width: 3.0, height: 1.1, depth: 1.0 },
+
+  /* ---------------- 中路 ---------------- */
+  { id: "M1", type: "crate", x: 2, z: -2, width: 1.8, height: 1.1, depth: 1.8 },
+  { id: "M2", type: "crate", x: -2.5, z: 12, width: 1.6, height: 1.1, depth: 1.6 },
+  { id: "M3", type: "barrel", x: 4.5, z: 4, width: 0.9, height: 1.4, depth: 0.9 },
+  { id: "M4", type: "wall", x: 0, z: 16, width: 2.4, height: 0.9, depth: 1.0 },
+  { id: "M5", type: "crate", x: -4, z: 18, width: 1.6, height: 1.1, depth: 1.6 },
+
+  /* ---------------- CT 中路（中门后的广场，连接两个包点） ---------------- */
+  { id: "C1", type: "crate", x: -9, z: -14, width: 2.0, height: 1.6, depth: 2.0 },
+  { id: "C2", type: "cart", x: 9, z: -18, width: 2.2, height: 1.4, depth: 1.2 },
+  { id: "C3", type: "barrel", x: -5, z: -20, width: 1.2, height: 1.4, depth: 1.2 },
+  { id: "C4", type: "wall", x: 11, z: -12, width: 1.0, height: 1.1, depth: 3.0 },
+  { id: "C5", type: "crate", x: 4, z: -21, width: 1.4, height: 0.9, depth: 1.4 },
+
+  /* ---------------- B 点 ---------------- */
+  { id: "B1", type: "crate", x: 22, z: -25, width: 2.6, height: 1.6, depth: 2.6 },
+  { id: "B2", type: "wall", x: 32, z: -30, width: 5.0, height: 0.9, depth: 4.0 },
+  { id: "B3", type: "cart", x: 19, z: -18, width: 2.4, height: 1.4, depth: 1.2 },
+  { id: "B4", type: "crate", x: 28, z: -32, width: 1.8, height: 1.1, depth: 1.8 },
+  { id: "B5", type: "palm", x: 35, z: -17, width: 0.6, height: 5.0, depth: 0.6 },
+  { id: "B6", type: "crate", x: 25, z: -20, width: 2.0, height: 2.0, depth: 2.0 },
+  { id: "B7", type: "wall", x: 17.5, z: -30, width: 1.0, height: 1.1, depth: 3.0 },
+
+  /* ---------------- B 洞（东长廊） ---------------- */
+  { id: "T1", type: "crate", x: 33, z: 12, width: 1.8, height: 1.1, depth: 1.8 },
+  { id: "T2", type: "barrel", x: 35, z: 3, width: 1.2, height: 1.4, depth: 1.2 },
+  { id: "T3", type: "crate", x: 30, z: -2, width: 1.6, height: 1.1, depth: 1.6 },
+  { id: "T4", type: "barrel", x: 36, z: 20, width: 0.9, height: 1.4, depth: 0.9 },
+  { id: "T5", type: "crate", x: 33, z: 22, width: 1.6, height: 1.1, depth: 1.6 },
+
+  /* ---------------- T 出生点周边 ---------------- */
+  { id: "P1", type: "crate", x: -11, z: 27, width: 1.6, height: 1.1, depth: 1.6 },
+  { id: "P2", type: "cart", x: 11, z: 27, width: 2.2, height: 1.4, depth: 1.2 },
+  { id: "P3", type: "palm", x: -12, z: 36.5, width: 0.6, height: 5.0, depth: 0.6 },
+  { id: "P4", type: "wall", x: 12, z: 32, width: 1.0, height: 1.1, depth: 3.0 },
+
+  /* ---------------- CT 出生点周边 ---------------- */
+  { id: "Q1", type: "crate", x: -8, z: -27, width: 1.6, height: 1.1, depth: 1.6 },
+  { id: "Q2", type: "crate", x: 8, z: -28, width: 1.6, height: 1.1, depth: 1.6 },
 ];
 
-/** 全图实心体块（64 条 = 25 段墙 + 39 个掩体），渲染/物理/弹道共用同一份数据。 */
+/** 全图实心体块（64 条 = 22 段墙 + 2 栋建筑 + 40 个掩体），渲染/物理/弹道共用同一份数据。 */
 export const OBSTACLES: readonly ObstacleSpec[] = OBSTACLE_SEEDS.map((seed) => ({
   ...seed,
   color: OBSTACLE_COLORS[seed.type],
@@ -734,23 +797,22 @@ export interface SpawnPoint {
 }
 
 /**
- * 10 个固定出生点（已按 0.35m 玩家半径校验，不与任何 AABB 重叠）。
+ * 10 个固定出生点（已按 0.35m 玩家半径校验，不与任何 AABB 重叠、同队间距 ≥ 1.5m）。
  *
- * 与旧版「黄金角绕中心」相比，固定表的价值是：不会生成在墙体/建筑内部，
- * 同队玩家不会重叠，且朝向是「面向敌方半场」而不是「面向地图中心」。
- * 注：T1 的 z 从设计表的 26.0 微调到 25.0，避开 P1 木箱（−7, 27, 1.6×1.6）的 0.15m 重叠。
+ * T 在南（z ≈ +31…+35），CT 在北（z ≈ −29…−34）；朝向分别是 0（面向 −Z）与 π（面向 +Z），
+ * 即"开局就面向敌方半场"，不需要玩家先甩一次视角。
  */
 export const SPAWN_POINTS: readonly SpawnPoint[] = [
-  { team: "T", x: -6, z: 25.0, yaw: 0 },
-  { team: "T", x: -2, z: 27.5, yaw: 0 },
-  { team: "T", x: 2, z: 26.0, yaw: 0 },
-  { team: "T", x: 6, z: 27.5, yaw: 0 },
-  { team: "T", x: 0, z: 29.0, yaw: 0 },
-  { team: "CT", x: -6, z: -26.0, yaw: Math.PI },
-  { team: "CT", x: -2, z: -27.5, yaw: Math.PI },
-  { team: "CT", x: 2, z: -26.0, yaw: Math.PI },
-  { team: "CT", x: 6, z: -27.5, yaw: Math.PI },
-  { team: "CT", x: 0, z: -28.5, yaw: Math.PI },
+  { team: "T", x: -6, z: 34.0, yaw: 0 },
+  { team: "T", x: 0, z: 35.5, yaw: 0 },
+  { team: "T", x: 6, z: 34.0, yaw: 0 },
+  { team: "T", x: -10, z: 31.0, yaw: 0 },
+  { team: "T", x: 10, z: 31.0, yaw: 0 },
+  { team: "CT", x: -6, z: -33.0, yaw: Math.PI },
+  { team: "CT", x: 0, z: -34.5, yaw: Math.PI },
+  { team: "CT", x: 6, z: -33.0, yaw: Math.PI },
+  { team: "CT", x: -9, z: -29.5, yaw: Math.PI },
+  { team: "CT", x: 9, z: -29.5, yaw: Math.PI },
 ];
 
 /**
@@ -1196,33 +1258,41 @@ export interface ThrowableConfig {
 export const THROWABLES: Record<ThrowableType, ThrowableConfig> = {
   frag: {
     label: "手雷",
+    // 半径 6 → 9.5：21m/s 的出手速度下，手雷会滑到 8–9m 外才停下，
+    // 6m 半径意味着"看得见的爆炸、打不到的伤害"。9.5 ≈ CS 的 350u 杀伤半径。
     initialCount: 2,
     fuseMs: 2200,
-    radius: 6,
+    radius: 9.5,
     color: 0x4b5563,
     maxDamage: 100,
-    minDamage: 20,
+    minDamage: 18,
   },
   flash: {
     label: "闪光弹",
     initialCount: 2,
     fuseMs: 1600,
-    radius: 12,
+    radius: 16,
     color: 0xd1d5db,
-    maxBlindMs: 2800,
+    maxBlindMs: 3200,
   },
   smoke: {
     label: "烟雾弹",
     initialCount: 2,
     fuseMs: 1400,
-    radius: 5,
+    radius: 7,
     color: 0x9ca3af,
-    cloudDurationMs: 15000,
+    cloudDurationMs: 16000,
   },
 };
 
-/** 投掷初速度（米/秒）：约 14 m/s，配合 18 m/s² 重力形成自然抛物线。 */
-export const THROW_SPEED: number = 14;
+/**
+ * 投掷初速度（米/秒）。
+ *
+ * 14 → 21 是「扔不到包点」的直接修复：45° 出手的平地射程 = v²/g，
+ * 14 时只有 10.9m，连中门都过不去；21 时约 24.5m，可以从 T 出生点一路扔进 A 大 / B 洞。
+ * 数值对标 CS2 的过肩投掷（约 750u/s ≈ 19m/s，本作地图更紧凑，取 21 让手感更爽快）。
+ */
+export const THROW_SPEED: number = 21;
 
 /** 两次投掷的最小间隔（毫秒）。 */
 export const THROW_COOLDOWN_MS: number = 700;
@@ -1249,8 +1319,15 @@ export function throwableTypeOfSlot(slot: number): ThrowableType | null {
   return null;
 }
 
-/** 投掷方向的最大俯仰（弧度），防止垂直上抛。 */
-export const THROW_MAX_PITCH: number = 0.6;
+/**
+ * 投掷方向的最大俯仰（弧度）。
+ *
+ * 0.6 → 1.35：0.6 时水平分量最小只能到 0.826，再配合 21m/s 的出手速度，
+ * 手雷**任何角度都至少飞 22 米**——近距离（3–5m）根本扔不出来，贴脸用手雷变成了笑话。
+ * 1.35（约 77°）时水平分量可压到 0.22（≈4.7 m/s），才能做出"抛到脚下"的近投；
+ * 同时仍留了 13° 的余量，防止垂直上抛把雷扔回自己头顶。
+ */
+export const THROW_MAX_PITCH: number = 1.35;
 
 /** 手雷重力加速度（米/秒²）。 */
 export const GRENADE_GRAVITY: number = 18;

@@ -231,6 +231,9 @@ export class FPSBattleRoom extends Room<BattleState> {
       player.z = transform.z;
       player.yaw = transform.yaw;
       player.pitch = transform.pitch;
+      // 下蹲：弹道起点眼高与判定体压缩都读它，因此必须与位置同一包更新，
+      // 不能另开一条低频消息（否则蹲下的那一瞬间会有一发"站着的高度"）。
+      player.crouch = transform.crouch === true;
     });
 
     // S3：开火。弹道完全由服务端状态计算，客户端无法伪造命中。
@@ -702,7 +705,13 @@ export class FPSBattleRoom extends Room<BattleState> {
         if (!player.alive) {
           continue;
         }
-        const intensity = flashIntensity({ x: grenade.x, y: grenade.y, z: grenade.z }, config.radius, player);
+        const intensity = flashIntensity(
+          { x: grenade.x, y: grenade.y, z: grenade.z },
+          config.radius,
+          player,
+          // 视线遮挡：躲在掩体后不吃闪（CS2 规则）
+          this.obstacles,
+        );
         if (intensity <= 0.05) {
           continue;
         }
@@ -761,6 +770,8 @@ export class FPSBattleRoom extends Room<BattleState> {
     this.sprayIndex.delete(sessionId);
     player.switchEndAt = 0;
     player.armor = 0;
+    // 重生站直：否则上一局蹲着死，复活后仍是蹲姿（判定体压扁 37%，白赚一次对枪优势）
+    player.crouch = false;
 
     this.logger.info({ playerId: sessionId }, "玩家已重生");
   }

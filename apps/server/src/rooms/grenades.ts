@@ -137,20 +137,44 @@ export function explosionDamage(
 
 interface FlashTarget {
   x: number;
+  y?: number;
   z: number;
   yaw: number;
 }
 
 /**
- * 闪光强度（0..1）：距离衰减 × 朝向因子。
- * 背对爆炸只受轻微影响，正对直视时接近 1。
+ * 闪光强度（0..1）：距离衰减 × 朝向因子 × 视线遮挡。
+ *
+ * 「看见就致盲，看不见就完全没用」是 CS2 闪光弹的核心规则：
+ *   - 距离超过半径 → 0；
+ *   - 被墙体/木箱挡住视线（从爆炸点到眼睛的线段与任一 AABB 相交）→ 0，
+ *     不是"减半"：躲在箱子后面转头看爆炸也只会吃到一点点，若按距离给强度，
+ *     玩家会发现"躲掩体后面还是白屏"，与直觉冲突；
+ *   - 背对只受轻微影响（0.08 下限），正对直视接近 1。
  */
-export function flashIntensity(center: Vec3, radius: number, target: FlashTarget): number {
+export function flashIntensity(
+  center: Vec3,
+  radius: number,
+  target: FlashTarget,
+  obstacles?: readonly Aabb[],
+): number {
   const dx = center.x - target.x;
   const dz = center.z - target.z;
   const distance = Math.hypot(dx, dz);
   if (distance > radius) {
     return 0;
+  }
+
+  // 视线遮挡：从爆炸点到"眼睛"做一次线段求交。爆炸点常常贴地，所以用眼睛高度而不是脚底。
+  if (obstacles !== undefined && obstacles.length > 0) {
+    const eye: Vec3 = {
+      x: target.x,
+      y: (target.y ?? 0) + PLAYER_HEIGHT * 0.88,
+      z: target.z,
+    };
+    if (isLineBlocked(center, eye, obstacles)) {
+      return 0;
+    }
   }
 
   const distanceFactor = 1 - distance / radius;

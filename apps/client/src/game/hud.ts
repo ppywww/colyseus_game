@@ -51,7 +51,7 @@ export interface HudSnapshot {
 
 /** 操作提示（大厅与游戏内共用同一句，改一处即可）。 */
 export const HUD_HINT_TEXT =
-  "WASD 移动 · Shift 冲刺 · 空格 跳跃 · 左键 开火/投掷/挥刀 · 滚轮/123456 切武器 · R 换弹 · G/F/V 快捷投掷 · Esc 设置";
+  "WASD 移动 · Shift 冲刺 · Ctrl/C 下蹲 · 空格 跳跃 · 左键 开火/投掷/挥刀 · 滚轮/123456 切武器 · R 换弹 · G/F/V 快捷投掷 · Esc 设置";
 
 /** 武器栏格子数（= 槽位数量，顺序与 `SLOT_ORDER` 一致）。 */
 const WEAPON_CELL_COUNT: number = SLOT_ORDER.length;
@@ -65,6 +65,8 @@ export class Hud {
   private readonly playerList: HTMLElement;
   private readonly killFeed: HTMLElement;
   private readonly killBanner: HTMLElement;
+  /** 爆头击杀的「NICE!」奖励横幅（与普通击杀横幅分层，可以同时出现）。 */
+  private readonly niceBanner: HTMLElement;
   private readonly lockOverlay: HTMLElement;
   private readonly lockSettings: HTMLElement;
   private readonly positionLine: HTMLElement;
@@ -84,6 +86,7 @@ export class Hud {
   private hitmarkerTimer = 0;
   private zoneDamageTimer = 0;
   private killBannerTimer = 0;
+  private niceBannerTimer = 0;
   private damageTimer = 0;
   private weaponPulseTimer = 0;
   private flashUntil = 0;
@@ -130,6 +133,10 @@ export class Hud {
 
     this.killBanner = document.createElement("div");
     this.killBanner.id = "kill-banner";
+
+    // 爆头奖励：金色「NICE!」，位置比击杀横幅更靠上，避免两者重叠
+    this.niceBanner = document.createElement("div");
+    this.niceBanner.id = "nice-banner";
 
     const bottomBar = document.createElement("div");
     bottomBar.className = "hud-bottom";
@@ -211,6 +218,7 @@ export class Hud {
       this.crosshair,
       this.hitmarker,
       this.zoneDamage,
+      this.niceBanner,
       this.killBanner,
       topBar,
       hpWrap,
@@ -322,6 +330,24 @@ export class Hud {
     this.killBannerTimer = window.setTimeout(() => {
       this.killBanner.classList.remove("visible");
     }, 1200);
+  }
+
+  /**
+   * 爆头击杀奖励横幅（金色 NICE!）。
+   *
+   * 独立于 {@link showKillBanner}：两者同时出现时，普通横幅说"杀了谁"，
+   * 这条说"这一枪值得炫耀"。约 1.5 秒后淡出，不与下一杀叠加。
+   */
+  public showNiceBanner(text: string): void {
+    window.clearTimeout(this.niceBannerTimer);
+    this.niceBanner.textContent = text;
+    this.niceBanner.classList.remove("visible");
+    // 强制回流：连续爆头时也要重新播一次放大动画
+    void this.niceBanner.offsetWidth;
+    this.niceBanner.classList.add("visible");
+    this.niceBannerTimer = window.setTimeout(() => {
+      this.niceBanner.classList.remove("visible");
+    }, 1500);
   }
 
   /**
@@ -520,6 +546,7 @@ export class Hud {
     window.clearTimeout(this.hitmarkerTimer);
     window.clearTimeout(this.zoneDamageTimer);
     window.clearTimeout(this.killBannerTimer);
+    window.clearTimeout(this.niceBannerTimer);
     window.clearTimeout(this.damageTimer);
     window.clearTimeout(this.weaponPulseTimer);
     this.root.remove();

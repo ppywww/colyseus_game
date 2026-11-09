@@ -895,6 +895,31 @@ kbd {
   transform: translate(-50%, 0) scale(1);
 }
 
+/* 爆头奖励横幅：金色、更大，从下方弹入 */
+#nice-banner {
+  position: absolute;
+  left: 50%;
+  top: 9%;
+  transform: translate(-50%, 8px) scale(0.7) rotate(-3deg);
+  font-size: 44px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  color: #fde047;
+  text-shadow:
+    0 0 18px rgba(253, 224, 71, 0.9),
+    0 4px 0 rgba(120, 53, 15, 0.85),
+    0 0 42px rgba(251, 191, 36, 0.55);
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  transition: opacity 0.16s ease, transform 0.22s cubic-bezier(0.2, 1.6, 0.4, 1);
+}
+
+#nice-banner.visible {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1) rotate(-3deg);
+}
+
 /* 闪光致盲全屏白幕 */
 #flash-overlay {
   position: absolute;

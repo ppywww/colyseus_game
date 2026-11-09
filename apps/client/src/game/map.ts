@@ -1,7 +1,7 @@
 /**
  * 沙漠迷城地图（Dust II 风格城镇）的几何构建。
  *
- * 数据流：所有实心体块来自 `@colyseus-fps/shared` 的 `OBSTACLES`（25 段墙 + 39 个掩体，全 AABB），
+ * 数据流：所有实心体块来自 `@colyseus-fps/shared` 的 `OBSTACLES`（22 段墙 + 2 栋建筑 + 40 个掩体，全 AABB），
  * 客户端渲染、客户端物理（MTA 推出）与服务端弹道遮挡共用同一份数据，保证「所见即所挡」。
  *
  * 性能约定（64 个体块不能变成 64 次 draw call）：
@@ -45,7 +45,7 @@ const PALETTE = {
 export const ARENA_SKY_COLOR = PALETTE.sky;
 
 /** 场景雾色与近远平面距离（视模型最远 0.97m，完全不受雾影响）。 */
-export const ARENA_FOG = { color: PALETTE.fog, near: 40, far: 120 } as const;
+export const ARENA_FOG = { color: PALETTE.fog, near: 55, far: 160 } as const;
 
 /** 只有高度 ≥ 该值的物件才投射阴影（小箱子投影收益极低，却要跑一遍 shadow pass）。 */
 const SHADOW_MIN_HEIGHT = 1.4;
@@ -346,7 +346,7 @@ function addSandPatches(root: THREE.Group): void {
 
   for (let i = 0; i < count; i += 1) {
     const radius = 2.2 + Math.random() * 3.4;
-    position.set((Math.random() - 0.5) * 44, 0.012 + i * 0.0008, (Math.random() - 0.5) * 44);
+    position.set((Math.random() - 0.5) * 58, 0.012 + i * 0.0008, (Math.random() - 0.5) * 58);
     scale.set(radius, radius, 1);
     matrix.compose(position, quaternion, scale);
     mesh.setMatrixAt(i, matrix);
@@ -478,15 +478,15 @@ function addGraffiti(root: THREE.Group): void {
   const material = arenaMaterials().graffiti;
   const geometry = new THREE.PlaneGeometry(0.6, 0.6);
 
-  // A 点：W4 西侧面（x = −11 墙的西表面 x = −12），朝向 −X
+  // A 点：AW2b 的西侧面（x = −15 墙 → 贴面 x = −16），朝向 −X
   const aTag = new THREE.Mesh(geometry, material);
-  aTag.position.set(-12.01, 1.7, -15);
+  aTag.position.set(-16.01, 1.7, -22);
   aTag.rotation.y = -Math.PI / 2;
   root.add(aTag);
 
-  // B 点：W13 东侧面（x = 11 墙的东表面 x = 12），朝向 +X
+  // B 点：BW1b 的东侧面（x = 15 墙 → 贴面 x = 16），朝向 +X
   const bTag = new THREE.Mesh(geometry, material);
-  bTag.position.set(12.01, 1.7, -15);
+  bTag.position.set(16.01, 1.7, -22);
   bTag.rotation.y = Math.PI / 2;
   root.add(bTag);
 }
@@ -520,6 +520,7 @@ export function buildArena(): THREE.Group {
   const materials = arenaMaterials();
 
   // ---- 地面：一整块 64×64 沙地（贴图 repeat 24×24 ≈ 每 2.7m 一个纹理周期） ----
+  // 80×80 沙地（贴图 repeat 30 ≈ 每 2.7m 一个纹理周期，与旧图密度一致）
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(MAP_SIZE, MAP_SIZE), materials.sand);
   floor.rotation.x = -Math.PI / 2;
   floor.receiveShadow = true;
@@ -570,15 +571,15 @@ export function buildArena(): THREE.Group {
   root.add(hemisphere);
 
   const sun = new THREE.DirectionalLight(0xfff1d6, 2.0);
-  sun.position.set(48, 60, 22);
+  sun.position.set(58, 72, 30);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.left = -36;
-  sun.shadow.camera.right = 36;
-  sun.shadow.camera.top = 36;
-  sun.shadow.camera.bottom = -36;
+  sun.shadow.camera.left = -46;
+  sun.shadow.camera.right = 46;
+  sun.shadow.camera.top = 46;
+  sun.shadow.camera.bottom = -46;
   sun.shadow.camera.near = 1;
-  sun.shadow.camera.far = 160;
+  sun.shadow.camera.far = 200;
   sun.shadow.bias = -0.0006;
   root.add(sun);
   root.add(sun.target);

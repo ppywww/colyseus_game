@@ -16,6 +16,8 @@ import * as THREE from "three";
 import {
   BASE_SENSITIVITY,
   CLIENT_INTERPOLATION_DELAY_MS,
+  CROUCH_EYE_HEIGHT,
+  CROUCH_TRANSITION_MS,
   EYE_HEIGHT,
   FIRE_MODES,
   MAP_BOUNDS,
@@ -26,6 +28,8 @@ import {
   THROWABLES,
   THROWABLE_TYPES,
   THROW_COOLDOWN_MS,
+  THROW_MAX_PITCH,
+  THROW_SPEED,
   WEAPON_RELOAD_MS,
   WEAPON_SLOTS,
   ZONE_LABEL,
@@ -101,6 +105,22 @@ const MUZZLE_STREAK_METERS = 2.6;
 const MUZZLE_STREAK_SPEED = 95;
 const MUZZLE_STREAK_RADIUS = 0.02;
 
+/**
+ * 死亡镜头的倒地动画参数。
+ *
+ * 旧版死亡是"画面瞬间定格 + 弹一个黑屏倒计时"，玩家读不到"我死了"这个事实；
+ * 现在相机在 {@link DEATH_FALL_MS} 内从眼高落到 {@link DEATH_FALL_HEIGHT}，
+ * 同时侧翻 {@link DEATH_ROLL_RAD}、俯角下压——就是 CS 里被击杀后镜头砸到地上的那一下。
+ * 倒地之后视角仍然允许上下左右看（只是贴地），便于观察击杀者。
+ */
+const DEATH_FALL_MS = 720;
+const DEATH_FALL_HEIGHT = 0.28;
+const DEATH_ROLL_RAD = 1.18;
+const DEATH_PITCH_DROP = 0.42;
+
+/** 低血量阈值：低于它开始心跳 + 屏幕红边。 */
+const LOW_HP_THRESHOLD = 35;
+
 /** 本地开火快照：序号 + 扣扳机瞬间的枪口世界坐标。 */
 interface LocalShotSnapshot {
   seq: number;
@@ -169,6 +189,33 @@ function spawnYawFor(x: number, z: number): number {
   return bestYaw;
 }
 
+/**
+ * 点到线段的最短距离（米）——用于判断"这一枪是不是擦着我耳朵过去的"。
+ *
+ * 用线段而不是射线：曳光只存在于 `origin → hit` 这一段，子弹飞过去之后就没威胁了。
+ */
+function distancePointToSegment(
+  point: { x: number; y: number; z: number },
+  from: { x: number; y: number; z: number },
+  to: { x: number; y: number; z: number },
+): number {
+  const abx: number = to.x - from.x;
+  const aby: number = to.y - from.y;
+  const abz: number = to.z - from.z;
+  const lengthSq: number = abx * abx + aby * aby + abz * abz;
+  if (lengthSq < 1e-9) {
+    return Math.hypot(point.x - from.x, point.y - from.y, point.z - from.z);
+  }
+  const t: number = Math.min(
+    1,
+    Math.max(
+      0,
+      ((point.x - from.x) * abx + (point.y - from.y) * aby + (point.z - from.z) * abz) / lengthSq,
+    ),
+  );
+  return Math.hypot(point.x - (from.x + abx * t), point.y - (from.y + aby * t), point.z - (from.z + abz * t));
+}
+
 export class Game {
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene: THREE.Scene;
@@ -231,6 +278,21 @@ export class Game {
   private selfAlive = true;
   private selfHp = 100;
   private selfRespawnAt = 0;
+
+  /** 蹲姿插值 0..1（1 = 完全蹲下），用于相机眼高缓动。 */
+  private crouchAmount = 0;
+  /** 死亡倒地进度 0..1（1 = 完全贴地）。 */
+  private deathProgress = 0;
+  /** 死亡倒地方向：±1，随机一次，避免每局都朝同一边倒。 */
+  private deathRollDir: 1 | -1 = 1;
+  /** 心跳是否已启动（避免每帧重复 start / 频繁 stop）。 */
+  private heartbeatActive = false;
+  /** 脚步声节拍器（毫秒）。 */
+  private footstepAccumulatorMs = 0;
+  /** 上一帧是否在地面：用于检测起跳/落地。 */
+  private wasGrounded = true;
+  /** 落地冲击（上一帧的垂直速度绝对值）。 */
+  private fallSpeed = 0;
   private ammo = 0;
   private reserve = 0;
   private pistolAmmo = 0;
@@ -567,6 +629,9 @@ export class Game {
     if (this.reloadEndAt > Date.now()) {
       return;
     }
+    // 空仓换弹（弹匣打空）比战术换弹多一次拉枪机：声音与动作都更重。
+    // 服务端只认一个 `reloadEndAt`，所以时长保持一致，差别放在音效与视模型姿态上。
+    const wasEmpty: boolean = this.currentMag() === 0;
     this.reloadEndAt = Date.now() + WEAPON_RELOAD_MS;
     // 换弹重置两个游标（服务端 `handleReload` 同步做同样的事）：
     // 换完第一发必须回到首发精度，否则会接着上一串的扩散继续打。
@@ -578,7 +643,14 @@ export class Game {
       if (!this.disposed) {
         this.audio.reloadEnd();
       }
-    }, WEAPON_RELOAD_MS - 120);
+    }, WEAPON_RELOAD_MS - 160);
+    if (wasEmpty) {
+      window.setTimeout(() => {
+        if (!this.disposed) {
+          this.audio.boltAction();
+        }
+      }, WEAPON_RELOAD_MS - 90);
+    }
   }
 
   /**
@@ -732,6 +804,7 @@ export class Game {
       z: -Math.cos(this.kinematics.yaw) * cosPitch,
     };
     this.connection.sendThrow(type, dir);
+    this.audio.pinPull();
     this.audio.throwWhoosh();
     if (type === THROWABLE_TYPES.FRAG) {
       this.frags = Math.max(0, this.frags - 1);
@@ -783,18 +856,43 @@ export class Game {
     }
     const travelMs: number = this.effects.addTracer(origin, message.hit);
 
+    // 血雾等曳光**飞到**再喷：曳光还在半路、血已经冒出来，比没有特效更假
     if (message.hitPlayerId !== null) {
-      // 血雾等曳光**飞到**再喷：曳光还在半路、血已经冒出来，比没有特效更假
       this.queueImpact(travelMs, message.hit, null);
       // 但"打中了"的反馈必须立刻给——这是手感，不是物理
       if (isSelf) {
-        this.hud.flashHitmarker(message.hitZone === "head" ? "head" : "body");
+        const headshot: boolean = message.hitZone === "head";
+        this.hud.flashHitmarker(headshot ? "head" : "body");
         if (message.hitZone !== null) {
           this.hud.showZoneDamage(ZONE_LABEL[message.hitZone], message.damage);
         }
-        this.audio.hitmark();
+        // 爆头用更高更长的"叮——"，和身体命中一听就能分开（CS 里这是最重要的听觉信息）
+        if (headshot) {
+          this.audio.headshotHit();
+        } else {
+          this.audio.hitmark();
+        }
+      } else {
+        // 别人打中别人：给一声闷"噗"，用来判断附近有人在交火
+        const distance: number = Math.hypot(message.hit.x - this.kinematics.x, message.hit.z - this.kinematics.z);
+        if (distance < 24) {
+          this.audio.fleshHit();
+        }
       }
       return;
+    }
+
+    // 别人朝我这边打空：按"弹道到耳朵的最短距离"决定要不要给擦身而过的"嗖"。
+    // 有它才能感觉到"这一枪是冲我来的"，不然只会看到墙上多个洞。
+    if (!isSelf) {
+      const missDistance: number = distancePointToSegment(
+        { x: this.kinematics.x, y: this.kinematics.y + EYE_HEIGHT, z: this.kinematics.z },
+        message.origin,
+        message.hit,
+      );
+      if (missDistance < 1.4) {
+        this.audio.bulletWhiz();
+      }
     }
 
     // 打空（射线飞到射程尽头）不画任何东西；
@@ -896,8 +994,18 @@ export class Game {
       this.hud.showKillBanner(`击杀 ${victimName}${headshotMark}`);
       this.hud.flashHitmarker("kill");
       this.audio.killConfirm();
+      // 爆头击杀的奖励反馈：横幅 + 「NICE!」人声 + 金色闪光。
+      // 单独一层是因为"爆头"是本作唯一需要瞄准技术的击杀方式，值得一个可炫耀的反馈。
+      if (message.headshot) {
+        this.hud.showNiceBanner("NICE!");
+        this.audio.niceCheer();
+        this.shake = Math.min(1, this.shake + 0.25);
+      }
     } else if (message.victimId === this.selfSessionId) {
       this.hud.showKillBanner(`被 ${killerName} 击杀`);
+      // 自己死了：心跳必须停，否则黑屏之后还在"咚—咚"
+      this.audio.stopHeartbeat();
+      this.heartbeatActive = false;
     }
   }
 
@@ -930,7 +1038,7 @@ export class Game {
     this.audio.flashbang();
   }
 
-  /** 受击：红色边缘 + 指向攻击者的方向指示。 */
+  /** 受击：红色边缘 + 指向攻击者的方向指示 + 分部位的受伤音效 + 低血量心跳。 */
   public handleDamaged(message: DamageTakenMessage): void {
     const dx = message.fromX - this.kinematics.x;
     const dz = message.fromZ - this.kinematics.z;
@@ -942,8 +1050,20 @@ export class Game {
       Math.cos(worldAngle - playerYaw),
     );
     this.hud.showDamage(relative);
-    this.audio.hurt();
-    this.shake = Math.min(1, this.shake + 0.35);
+    // 爆头 / 大额伤害用更重、更低的呻吟；普通擦伤用短促的一声
+    const heavy: boolean = message.zone === "head" || message.amount >= 40;
+    this.audio.hurt(heavy);
+    this.shake = Math.min(1, this.shake + (heavy ? 0.5 : 0.3));
+
+    // 低血量：心跳 + 屏幕红边（HUD 读 selfHp 自己处理红边，这里只关心声音）
+    const lowHp: boolean = message.hp > 0 && message.hp <= LOW_HP_THRESHOLD;
+    if (lowHp && !this.heartbeatActive) {
+      this.heartbeatActive = true;
+      this.audio.startHeartbeat();
+    } else if (!lowHp && this.heartbeatActive) {
+      this.heartbeatActive = false;
+      this.audio.stopHeartbeat();
+    }
   }
 
   /** 烟雾云团状态同步。 */
@@ -992,6 +1112,11 @@ export class Game {
       this.recoilYaw = 0;
       this.shotIndex = 0;
       this.spreadIndex = 0;
+      // 复活站直、镜头归位：否则会带着上一局的倒地角度重生
+      this.crouchAmount = 0;
+      this.deathProgress = 0;
+      this.heartbeatActive = false;
+      this.audio.stopHeartbeat();
     }
 
     // 死亡即断扳机：否则落地那一刻仍然按着左键，重生后第一帧就会"自动"打出一发
@@ -1078,6 +1203,18 @@ export class Game {
 
     this.handleActionKeys(nowMs);
 
+    // ---- 下蹲（Ctrl / C）----
+    // 蹲下是"按住"不是"切换"（与 CS 一致）：松开立刻起身。死亡时不蹲。
+    const crouchHeld: boolean =
+      locked && this.selfAlive && (this.input.isDown("ControlLeft") || this.input.isDown("KeyC"));
+    // 指数缓动而不是线性插值：帧率波动时收敛速度一致，且不会有"到点硬停"的顿挫
+    const crouchTarget: number = crouchHeld ? 1 : 0;
+    this.crouchAmount +=
+      (crouchTarget - this.crouchAmount) * Math.min(1, (dtSeconds * 1000) / CROUCH_TRANSITION_MS * 6);
+    if (Math.abs(crouchTarget - this.crouchAmount) < 0.002) {
+      this.crouchAmount = crouchTarget;
+    }
+
     // 移动
     const moveInput: MoveInput = {
       forward: this.input.isDown("KeyW") || this.input.isDown("ArrowUp"),
@@ -1086,6 +1223,7 @@ export class Game {
       right: this.input.isDown("KeyD") || this.input.isDown("ArrowRight"),
       sprint: this.input.isDown("ShiftLeft") || this.input.isDown("ShiftRight"),
       jump: this.input.isDown("Space"),
+      crouch: crouchHeld,
     };
     const idle: MoveInput = {
       forward: false,
@@ -1094,7 +1232,10 @@ export class Game {
       right: false,
       sprint: false,
       jump: false,
+      crouch: false,
     };
+    const wasGroundedBeforeStep: boolean = this.kinematics.grounded;
+    const verticalSpeedBeforeStep: number = this.kinematics.vy;
     stepPlayer(
       this.kinematics,
       locked && this.selfAlive ? moveInput : idle,
@@ -1103,15 +1244,69 @@ export class Game {
       { ...DEFAULT_PHYSICS, bounds: MAP_BOUNDS },
     );
 
-    // 相机（含抖动）
+    // ---- 起跳 / 落地 / 脚步声 ----
+    // 只在"状态翻转"的那一帧发声，所以不会因为掉帧重复触发。
+    if (wasGroundedBeforeStep && !this.kinematics.grounded && this.kinematics.vy > 1) {
+      this.audio.jump();
+    }
+    if (!this.wasGrounded && this.kinematics.grounded) {
+      // 落地冲击按落地前的垂直速度换算（7.5 的起跳落地约 0.75，高处落下更重）
+      const impact: number = Math.min(1, Math.abs(this.fallSpeed) / 10);
+      if (impact > 0.12) {
+        this.audio.land(impact);
+        this.shake = Math.min(1, this.shake + impact * 0.22);
+      }
+    }
+    this.fallSpeed = verticalSpeedBeforeStep;
+    this.wasGrounded = this.kinematics.grounded;
+
+    const movingNow: boolean =
+      locked &&
+      this.selfAlive &&
+      (moveInput.forward || moveInput.backward || moveInput.left || moveInput.right) &&
+      this.kinematics.grounded;
+    if (movingNow && !crouchHeld) {
+      // 冲刺步频更快；蹲走完全静音（CS 里蹲走是"隐身步"，这也是它存在的理由）
+      const strideMs: number = moveInput.sprint ? 330 : 470;
+      this.footstepAccumulatorMs += dtSeconds * 1000;
+      if (this.footstepAccumulatorMs >= strideMs) {
+        this.footstepAccumulatorMs = 0;
+        this.audio.footstep();
+      }
+    } else {
+      this.footstepAccumulatorMs = 0;
+    }
+
+    // ---- 相机（含抖动 / 蹲姿眼高 / 死亡倒地）----
     this.shake *= Math.exp(-dtSeconds * 7);
     const shakeAmount = this.shake * 0.06;
+    // 眼高在站立 1.6 与蹲姿 1.02 之间连续插值：相机不会"跳到"低处，
+    // 服务端那边只看 crouch 布尔值（差一帧的 0.5cm 高低可以忽略）。
+    const eyeHeight: number = EYE_HEIGHT + (CROUCH_EYE_HEIGHT - EYE_HEIGHT) * this.crouchAmount;
+
+    if (!this.selfAlive) {
+      if (this.deathProgress === 0) {
+        // 每次死亡的倒地方向随机一次（只随机一次，动画过程中不变，否则会抖）
+        this.deathRollDir = Math.random() < 0.5 ? 1 : -1;
+      }
+      this.deathProgress = Math.min(1, this.deathProgress + (dtSeconds * 1000) / DEATH_FALL_MS);
+    } else {
+      this.deathProgress = 0;
+    }
+    // 缓出：前半段砸得快、后半段贴地微沉，像真的失去支撑
+    const fall: number = 1 - Math.pow(1 - this.deathProgress, 2);
+    const cameraHeight: number = eyeHeight + (DEATH_FALL_HEIGHT - eyeHeight) * fall;
+
     this.camera.position.set(
       this.kinematics.x + (Math.random() - 0.5) * shakeAmount,
-      this.kinematics.y + EYE_HEIGHT + (Math.random() - 0.5) * shakeAmount,
+      this.kinematics.y + cameraHeight + (Math.random() - 0.5) * shakeAmount,
       this.kinematics.z + (Math.random() - 0.5) * shakeAmount,
     );
-    this.camera.rotation.set(pitchWithRecoil, yawWithRecoil, 0);
+    this.camera.rotation.set(
+      pitchWithRecoil - DEATH_PITCH_DROP * fall,
+      yawWithRecoil,
+      this.deathRollDir * DEATH_ROLL_RAD * fall,
+    );
 
     // 网络上报（固定频率，与渲染帧率解耦）：上报含后坐的真实准心，保证"打哪中哪"
     this.transformAccumulatorMs += dtSeconds * 1000;
@@ -1126,6 +1321,9 @@ export class Game {
         z: this.kinematics.z,
         yaw: yawWithRecoil,
         pitch: pitchWithRecoil,
+        // 蹲姿随位置同一包上报：服务端据此把弹道起点降到蹲姿眼高、把判定体压扁。
+        // 单独一条低频消息会让"蹲下的 33ms"里仍然按站姿结算，形成射击空窗。
+        crouch: this.crouchAmount > 0.5,
       };
       this.connection.sendTransform(message);
     }
@@ -1137,16 +1335,12 @@ export class Game {
     this.effects.update(nowMs);
 
     // 视模型摆动/换弹动作
-    const moving =
-      locked &&
-      (moveInput.forward || moveInput.backward || moveInput.left || moveInput.right) &&
-      this.kinematics.grounded;
     const reloadProgress =
       this.reloadEndAt > Date.now() ? 1 - (this.reloadEndAt - Date.now()) / WEAPON_RELOAD_MS : 0;
     // 视模型：五态动画（idle / walk / fire / reload / throw）+ 切枪下压，全部由这里驱动
     this.viewModel.update(dtSeconds, {
-      moving,
-      sprinting: moveInput.sprint,
+      moving: movingNow,
+      sprinting: moveInput.sprint && !crouchHeld,
       grounded: this.kinematics.grounded,
       verticalSpeed: this.kinematics.vy,
       reloadProgress,
@@ -1154,6 +1348,29 @@ export class Game {
       firingAt: this.lastFireAt,
       switchProgress: this.switchProgress(),
     });
+
+    // ---- 投掷抛物线辅助 ----
+    // 手里拿着投掷物时，用**与服务端同一套物理**（stepGrenadePhysics）预测一串点，
+    // 让玩家看得见落点。CS2 里虽然不画辅助线，但它是"扔不准"的最大来源；
+    // 本作把线画出来，玩家的练习成本从"背点位"降到"看线"。
+    const throwableSlot: ThrowableType | null = throwableTypeOfSlot(this.weaponSlot);
+    if (throwableSlot !== null && locked && this.selfAlive) {
+      const pitch: number = Math.min(THROW_MAX_PITCH, Math.max(-THROW_MAX_PITCH, pitchWithRecoil));
+      const cosPitch: number = Math.cos(pitch);
+      const dir = {
+        x: -Math.sin(yawWithRecoil) * cosPitch,
+        y: Math.sin(pitch),
+        z: -Math.cos(yawWithRecoil) * cosPitch,
+      };
+      const origin = {
+        x: this.kinematics.x + dir.x * 0.45,
+        y: this.kinematics.y + eyeHeight - 0.18,
+        z: this.kinematics.z + dir.z * 0.45,
+      };
+      this.throwables.updateAimArc(origin, dir, THROW_SPEED, throwableSlot);
+    } else {
+      this.throwables.hideAimArc();
+    }
     // 让枪口火光贴着枪口帽走（后坐/换弹/投掷时一起位移）
     this.effects.setMuzzleOffset(this.viewModel.getMuzzleWorldOffset());
 

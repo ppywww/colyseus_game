@@ -26,7 +26,17 @@ function validMessage(overrides: Partial<PlayerTransformMessage> = {}): PlayerTr
 describe("sanitizeTransform 合法消息", () => {
   it("应原样通过（yaw 归一化、seq 取整）", () => {
     const result = sanitizeTransform(validMessage());
-    assert.deepEqual(result, { seq: 1, x: 1, y: 0, z: -2, yaw: 0.5, pitch: -0.2 });
+    assert.deepEqual(result, { seq: 1, x: 1, y: 0, z: -2, yaw: 0.5, pitch: -0.2, crouch: false });
+  });
+
+  it("crouch 只接受布尔 true，其他值一律按站立处理", () => {
+    assert.equal(sanitizeTransform(validMessage({ crouch: true }))?.crouch, true);
+    assert.equal(sanitizeTransform(validMessage({ crouch: false }))?.crouch, false);
+    // 不做隐式类型转换：字符串 "true" / 数字 1 都不能让判定体被压扁 37%
+    const loose = sanitizeTransform({ ...validMessage(), crouch: "true" } as unknown);
+    assert.equal(loose?.crouch, false);
+    const numeric = sanitizeTransform({ ...validMessage(), crouch: 1 } as unknown);
+    assert.equal(numeric?.crouch, false);
   });
 
   it("越界坐标应被钳制到场地内", () => {

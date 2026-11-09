@@ -14,7 +14,7 @@
  *   - 保留：场地矩形逐轴钳制（`MAP_BOUNDS`）、`y ≤ 0` 落地、跳跃参数。
  */
 
-import { MAP_BOUNDS } from "@colyseus-fps/shared";
+import { CROUCH_SPEED_SCALE, MAP_BOUNDS } from "@colyseus-fps/shared";
 
 export interface PlayerKinematics {
   /** 脚底位置（米） */
@@ -35,6 +35,14 @@ export interface MoveInput {
   right: boolean;
   sprint: boolean;
   jump: boolean;
+  /**
+   * 是否下蹲（可选，缺省 false）。
+   *
+   * 只影响移动速度：蹲走 = 走速 × {@link CROUCH_SPEED_SCALE}，且**不能冲刺**。
+   * 眼睛高度与判定体不在这里改——那两件事分别由 `Game.tick`（相机）与服务端
+   * `computeShot`（射线起点 / 判定体压缩）处理，物理层只负责"慢下来"。
+   */
+  crouch?: boolean;
 }
 
 export interface Aabb {
@@ -118,7 +126,10 @@ export function stepPlayer(
   options: PhysicsOptions = DEFAULT_PHYSICS,
 ): PlayerKinematics {
   const dt = Math.min(dtSeconds, 0.1); // 掉帧保护：单步最长按 100ms 计
-  const speed = input.sprint ? options.sprintSpeed : options.walkSpeed;
+  // 蹲下不能冲刺：先取基础速度，再乘蹲走系数。顺序不能反过来（否则冲刺档蹲走仍然 8m/s）。
+  const crouched: boolean = input.crouch === true;
+  const baseSpeed: number = input.sprint && !crouched ? options.sprintSpeed : options.walkSpeed;
+  const speed: number = crouched ? baseSpeed * CROUCH_SPEED_SCALE : baseSpeed;
 
   // 期望移动方向（yaw=0 朝 -Z，与 three.js 相机约定一致）
   let dirX = 0;

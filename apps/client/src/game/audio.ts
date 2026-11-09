@@ -143,6 +143,25 @@ export class GameAudio {
     this.noise(0.18, 900, 0.18, "lowpass");
   }
 
+  /** 挥刀破空：短促的高频噪声，像刀刃划过空气。 */
+  public knifeSwing(): void {
+    this.noise(0.12, 2400, 0.22, "bandpass");
+    this.tone(900, 380, 0.1, 0.1, "triangle");
+  }
+
+  /** 砍中身体：沉闷的"噗"（thud），和子弹命中的"叮"必须明显区分。 */
+  public knifeHit(): void {
+    this.tone(160, 70, 0.16, 0.42, "sine");
+    this.noise(0.1, 520, 0.3, "lowpass");
+  }
+
+  /** 背刺：低频重击 + 金属高频，必须比普通命中更"重"。 */
+  public knifeCrit(): void {
+    this.tone(110, 45, 0.28, 0.55, "sawtooth");
+    this.noise(0.16, 380, 0.38, "lowpass");
+    window.setTimeout(() => this.tone(1800, 1400, 0.12, 0.16, "triangle"), 40);
+  }
+
   /** 手雷爆炸：低频冲击 + 长尾噪声。 */
   public explosion(): void {
     this.tone(90, 30, 0.5, 0.6, "sine");

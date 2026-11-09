@@ -89,6 +89,19 @@ const SWITCH_DIP_ROT = 0.25;
 /** 切枪时向后收的位移（米），避免枪身下沉时穿进画面下边缘。 */
 const SWITCH_DIP_BACK = 0.04;
 
+/* ---------------- 挥刀（前挥 120ms + 回位 140ms） ---------------- */
+
+/** 前挥阶段时长（毫秒）：这一段必须快，否则手感变"推刀"。 */
+export const KNIFE_SWING_FORWARD_MS = 120;
+/** 单次挥砍总时长（毫秒）：由服务端 `MELEE_COOLDOWN_MS`（650ms）留出余量。 */
+export const KNIFE_SWING_TOTAL_MS = 260;
+
+/**
+ * 投掷出手的时机（占整个 700ms 投掷动作的比例）：`0.45 × 700 = 315ms`，
+ * 正好落在投掷动作第二段（180–420ms 的"甩出/停顿"）里，看起来是球从手心飞出去。
+ */
+export const THROW_RELEASE_RATIO = 0.45;
+
 /* ------------------------------------------------------------------ *
  * 纯函数：构图与动画曲线（不依赖 three.js）
  * ------------------------------------------------------------------ */
@@ -123,6 +136,8 @@ export interface ViewmodelPoseState {
   landing: number;
   /** 切枪归一化进度 0→1（0 / 1 都是零增量，只有中途下压）。 */
   switchProgress?: number;
+  /** 挥刀已进行的毫秒数（刀专用；其他武器传 0）。 */
+  knifeSwingMs?: number;
 }
 
 export interface ViewmodelPose {
@@ -207,10 +222,51 @@ export function switchPoseEase(progress: number): number {
   return Math.sin(Math.PI * p);
 }
 
+/** 挥刀姿态增量（相对静止姿态）。 */
+export interface KnifeSwingPose {
+  dx: number;
+  dy: number;
+  dz: number;
+  rx: number;
+  ry: number;
+  rz: number;
+}
+
+/**
+ * 求某一时刻的挥刀姿态增量。
+ *
+ * 曲线设计：0–120ms 用 smoothstep 快速"左下横扫 + 抬腕"，
+ * 120–260ms 用 smoothstep 反向回到零。两端增量都是 0，所以连点挥刀不会跳帧。
+ *
+ * @param elapsedMs 距离本次挥刀开始的毫秒数（超出 {@link KNIFE_SWING_TOTAL_MS} 后返回全零）
+ */
+export function computeKnifeSwingPose(elapsedMs: number): KnifeSwingPose {
+  const zero: KnifeSwingPose = { dx: 0, dy: 0, dz: 0, rx: 0, ry: 0, rz: 0 };
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0 || elapsedMs >= KNIFE_SWING_TOTAL_MS) {
+    return zero;
+  }
+
+  const forward: number =
+    elapsedMs <= KNIFE_SWING_FORWARD_MS
+      ? smoothstep(elapsedMs / KNIFE_SWING_FORWARD_MS)
+      : 1 - smoothstep((elapsedMs - KNIFE_SWING_FORWARD_MS) / (KNIFE_SWING_TOTAL_MS - KNIFE_SWING_FORWARD_MS));
+
+  return {
+    // 向左下横扫并往前推：刀的"够到"感来自 dz
+    dx: -0.16 * forward,
+    dy: -0.03 * forward,
+    dz: -0.1 * forward,
+    // 抬腕 + 刀身左倾 49°，这是"斜劈"而不是"直捅"
+    rx: 0.35 * forward,
+    ry: 0.22 * forward,
+    rz: -0.85 * forward,
+  };
+}
+
 /**
  * 求某一时刻的视模型姿态（枪根在相机空间的位置与欧拉角）。
  *
- * @param state 累加量快照（bob 相位/幅度、后坐、落地冲击、换弹/投掷/切枪进度）。
+ * @param state 累加量快照（bob 相位/幅度、后坐、落地冲击、换弹/投掷/切枪/挥刀进度）。
  * @param tSeconds 动画累计时间（秒），只驱动 idle 呼吸这一项。
  * @returns 最终 position / rotation，已包含 BASE 静态姿态。
  */
@@ -278,6 +334,17 @@ export function computeViewmodelPose(state: ViewmodelPoseState, tSeconds: number
     rx += SWITCH_DIP_ROT * switchEase;
     dz += SWITCH_DIP_BACK * switchEase;
     rz += 0.06 * switchEase;
+  }
+
+  // ---- 挥刀：左下横扫 + 抬腕（只在持刀时由 Game 喂进度） ----
+  const knife = computeKnifeSwingPose(state.knifeSwingMs ?? 0);
+  if (knife.dx !== 0 || knife.rx !== 0) {
+    dx += knife.dx;
+    dy += knife.dy;
+    dz += knife.dz;
+    rx += knife.rx;
+    ry += knife.ry;
+    rz += knife.rz;
   }
 
   return {
@@ -400,6 +467,8 @@ export class ViewModel {
   private recoilRoll = 0;
   private landing = 0;
   private throwElapsedMs = 0;
+  /** 挥刀已进行的毫秒数；≥ {@link KNIFE_SWING_TOTAL_MS} 表示本次挥砍结束。 */
+  private knifeSwingMs = KNIFE_SWING_TOTAL_MS;
   private previousGrounded = true;
   private previousVerticalSpeed = 0;
   /** 已经处理过的开火时间戳，避免 update 与 recoil 重复叠加。 */
@@ -593,7 +662,7 @@ export class ViewModel {
    *
    * 手部挂点按规格取 `(0.02, −0.14, −0.28)`；球略微偏前偏上，出手时看起来是"从手心甩出"。
    *
-   * @returns 道具球（出手瞬间隐藏，见 {@link ViewModel#setThrowableBallVisible}）
+   * @returns 道具球（出手瞬间由 {@link ViewModel#update} 按投掷进度自动隐藏）
    */
   private buildThrowable(group: THREE.Group): THREE.Mesh {
     group.add(this.box(0.07, 0.07, 0.09, this.materials.glove, 0.02, -0.14, -0.28, 0.1, 0, -0.1));
@@ -631,9 +700,13 @@ export class ViewModel {
     return this.currentSlot;
   }
 
-  /** 投掷出手后隐藏道具球（`visible=false`），切回该槽位时自动复位。 */
-  public setThrowableBallVisible(visible: boolean): void {
-    this.throwableBall.visible = visible;
+  /**
+   * 触发一次挥刀（0–120ms 前挥、120–260ms 回位）。
+   *
+   * 不停用旧计时器：连点挥刀时直接从头开始，手感是"一刀接一刀"而不是"排队播放"。
+   */
+  public swing(): void {
+    this.knifeSwingMs = 0;
   }
 
   /** 开火后坐：枪身后顶 45mm + 上跳 3.15°，指数回弹（连发累加有上限）。 */
@@ -702,6 +775,14 @@ export class ViewModel {
     this.magazineGroup.rotation.x = magazine.rotX;
     this.charging.position.z = -0.05 + computeReloadChargeOffset(reloadProgress);
 
+    // ---- 挥刀计时（内部推进，调用方只需在按键时调 swing()） ----
+    this.knifeSwingMs = Math.min(KNIFE_SWING_TOTAL_MS, this.knifeSwingMs + dt * 1000);
+
+    // ---- 投掷命中"离手"帧：t ≈ 45% 时道具球消失，之后随切枪/复位回到手上 ----
+    // 这一条只在持投掷物时生效；枪/刀组整体不可见，球的真假无所谓。
+    this.throwableBall.visible =
+      !(state.throwing && this.throwElapsedMs > THROW_COOLDOWN_MS * THROW_RELEASE_RATIO);
+
     // ---- 求解姿态并写回 ----
     const pose = computeViewmodelPose(
       {
@@ -716,6 +797,7 @@ export class ViewModel {
         recoilRoll: this.recoilRoll,
         landing: this.landing,
         switchProgress: Math.min(1, Math.max(0, state.switchProgress ?? 0)),
+        knifeSwingMs: this.knifeSwingMs,
       },
       this.clock,
     );

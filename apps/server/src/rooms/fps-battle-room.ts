@@ -6,6 +6,8 @@ import {
   GAME_TICK_INTERVAL_MS,
   MAX_DISPLAY_NAME_LENGTH,
   MAX_PLAYERS_PER_ROOM,
+  MELEE_COOLDOWN_MS,
+  FIRE_COOLDOWN_TOLERANCE,
   MESSAGE_TYPES,
   PISTOL_MAG_SIZE,
   PISTOL_RESERVE_AMMO,
@@ -20,6 +22,7 @@ import {
   WEAPON_MAG_SIZE,
   WEAPON_RELOAD_MS,
   WEAPON_RESERVE_AMMO,
+  WEAPON_SLOTS,
   fireProfileOf,
   isSlotEnabled,
   obstacleColliders,
@@ -33,6 +36,7 @@ import {
   type GrenadeLaunchedMessage,
   type HitZone,
   type KillMessage,
+  type KnifeResultMessage,
   type PingMessage,
   type PongMessage,
   type TeamId,
@@ -54,6 +58,7 @@ import {
   type GrenadeState,
 } from "./grenades.js";
 import { pickSpawnPoint, type SpawnSelection } from "./spawn.js";
+import { resolveKnife } from "./melee.js";
 import { acceptAimSnapshot, overlapsObstacle, sanitizeTransform, type AimSnapshot } from "./transform.js";
 
 export interface FPSBattleRoomOptions {
@@ -145,6 +150,8 @@ export class FPSBattleRoom extends Room<BattleState> {
   private readonly lastFireAt = new Map<string, number>();
   /** 每玩家上次投掷时间戳（服务端限流依据）。 */
   private readonly lastThrowAt = new Map<string, number>();
+  /** 每玩家上次挥刀时间戳（服务端限流依据，{@link MELEE_COOLDOWN_MS}）。 */
+  private readonly lastKnifeAt = new Map<string, number>();
   /** 飞行中的投掷物（服务端权威模拟）。 */
   private readonly grenades = new Map<number, GrenadeState>();
   private nextGrenadeId = 1;
@@ -228,9 +235,14 @@ export class FPSBattleRoom extends Room<BattleState> {
         return;
       }
 
-      // 冷却按武器各自的口径（步枪 150ms / 手枪 300ms），不能共用一张表
+      // 冷却按武器各自的口径（AK 100ms / 手枪 170ms），不能共用一张表。
+      //
+      // 留 20% 容差的原因：客户端全自动按"刚好 cooldownMs"驱动，而网络抖动的到达时间
+      // 是前后浮动几个毫秒的——用严格 `>= cooldownMs` 判定，抖动到早一点的那一发会被
+      // **静默丢弃**，玩家感受到的是"连发中间断了一拍"。20% 容差让 AK 的硬上限变成
+      // 12.5 发/秒（真实 10 发/秒），不足以成为作弊优势，但足够吸收网络抖动。
       const last = this.lastFireAt.get(client.sessionId) ?? 0;
-      if (now - last < profile.cooldownMs) {
+      if (now - last < profile.cooldownMs * FIRE_COOLDOWN_TOLERANCE) {
         return;
       }
       this.lastFireAt.set(client.sessionId, now);
@@ -286,6 +298,45 @@ export class FPSBattleRoom extends Room<BattleState> {
         { playerId: client.sessionId, slot: requested, switchEndAt: player.switchEndAt },
         "玩家切换武器槽",
       );
+    });
+
+    // S6：挥刀（小刀是服务端权威的扇形判定，见 `melee.ts`）
+    this.onMessage<unknown>(MESSAGE_TYPES.KNIFE, (client: Client, raw: unknown) => {
+      const attacker = this.state.players.get(client.sessionId);
+      if (!attacker || !attacker.alive) {
+        return;
+      }
+      // 只有手里拿着刀才能挥（防止用枪的槽位触发近战）
+      if (attacker.weaponSlot !== WEAPON_SLOTS.KNIFE) {
+        return;
+      }
+      const now = Date.now();
+      // 切枪中不能挥刀（与服务端 `switchEndAt` 语义保持一致）
+      if (attacker.switchEndAt > now) {
+        return;
+      }
+      const last = this.lastKnifeAt.get(client.sessionId) ?? 0;
+      if (now - last < MELEE_COOLDOWN_MS) {
+        return;
+      }
+      this.lastKnifeAt.set(client.sessionId, now);
+
+      const aim: AimSnapshot | null = acceptAimSnapshot(raw, { yaw: attacker.yaw, pitch: attacker.pitch });
+      const result: KnifeResultMessage | null = resolveKnife(
+        this.state.players.values(),
+        client.sessionId,
+        aim ?? undefined,
+      );
+      if (result === null) {
+        return;
+      }
+      // 挥空也要广播：远端玩家靠这条消息播"他正在挥刀"的手臂动画
+      this.broadcast(MESSAGE_TYPES.KNIFE_RESULT, result);
+
+      if (result.hitPlayerId !== null) {
+        // 刀不吃部位倍率（只有正面/背刺两档），zone 传 null
+        this.applyDamage(client.sessionId, result.hitPlayerId, result.damage, null);
+      }
     });
 
     // S4：换弹（服务端结算弹药，客户端只做动画与提示）
@@ -362,6 +413,7 @@ export class FPSBattleRoom extends Room<BattleState> {
   public override onLeave(client: Client): void {
     this.lastFireAt.delete(client.sessionId);
     this.lastThrowAt.delete(client.sessionId);
+    this.lastKnifeAt.delete(client.sessionId);
     const removed: boolean = this.state.players.delete(client.sessionId);
     this.logger.info({ playerId: client.sessionId, removed, clients: this.clients.length }, "玩家已离开");
   }

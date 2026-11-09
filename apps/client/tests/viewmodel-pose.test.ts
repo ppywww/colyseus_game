@@ -13,20 +13,38 @@ import { describe, it } from "node:test";
 
 import * as THREE from "three";
 
-import { THROW_COOLDOWN_MS } from "@colyseus-fps/shared";
+import { MELEE_COOLDOWN_MS, THROW_COOLDOWN_MS } from "@colyseus-fps/shared";
 
 import {
+  KNIFE_SWING_FORWARD_MS,
+  KNIFE_SWING_TOTAL_MS,
+  THROW_RELEASE_RATIO,
   VIEWMODEL_BASE_POSITION,
   VIEWMODEL_BASE_ROTATION,
   VIEWMODEL_MUZZLE_LOCAL,
   advanceBobAmp,
   advanceBobPhase,
+  computeKnifeSwingPose,
   computeReloadChargeOffset,
   computeReloadMagazineOffset,
   computeViewmodelPose,
   smoothstep,
+  switchPoseEase,
+  type KnifeSwingPose,
   type ViewmodelPoseState,
 } from "../src/game/viewmodel.js";
+
+/** 挥刀姿态增量的模长，用来比较"某一时刻动作幅度有多大"。 */
+function knifeMagnitude(pose: KnifeSwingPose): number {
+  return (
+    Math.abs(pose.dx) +
+    Math.abs(pose.dy) +
+    Math.abs(pose.dz) +
+    Math.abs(pose.rx) +
+    Math.abs(pose.ry) +
+    Math.abs(pose.rz)
+  );
+}
 
 const RAD_TO_DEG = 180 / Math.PI;
 
@@ -232,6 +250,124 @@ describe("throw 投掷", () => {
     assert.ok(Math.abs(finished.position.x - base.position.x) < 1e-9);
     assert.ok(Math.abs(finished.position.y - base.position.y) < 1e-9);
     assert.ok(Math.abs(finished.rotation.z - base.rotation.z) < 1e-9);
+  });
+});
+
+describe("切枪动画（下压再抬回）", () => {
+  it("switchPoseEase 是 sin(πp)：首尾为 0、中点为 1，越界自动钳制", () => {
+    assert.equal(switchPoseEase(0), 0, "p=0 必须零增量，否则切枪起手会跳");
+    assert.ok(Math.abs(switchPoseEase(1)) < 1e-12, "p=1 必须回到零，否则切完停在压下去的位置");
+    assert.ok(Math.abs(switchPoseEase(0.5) - 1) < 1e-12, "p=0.5 应是最大下压");
+    // 越界钳制到端点
+    assert.equal(switchPoseEase(-3), 0);
+    assert.ok(Math.abs(switchPoseEase(4)) < 1e-12);
+    // 前半程单调递增，符合"先压下去"
+    for (let p = 0.05; p <= 0.5; p += 0.05) {
+      assert.ok(switchPoseEase(p) > switchPoseEase(p - 0.05), `p=${p.toFixed(2)} 应比上一档更大`);
+    }
+  });
+
+  it("下压到底：下沉 0.22m、抬头 0.25rad、后收 0.04m、右倾 0.06rad", () => {
+    const base = computeViewmodelPose(restState(), 0);
+    const dipped = computeViewmodelPose(restState({ switchProgress: 0.5 }), 0);
+
+    const pitchDeg = (dipped.rotation.x - base.rotation.x) * RAD_TO_DEG;
+    assert.ok(Math.abs(dipped.position.y - base.position.y + 0.22) < 1e-9, "应下沉 22cm");
+    assert.ok(Math.abs(dipped.rotation.x - base.rotation.x - 0.25) < 1e-9);
+    assert.ok(Math.abs(pitchDeg - 14.32) < 0.05, `抬头应约 14.3°，实际 ${pitchDeg.toFixed(2)}°`);
+    assert.ok(Math.abs(dipped.position.z - base.position.z - 0.04) < 1e-9, "应向后收 4cm");
+    assert.ok(Math.abs(dipped.rotation.z - base.rotation.z - 0.06) < 1e-9);
+  });
+
+  it("切枪首尾两帧与静止姿态完全一致（连切不会累积偏移）", () => {
+    const base = computeViewmodelPose(restState(), 0);
+    for (const progress of [0, 1]) {
+      const pose = computeViewmodelPose(restState({ switchProgress: progress }), 0);
+      assert.ok(Math.abs(pose.position.y - base.position.y) < 1e-9, `p=${progress} 位移应归零`);
+      assert.ok(Math.abs(pose.position.z - base.position.z) < 1e-9);
+      assert.ok(Math.abs(pose.rotation.x - base.rotation.x) < 1e-9);
+      assert.ok(Math.abs(pose.rotation.z - base.rotation.z) < 1e-9);
+    }
+  });
+
+  it("动画时长由服务端 switchEndAt 决定，客户端不自己算：350ms 走完约 21 帧", () => {
+    // 服务端 switchDurationOf() 对枪械返回 350ms；这里只验证曲线在五个采样点的形状
+    const start = switchPoseEase(0);
+    const quarter = switchPoseEase(0.25);
+    const middle = switchPoseEase(0.5);
+    const lastQuarter = switchPoseEase(0.75);
+    const end = switchPoseEase(1);
+
+    assert.ok(start < 1e-12 && end < 1e-12, "首尾必须归零");
+    assert.ok(middle > quarter && middle > lastQuarter, "峰值必须在中点");
+    assert.ok(Math.abs(quarter - lastQuarter) < 1e-12, "曲线应对称，切枪不会偏向后半程");
+  });
+});
+
+describe("挥刀动画（前挥 120ms + 回位 140ms）", () => {
+  it("未开始 / 已结束 / 非法输入都返回全零", () => {
+    for (const ms of [0, -1, KNIFE_SWING_TOTAL_MS, KNIFE_SWING_TOTAL_MS + 1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.equal(knifeMagnitude(computeKnifeSwingPose(ms)), 0, `elapsed=${ms} 应返回全零`);
+    }
+  });
+
+  it("120ms 处达到峰值：左下横扫 + 前推 + 抬腕 49°", () => {
+    const peak = computeKnifeSwingPose(KNIFE_SWING_FORWARD_MS);
+    assert.ok(Math.abs(peak.dx + 0.16) < 1e-9, "应向左 16cm");
+    assert.ok(Math.abs(peak.dy + 0.03) < 1e-9, "应向下 3cm");
+    assert.ok(Math.abs(peak.dz + 0.1) < 1e-9, "应前推 10cm（刀的够到感）");
+    assert.ok(Math.abs(peak.rx - 0.35) < 1e-9);
+    assert.ok(Math.abs(peak.ry - 0.22) < 1e-9);
+    assert.ok(Math.abs(peak.rz + 0.85) < 1e-9);
+    const rollDeg = Math.abs(peak.rz) * RAD_TO_DEG;
+    assert.ok(rollDeg > 48 && rollDeg < 50, `刀身应左倾约 49°，实际 ${rollDeg.toFixed(1)}°`);
+  });
+
+  it("0–120ms 单调加速、120–260ms 单调回位（不会中途抖动）", () => {
+    let previous = -1;
+    for (let ms = 0; ms <= KNIFE_SWING_FORWARD_MS; ms += 4) {
+      const magnitude = knifeMagnitude(computeKnifeSwingPose(ms));
+      assert.ok(magnitude >= previous, `前挥段 elapsed=${ms}ms 幅度不应回落`);
+      previous = magnitude;
+    }
+    for (let ms = KNIFE_SWING_FORWARD_MS; ms <= KNIFE_SWING_TOTAL_MS; ms += 4) {
+      const magnitude = knifeMagnitude(computeKnifeSwingPose(ms));
+      assert.ok(magnitude <= previous, `回位段 elapsed=${ms}ms 幅度不应回升`);
+      previous = magnitude;
+    }
+  });
+
+  it("两端都是零增量：连点挥刀不会跳帧", () => {
+    const peak = knifeMagnitude(computeKnifeSwingPose(KNIFE_SWING_FORWARD_MS));
+    const firstFrame = knifeMagnitude(computeKnifeSwingPose(4));
+    const lastFrame = knifeMagnitude(computeKnifeSwingPose(KNIFE_SWING_TOTAL_MS - 4));
+    assert.ok(firstFrame < peak * 0.05, `首帧幅度应 < 峰值 5%，实际 ${(firstFrame / peak * 100).toFixed(1)}%`);
+    assert.ok(lastFrame < peak * 0.05, `末帧幅度应 < 峰值 5%，实际 ${(lastFrame / peak * 100).toFixed(1)}%`);
+  });
+
+  it("动作时长必须短于服务端冷却，否则连点会被「看不到的冷却」卡住", () => {
+    assert.ok(KNIFE_SWING_TOTAL_MS < MELEE_COOLDOWN_MS, `${KNIFE_SWING_TOTAL_MS}ms 应短于 ${MELEE_COOLDOWN_MS}ms`);
+    assert.ok(KNIFE_SWING_FORWARD_MS < KNIFE_SWING_TOTAL_MS);
+    // 回位段必须比前挥长，否则收刀比出手还快，看起来像"闪一下"
+    const returnMs = KNIFE_SWING_TOTAL_MS - KNIFE_SWING_FORWARD_MS;
+    assert.ok(returnMs > KNIFE_SWING_FORWARD_MS, "回位段应长于前挥段");
+  });
+});
+
+describe("投掷出手时机", () => {
+  it("球在 45% 处消失，即 315ms —— 落在 180–420ms 的甩出/停顿段内", () => {
+    assert.ok(Math.abs(THROW_RELEASE_RATIO - 0.45) < 1e-12);
+    const releaseMs = THROW_RELEASE_RATIO * THROW_COOLDOWN_MS;
+    assert.ok(Math.abs(releaseMs - 315) < 1e-9, `出手时机应 315ms，实际 ${releaseMs}`);
+    assert.ok(releaseMs > 180 && releaseMs < 420, "应落在甩出/停顿段内，否则球看起来没飞出去");
+  });
+
+  it("出手时机之前姿态已接近满幅（手已甩到位）", () => {
+    const release = computeViewmodelPose(restState({ throwProgress: THROW_RELEASE_RATIO }), 0);
+    const base = computeViewmodelPose(restState(), 0);
+    // 315ms 已过 THROW_SWING_END_MS(180ms)，处在保持段，位移应达到满幅的 100%
+    assert.ok(Math.abs(release.position.x - base.position.x + 0.1) < 1e-6);
+    assert.ok(Math.abs(release.position.y - base.position.y + 0.12) < 1e-6);
   });
 });
 

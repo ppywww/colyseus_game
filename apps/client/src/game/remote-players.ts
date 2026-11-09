@@ -30,6 +30,15 @@ const AIRBORNE_Y = 0.05;
 const LABEL_Y_ALIVE = PLAYER_HEIGHT + 0.45;
 const LABEL_Y_DEAD = 0.5;
 
+/**
+ * 右臂前甩的最大角度（弧度，约 72°）。
+ *
+ * 用于"挥刀"（300ms）与"投掷"（400ms）这两种一次性动作：
+ * 手臂从自然下垂甩到身前再回来，是远端玩家唯一能看出"他在动手"的信号
+ * （既不用新增网络字段，也不用给每个化身再建一套骨骼）。
+ */
+const ARM_FLING = 1.25;
+
 /** 出生地默认队伍（服务端一定下发 team，这里只是防御性兜底）。 */
 function teamOf(player: PlayerState): TeamId {
   return player.team === "CT" ? "CT" : "T";
@@ -81,6 +90,10 @@ class RemotePlayerAvatar {
   private alive = true;
   private lastWeaponSlot = -1;
 
+  /** 右臂前甩的剩余 / 总时长（毫秒）。0 表示当前没有一次性动作。 */
+  private armSwingRemainingMs = 0;
+  private armSwingDurationMs = 0;
+
   public constructor(player: PlayerState, interpolationDelayMs: number) {
     this.model = new AvatarModel(teamOf(player));
     this.root = this.model.root;
@@ -110,6 +123,16 @@ class RemotePlayerAvatar {
     }
     this.lastSeq = seq;
     this.buffer.push(sample);
+  }
+
+  /**
+   * 触发一次右臂前甩（挥刀 300ms / 投掷 400ms）。
+   *
+   * 重复调用直接从头开始：连续挥刀时手臂应该跟着一下一下甩，而不是排队播完。
+   */
+  public playArmSwing(durationMs: number): void {
+    this.armSwingDurationMs = Math.max(1, durationMs);
+    this.armSwingRemainingMs = this.armSwingDurationMs;
   }
 
   /** 同步非位置状态（武器槽 / 存活），立即生效，不做淡入。 */
@@ -163,6 +186,15 @@ class RemotePlayerAvatar {
       this.bobAmp += (target - this.bobAmp) * k;
       const airborne = transform.y > AIRBORNE_Y;
       this.model.poseLocomotion(this.bobPhase, this.bobAmp * (airborne ? 0.5 : 1));
+
+      // 一次性动作（挥刀 / 投掷）在 poseLocomotion 之后再叠加：
+      // 它每帧都会把 shoulderR.rotation.x 写回摆动值，所以这里的 -= 不会累积。
+      if (this.armSwingRemainingMs > 0) {
+        const progress = 1 - this.armSwingRemainingMs / this.armSwingDurationMs;
+        const swing = Math.sin(Math.PI * Math.min(1, Math.max(0, progress)));
+        this.model.rig.shoulderR.rotation.x -= ARM_FLING * swing;
+        this.armSwingRemainingMs = Math.max(0, this.armSwingRemainingMs - dtSeconds * 1000);
+      }
     }
 
     if (this.dying) {
@@ -247,6 +279,16 @@ export class RemotePlayerManager {
 
   public count(): number {
     return this.avatars.size;
+  }
+
+  /**
+   * 让某个远端玩家做一次右臂前甩（挥刀 / 投掷）。
+   *
+   * @param sessionId 动作发起者；不认识的 id（已离场 / 自己）静默忽略
+   * @param durationMs 动作时长（毫秒）：挥刀 300、投掷 400
+   */
+  public playArmSwing(sessionId: string, durationMs: number): void {
+    this.avatars.get(sessionId)?.playArmSwing(durationMs);
   }
 
   public dispose(): void {

@@ -13,6 +13,7 @@ import type {
   FlashEffectMessage,
   GrenadeLaunchedMessage,
   KillMessage,
+  KnifeResultMessage,
   ShotMessage,
   SmokeCloudView,
 } from "@colyseus-fps/shared";
@@ -125,6 +126,9 @@ joinButton.addEventListener("click", () => {
       },
       onKill(message: KillMessage): void {
         game?.handleKill(message);
+      },
+      onKnifeResult(message: KnifeResultMessage): void {
+        game?.handleKnifeResult(message);
       },
       onClouds(clouds: SmokeCloudView[]): void {
         game?.handleClouds(clouds);

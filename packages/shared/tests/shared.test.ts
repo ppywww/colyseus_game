@@ -14,6 +14,7 @@ import { describe, it } from "node:test";
 import {
   ARENA_RADIUS,
   CLIENT_INTERPOLATION_DELAY_MS,
+  FIRE_MODES,
   GAME_TICK_INTERVAL_MS,
   GAME_TICK_RATE,
   MAX_MESSAGES_PER_SECOND,
@@ -120,10 +121,17 @@ describe("S5 体验优化常量（协议 v2）", () => {
     assert.equal(MAX_PLAYERS_PER_ROOM, TEAM_SPAWN_COUNT * 2);
   });
 
-  it("视角上报应提到 30Hz，且限流阈值高于它（否则上报会被自己限流）", () => {
+  it("视角上报 30Hz 时，限流阈值必须留出全自动开火的余量", () => {
     assert.equal(PLAYER_TRANSFORM_RATE_HZ, 30);
     assert.ok(MAX_MESSAGES_PER_SECOND > PLAYER_TRANSFORM_RATE_HZ, "限流阈值必须高于上报频率");
-    assert.equal(MAX_MESSAGES_PER_SECOND, 45);
+    // AK 全自动 600 RPM = 10 发/秒，叠加 30Hz 上报已经是 40/s；45 的阈值会让换弹/切枪
+    // 那几帧的合法包被静默丢弃（表现为"打着打着没反应"），所以必须提到 60。
+    assert.equal(MAX_MESSAGES_PER_SECOND, 60);
+    const akShotsPerSecond: number = 1000 / WEAPON_COOLDOWN_MS;
+    assert.ok(
+      MAX_MESSAGES_PER_SECOND - PLAYER_TRANSFORM_RATE_HZ >= akShotsPerSecond + 10,
+      "留出的余量要够 AK 全自动开火再叠 10 条/秒的换弹切枪",
+    );
   });
 
   it("每队随机出生点应取该队前 4 条，且朝向正确", () => {
@@ -261,11 +269,20 @@ describe("手枪参数（槽位 1）", () => {
     assert.notEqual(PISTOL_RESERVE_AMMO, 120);
   });
 
-  it("射速应为步枪的一半（300ms vs 150ms），射程 35m < 步枪 60m", () => {
-    assert.equal(PISTOL_COOLDOWN_MS, 300);
-    assert.equal(PISTOL_COOLDOWN_MS, WEAPON_COOLDOWN_MS * 2);
+  it("手枪应是半自动、比步枪慢、射程更短", () => {
+    // 170ms（≈353 RPM）对齐 USP-S 量级；AK 是 100ms（600 RPM 全自动）
+    assert.equal(PISTOL_COOLDOWN_MS, 170);
+    assert.ok(PISTOL_COOLDOWN_MS > WEAPON_COOLDOWN_MS, "手枪必须比步枪慢");
+    assert.equal(WEAPON_COOLDOWN_MS, 100);
     assert.equal(PISTOL_RANGE, 35);
     assert.ok(PISTOL_RANGE < WEAPON_RANGE);
+  });
+
+  it("开火模式必须区分：长枪全自动、手枪半自动", () => {
+    assert.equal(fireProfileOf(WEAPON_SLOTS.RIFLE)?.fireMode, FIRE_MODES.AUTO);
+    assert.equal(fireProfileOf(WEAPON_SLOTS.PISTOL)?.fireMode, FIRE_MODES.SEMI);
+    // 刀与投掷物没有开火模式（不走弹道）
+    assert.equal(fireProfileOf(WEAPON_SLOTS.KNIFE), null);
   });
 
   it("只有 0 / 1 走弹道，刀与投掷物没有弹道参数", () => {

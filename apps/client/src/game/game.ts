@@ -17,7 +17,9 @@ import {
   BASE_SENSITIVITY,
   CLIENT_INTERPOLATION_DELAY_MS,
   EYE_HEIGHT,
+  FIRE_MODES,
   MAP_BOUNDS,
+  MELEE_COOLDOWN_MS,
   PLAYER_TRANSFORM_RATE_HZ,
   SLOT_ORDER,
   SPAWN_POINTS,
@@ -38,6 +40,7 @@ import {
   type FlashEffectMessage,
   type GrenadeLaunchedMessage,
   type KillMessage,
+  type KnifeResultMessage,
   type PlayerTransformMessage,
   type ShotMessage,
   type SmokeCloudView,
@@ -65,9 +68,8 @@ import { ViewModel } from "./viewmodel.js";
 
 const MAX_PITCH = Math.PI / 2 - 0.02;
 
-/** 开火后坐强度（弧度）。 */
-const RECOIL_PITCH = 0.016;
-const RECOIL_YAW = 0.006;
+/** 角度 → 弧度。武器参数表里的后坐力用「度」表示（人读得懂），运行时换算成弧度。 */
+const DEG2RAD = Math.PI / 180;
 
 /** 准星扩散：基础值、每发增量、移动增量、回弹速度（像素/秒）。 */
 const SPREAD_BASE = 3;
@@ -143,7 +145,15 @@ export class Game {
 
   // 战斗状态（全部以服务端下发为准）
   private lastFireAt = 0;
+  /**
+   * 左键是否处于按住状态（全自动扳机）。
+   *
+   * 只在枪械分支置位：刀/投掷物是"点一次触发一次"，按住不放不应该连挥/连扔。
+   * 所有"不该继续开火"的时机都要显式清零——死亡、切枪、换弹、退出指针锁定。
+   */
+  private firing = false;
   private lastThrowAt = 0;
+  private lastKnifeAt = 0;
   private lastRespawnSeq = 0;
   private selfAlive = true;
   private selfHp = 100;
@@ -236,6 +246,7 @@ export class Game {
     document.addEventListener("pointerlockchange", this.handlePointerLockChange);
     document.addEventListener("pointerlockerror", this.handlePointerLockError);
     document.addEventListener("mousedown", this.handleMouseDown);
+    document.addEventListener("mouseup", this.handleMouseUp);
     window.addEventListener("resize", this.handleResize);
 
     // ---- 设置：把持久化的灵敏度喂给输入层，并把滑块挂进 Esc 遮罩 ----
@@ -266,17 +277,33 @@ export class Game {
     console.warn("指针锁定失败：请再次点击画面（浏览器可能限制了锁定频率）");
   };
 
-  /** 左键：枪 → 开火、投掷物 → 投出。弹道与伤害由服务端裁定。 */
+  /** 左键：枪 → 开火、刀 → 挥刀、投掷物 → 投出。全部由服务端裁定。 */
   private readonly handleMouseDown = (event: MouseEvent): void => {
     if (event.button !== 0 || !this.input.isPointerLocked()) {
       return;
     }
-    const throwable = throwableTypeOfSlot(this.weaponSlot);
-    if (throwable !== null) {
-      this.tryThrow(throwable, performance.now());
+    const now: number = performance.now();
+    if (this.weaponSlot === WEAPON_SLOTS.KNIFE) {
+      this.tryKnife(now);
       return;
     }
-    this.tryFire(performance.now());
+    const throwable = throwableTypeOfSlot(this.weaponSlot);
+    if (throwable !== null) {
+      this.tryThrow(throwable, now);
+      return;
+    }
+    // 枪械：按下即扣扳机。全自动枪由主循环（`tick`）按冷却持续补发，
+    // 半自动枪只在这里发这一发——按住左键不会连发。
+    this.firing = true;
+    this.tryFire(now);
+  };
+
+  /** 左键松开：断开扳机。全自动枪停止连发，semi 枪不受影响。 */
+  private readonly handleMouseUp = (event: MouseEvent): void => {
+    if (event.button !== 0) {
+      return;
+    }
+    this.firing = false;
   };
 
   /** 当前槽位的弹匣剩余（刀 / 投掷物返回 −1，表示"没有弹匣"）。 */
@@ -349,8 +376,11 @@ export class Game {
     this.effects.muzzleFlash(nowMs);
     this.audio.gunshot();
     this.viewModel.recoil(nowMs);
-    this.recoilPitch -= RECOIL_PITCH;
-    this.recoilYaw += (Math.random() - 0.5) * RECOIL_YAW * 2;
+    // 每把枪独立的后坐力（弧度由参数表的"度"折算）：
+    //   AK  0.85°/发、横向 ±0.35°、回正 5.5/s → 压着扫会缓慢爬升，必须往下压
+    //   手枪 1.30°/发、横向 ±0.15°、回正 12/s  → 单发上跳大但立刻复位，逼玩家点射
+    this.recoilPitch -= profile.recoilVertDeg * DEG2RAD;
+    this.recoilYaw += (Math.random() - 0.5) * profile.recoilHorizDeg * DEG2RAD * 2;
     this.shake = Math.min(1, this.shake + 0.18);
     this.spread = Math.min(26, this.spread + SPREAD_PER_SHOT);
     if (this.currentMag() === 0 && this.currentReserve() > 0) {
@@ -378,6 +408,52 @@ export class Game {
         this.audio.reloadEnd();
       }
     }, WEAPON_RELOAD_MS - 120);
+  }
+
+  /**
+   * 挥刀：只发意图，扇形判定（±35° / 2.0m / 背刺 100）全部由服务端 `melee.ts` 结算。
+   *
+   * 本地仍然做冷却与槽位拦截：不然连点左键会在服务端被限流静默丢弃，
+   * 玩家看到的是"刀挥了但没伤害"，比直接不挥更迷惑。
+   */
+  private tryKnife(nowMs: number): void {
+    if (!this.selfAlive) {
+      return;
+    }
+    if (Date.now() < this.switchEndAt) {
+      return;
+    }
+    if (nowMs - this.lastKnifeAt < MELEE_COOLDOWN_MS) {
+      return;
+    }
+    this.lastKnifeAt = nowMs;
+    // 携带挥刀瞬间的视角（与服务端 3° 校验同源）：快速转身挥刀不会砍到背后
+    this.connection.sendKnife(this.kinematics.yaw + this.recoilYaw, this.kinematics.pitch + this.recoilPitch);
+    this.viewModel.swing();
+    this.audio.knifeSwing();
+    this.shake = Math.min(1, this.shake + 0.08);
+  }
+
+  /**
+   * 挥刀结果广播：自己命中 → 分级命中反馈 + thud/crit 音效；
+   * 远端挥刀 → 让他的化身右臂前甩 300ms（挥空也要播，否则看不到"对面在挥刀"）。
+   */
+  public handleKnifeResult(message: KnifeResultMessage): void {
+    if (message.attackerId === this.selfSessionId) {
+      if (message.hitPlayerId === null) {
+        return;
+      }
+      this.hud.flashHitmarker(message.backstab ? "head" : "body");
+      this.hud.showZoneDamage(message.backstab ? "背刺" : "近战", message.damage);
+      if (message.backstab) {
+        this.audio.knifeCrit();
+      } else {
+        this.audio.knifeHit();
+      }
+      return;
+    }
+
+    this.remotePlayers.playArmSwing(message.attackerId, 300);
   }
 
   /** 本地是否允许切到该槽位（与服务端校验同口径，唯一区别是不发网络包）。 */
@@ -429,6 +505,8 @@ export class Game {
 
   /** 本地立即生效的槽位切换（不动网络、不校验）——由 {@link selectSlot} 与状态同步共用。 */
   private applySlotLocally(slot: WeaponSlot, durationMs: number): void {
+    // 切枪必须松开"扳机"：否则按住左键滚轮切枪，新枪会在切枪动画结束的下一帧自动开火
+    this.firing = false;
     this.weaponSlot = slot;
     this.viewModel.setWeaponSlot(slot);
     this.switchDurationMs = durationMs;
@@ -479,8 +557,6 @@ export class Game {
     };
     this.connection.sendThrow(type, dir);
     this.audio.throwWhoosh();
-    // 球离手（切回投掷物槽位时 setWeaponSlot 会自动复位）
-    this.viewModel.setThrowableBallVisible(false);
     if (type === THROWABLE_TYPES.FRAG) {
       this.frags = Math.max(0, this.frags - 1);
     } else if (type === THROWABLE_TYPES.FLASH) {
@@ -554,9 +630,12 @@ export class Game {
     }
   }
 
-  /** 投掷物已投出：本地预测同一条抛物线。 */
+  /** 投掷物已投出：本地预测同一条抛物线，并让投掷者的化身右臂前甩 400ms。 */
   public handleGrenade(message: GrenadeLaunchedMessage): void {
     this.throwables.spawnLaunched(message);
+    if (message.throwerId !== this.selfSessionId) {
+      this.remotePlayers.playArmSwing(message.throwerId, 400);
+    }
   }
 
   /** 投掷物生效：爆炸/闪光视觉 + 距离衰减的屏幕抖动与音效。 */
@@ -602,6 +681,11 @@ export class Game {
   }
 
   private readonly handlePointerLockChange = (): void => {
+    // Esc / Alt-Tab 退出锁定时 `mouseup` 可能根本不会到达页面，扳机必须在这里强制断开，
+    // 否则重新锁定后玩家会"凭空"继续连发，直到下一次点击。
+    if (!this.input.isPointerLocked()) {
+      this.firing = false;
+    }
     this.hud.setLockOverlayVisible(!this.input.isPointerLocked());
   };
 
@@ -637,6 +721,10 @@ export class Game {
       this.recoilYaw = 0;
     }
 
+    // 死亡即断扳机：否则落地那一刻仍然按着左键，重生后第一帧就会"自动"打出一发
+    if (!self.alive) {
+      this.firing = false;
+    }
     this.selfAlive = self.alive;
     this.selfHp = self.hp;
     this.selfRespawnAt = self.respawnAt;
@@ -697,12 +785,25 @@ export class Game {
         Math.max(-MAX_PITCH, this.kinematics.pitch - look.dy * BASE_SENSITIVITY),
       );
     }
-    this.recoilPitch *= Math.exp(-dtSeconds * 9);
-    this.recoilYaw *= Math.exp(-dtSeconds * 9);
+    // 后坐偏移回正：速率按枪各不同（AK 5.5 慢、手枪 12 快）。
+    // 刀/投掷物没有 profile，退回 9（与历史行为一致）。
+    const recoilRate: number = fireProfileOf(this.weaponSlot)?.recoilRecoverRate ?? 9;
+    this.recoilPitch *= Math.exp(-dtSeconds * recoilRate);
+    this.recoilYaw *= Math.exp(-dtSeconds * recoilRate);
     const pitchWithRecoil = Math.min(MAX_PITCH, Math.max(-MAX_PITCH, this.kinematics.pitch + this.recoilPitch));
     const yawWithRecoil = this.kinematics.yaw + this.recoilYaw;
 
     this.handleActionKeys(nowMs);
+
+    // 全自动扳机：按住左键时每帧尝试补发。`tryFire` 内部有 `nowMs - lastFireAt < cooldownMs`
+    // 的自我限流，所以每帧调用是安全的——它不是"每帧一发"，而是"这一帧冷却好了就发一发"。
+    // 半自动枪（手枪）不进这个分支：按住不放只出按下时那一发。
+    if (this.firing && locked && this.selfAlive) {
+      const profile = fireProfileOf(this.weaponSlot);
+      if (profile !== null && profile.fireMode === FIRE_MODES.AUTO) {
+        this.tryFire(nowMs);
+      }
+    }
 
     // 移动
     const moveInput: MoveInput = {
@@ -901,6 +1002,7 @@ export class Game {
     document.removeEventListener("pointerlockchange", this.handlePointerLockChange);
     document.removeEventListener("pointerlockerror", this.handlePointerLockError);
     document.removeEventListener("mousedown", this.handleMouseDown);
+    document.removeEventListener("mouseup", this.handleMouseUp);
     window.removeEventListener("resize", this.handleResize);
     this.input.dispose();
     this.hud.dispose();

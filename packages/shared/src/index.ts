@@ -37,8 +37,13 @@ export const CLIENT_INTERPOLATION_DELAY_MS: number = 100;
  *
  * 30 → 45 的原因：{@link PLAYER_TRANSFORM_RATE_HZ} 提到 30Hz 后，位置上报本身就会
  * 卡满 30 msg/s，加上开火/换弹/切枪/投掷，30 的阈值会把玩家自己的合法上报限流丢弃。
+ *
+ * 45 → 60 的原因：AK 改全自动 600 RPM 后开火本身就是 10 msg/s，30（位置）+ 10（开火）
+ * = 40/s 已经贴着 45 的线，再叠加换弹/切枪/投掷就会溢出——溢出的包是**静默丢弃**的，
+ * 玩家看到的现象是"打着打着枪突然没反应"。60 留出 20 msg/s 余量，同时仍然远低于
+ * 人手能刷出的包量，防刷包的作用不变。
  */
-export const MAX_MESSAGES_PER_SECOND: number = 45;
+export const MAX_MESSAGES_PER_SECOND: number = 60;
 
 /** 协议版本号：客户端与服务端不一致时拒绝连接。v2 = 分区伤害 + 武器槽 + 弹道字段扩展。 */
 export const PROTOCOL_VERSION: number = 2;
@@ -203,8 +208,14 @@ export const PLAYER_MAX_HP: number = 100;
 /** 单发基础伤害（胸部伤害）：4 发击杀。 */
 export const WEAPON_DAMAGE: number = 25;
 
-/** 开火最小间隔（毫秒），服务端据此限流，客户端据此做本地预冷却。 */
-export const WEAPON_COOLDOWN_MS: number = 150;
+/**
+ * 开火最小间隔（毫秒），服务端据此限流，客户端据此做本地预冷却。
+ *
+ * 150（400 RPM 单发）→ 100（600 RPM 全自动）：原值下 AK 只能"点一发等 150ms 再点"，
+ * 手感是半自动步枪而不是 CS 的 AK。真实 AK-47 是 600 RPM，折算 100ms；配合
+ * {@link FIRE_MODES.AUTO}，按住左键由客户端主循环按冷却逐发驱动，服务端仍逐发限流。
+ */
+export const WEAPON_COOLDOWN_MS: number = 100;
 
 /** 武器射程（米）：超过该距离不再命中玩家。 */
 export const WEAPON_RANGE: number = 60;
@@ -754,21 +765,48 @@ export const PISTOL_MAG_SIZE: number = 12;
 export const PISTOL_RESERVE_AMMO: number = 36;
 
 /**
- * 手枪开火间隔（毫秒）：300ms。
+ * 手枪开火间隔（毫秒）：170（≈353 RPM，对齐 USP-S 的射速量级）。
  *
- * 为什么是步枪（150ms）的两倍：手枪伤害走同一张 {@link ZONE_DAMAGE}（胸 25），
+ * 为什么比步枪（100ms）慢近一倍：手枪伤害走同一张 {@link ZONE_DAMAGE}（胸 25），
  * 若射速与步枪相同，手枪就成了"弹匣更小的步枪"，AK 完全没有存在意义。
- * 300ms 让手枪的 DPS 掉到步枪的一半，定位变成"远程点射 / 主武器没子弹时的过渡"。
+ * 170ms 下手枪 DPS≈147、AK≈250，手枪仍是步枪的 59%，定位是"点射 / 主武器空弹匣时的过渡"。
+ * 与射速同样重要的是 {@link FIRE_MODES.SEMI}：手枪一次点击只出一发，按住不放不会连发。
  */
-export const PISTOL_COOLDOWN_MS: number = 300;
+export const PISTOL_COOLDOWN_MS: number = 170;
 
 /** 手枪射程（米）：35m，约为步枪（60m）的 58%，中门这种 31m 长枪线刚好够用。 */
 export const PISTOL_RANGE: number = 35;
+
+/**
+ * 开火模式。
+ *
+ * - `auto`：按住左键持续射击（长枪）。客户端主循环按 `cooldownMs` 逐发驱动，
+ *   服务端仍逐发限流——"全自动"不是允许超频，只是允许客户端自动补发。
+ * - `semi`：一次点击只出一发（手枪）。按住不放**不会**连发。
+ */
+export const FIRE_MODES = {
+  AUTO: "auto",
+  SEMI: "semi",
+} as const;
+
+export type FireMode = (typeof FIRE_MODES)[keyof typeof FIRE_MODES];
+
+/**
+ * 服务端开火冷却容差（倍数）。
+ *
+ * 判定用 `now - last >= cooldownMs * TOLERANCE` 而不是严格的 `cooldownMs`：
+ * 客户端全自动按"刚好 cooldownMs"驱动，网络到达时间会前后抖动几毫秒，严格判定会把
+ * 抖动偏早的那一发**静默丢弃**，玩家感受到的是"连发中间断了一拍"。
+ * 0.8 让 AK 的硬上限从 10 发/秒放宽到 12.5 发/秒——不足以构成作弊优势，但能吸收抖动。
+ */
+export const FIRE_COOLDOWN_TOLERANCE: number = 0.8;
 
 /** 单把枪的完整手感参数（服务端结算与客户端本地预测共用同一份，杜绝两端漂移）。 */
 export interface WeaponFireProfile {
   /** 槽位（{@link WEAPON_SLOTS}）。 */
   slot: WeaponSlot;
+  /** 开火模式：auto = 按住连发，semi = 一次点击一发。 */
+  fireMode: FireMode;
   /** 开火最小间隔（毫秒）。 */
   cooldownMs: number;
   /** 射程（米）。 */
@@ -779,25 +817,45 @@ export interface WeaponFireProfile {
   reserveAmmo: number;
   /** 展示名（HUD 用）。 */
   label: string;
+  /** 单发上跳（度，正数 = 抬头）。玩家必须自己向下压枪来抵消。 */
+  recoilVertDeg: number;
+  /** 单发横向抖动半幅（度）。 */
+  recoilHorizDeg: number;
+  /**
+   * 后坐偏移的回正速率（每秒，客户端按 `exp(-dt * rate)` 衰减）。
+   *
+   * 枪越重、回正越慢：AK 5.5（压枪窗口约 400ms，必须持续压）、手枪 12（打一枪立刻复位）。
+   */
+  recoilRecoverRate: number;
 }
 
 /** 有弹道（走射线判定）的槽位参数；刀与投掷物不在表内。 */
 export const WEAPON_FIRE_PROFILES: Record<number, WeaponFireProfile> = {
   0: {
     slot: 0,
+    fireMode: FIRE_MODES.AUTO,
     cooldownMs: WEAPON_COOLDOWN_MS,
     range: WEAPON_RANGE,
     magSize: WEAPON_MAG_SIZE,
     reserveAmmo: WEAPON_RESERVE_AMMO,
     label: "AK",
+    recoilVertDeg: 0.85,
+    recoilHorizDeg: 0.35,
+    recoilRecoverRate: 5.5,
   },
   1: {
     slot: 1,
+    fireMode: FIRE_MODES.SEMI,
     cooldownMs: PISTOL_COOLDOWN_MS,
     range: PISTOL_RANGE,
     magSize: PISTOL_MAG_SIZE,
     reserveAmmo: PISTOL_RESERVE_AMMO,
     label: "手枪",
+    // 手枪单发上跳比 AK 更大（1.30 vs 0.85），但回正快一倍多（12 vs 5.5）：
+    // 打一枪立刻复位，逼玩家一发一发点，而不是像 AK 那样压着扫。
+    recoilVertDeg: 1.3,
+    recoilHorizDeg: 0.15,
+    recoilRecoverRate: 12,
   },
 };
 

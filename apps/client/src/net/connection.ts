@@ -9,6 +9,7 @@ import {
   type FlashEffectMessage,
   type GrenadeLaunchedMessage,
   type KillMessage,
+  type KnifeResultMessage,
   type PlayerTransformMessage,
   type PongMessage,
   type ShotMessage,
@@ -34,6 +35,7 @@ export interface ConnectionHandlers {
   onExplosion(message: ExplosionMessage): void;
   onFlash(message: FlashEffectMessage): void;
   onDamaged(message: DamageTakenMessage): void;
+  onKnifeResult(message: KnifeResultMessage): void;
 }
 
 /** 封装 Colyseus 连接、状态订阅与消息通道。 */
@@ -119,6 +121,9 @@ export class LobbyConnection {
     room.onMessage<DamageTakenMessage>(MESSAGE_TYPES.DAMAGED, (message: DamageTakenMessage) => {
       this.handlers.onDamaged(message);
     });
+    room.onMessage<KnifeResultMessage>(MESSAGE_TYPES.KNIFE_RESULT, (message: KnifeResultMessage) => {
+      this.handlers.onKnifeResult(message);
+    });
     room.onLeave((code: number) => {
       this.room = null;
       this.handlers.onLeave(code);
@@ -189,6 +194,19 @@ export class LobbyConnection {
       return;
     }
     this.room.send(MESSAGE_TYPES.THROW, { type, dirX: dir.x, dirY: dir.y, dirZ: dir.z });
+  }
+
+  /**
+   * 请求挥刀。只上报视角快照，扇形判定与伤害全部由服务端 `melee.ts` 结算。
+   *
+   * 与 `sendFire` 一样携带开火瞬间的 yaw/pitch：刀是"朝哪砍哪"，
+   * 用服务端存的上一次 yaw 会让快速转身挥刀砍到自己身后。
+   */
+  public sendKnife(yaw: number, pitch: number): void {
+    if (this.room === null) {
+      return;
+    }
+    this.room.send(MESSAGE_TYPES.KNIFE, { yaw, pitch });
   }
 
   public async leave(): Promise<void> {

@@ -8,6 +8,10 @@
  *      不合并的话一划就从 AK 滚到烟雾弹再滚回来，玩家永远切不到想用的那把。
  *   3. 灵敏度只乘在**读取时**（{@link InputController#consumeLookDelta}），不改累加值：
  *      同一帧里多次拖动滑块也不会把已经攒下的增量二次缩放。
+ *   4. 单帧视角增量有上限（{@link MAX_LOOK_STEP_PER_FRAME}），超出部分**留到下一帧**而不是
+ *      丢弃——这是"左右转视角时画面突然跳一下"的根治：指针锁定下浏览器偶尔会吐出一个
+ *      巨大的 `movementX`（鼠标撞屏幕物理边界、驱动加速、Chrome 的合并事件都会），
+ *      一次消费就是几十度的瞬移。分摊到后续几帧既不会瞬移，也不会丢掉玩家的甩枪位移。
  */
 
 import {
@@ -17,6 +21,27 @@ import {
 
 /** 滚轮合并窗口（毫秒）：窗口内的多次滚动只算一步。 */
 export const WHEEL_MERGE_MS = 80;
+
+/**
+ * 单个 `mousemove` 事件的位移上限（像素）。
+ *
+ * 正常用鼠标一帧最多几十像素，只有异常尖峰才会超过 400——这类值几乎都是浏览器 bug
+ * 或设备驱动问题，直接截断比让它参与运算安全。
+ */
+const MAX_MOVEMENT_PER_EVENT = 400;
+
+/** 单帧最多消费的视角增量（像素）。超出部分留在累加器里，下一帧继续。 */
+export const MAX_LOOK_STEP_PER_FRAME = 350;
+
+function clampStep(value: number, limit: number): number {
+  if (value > limit) {
+    return limit;
+  }
+  if (value < -limit) {
+    return -limit;
+  }
+  return value;
+}
 
 export class InputController {
   private readonly keys = new Set<string>();
@@ -44,8 +69,8 @@ export class InputController {
     if (!this.locked) {
       return;
     }
-    this.lookDeltaX += event.movementX;
-    this.lookDeltaY += event.movementY;
+    this.lookDeltaX += clampStep(event.movementX, MAX_MOVEMENT_PER_EVENT);
+    this.lookDeltaY += clampStep(event.movementY, MAX_MOVEMENT_PER_EVENT);
   };
 
   private readonly onWheel = (event: WheelEvent): void => {
@@ -62,6 +87,9 @@ export class InputController {
     if (!this.locked) {
       // 解锁瞬间清空未消费的滚轮量：否则下次锁定时会"补切"一次武器
       this.wheelDelta = 0;
+      // 同理清空视角余量：Alt-Tab 回来时把攒下的位移一次性倾泻出去，就是一次视角瞬移
+      this.lookDeltaX = 0;
+      this.lookDeltaY = 0;
     }
   };
 
@@ -122,13 +150,15 @@ export class InputController {
    * 调用方只需要再乘 shared 的 `BASE_SENSITIVITY` 就得到弧度。
    */
   public consumeLookDelta(): { dx: number; dy: number } {
-    const delta = {
-      dx: this.lookDeltaX * this.sensitivity,
-      dy: this.lookDeltaY * this.sensitivity,
+    // 单帧上限 + 余量留存：见文件头第 4 条约束。
+    const stepX = clampStep(this.lookDeltaX, MAX_LOOK_STEP_PER_FRAME);
+    const stepY = clampStep(this.lookDeltaY, MAX_LOOK_STEP_PER_FRAME);
+    this.lookDeltaX -= stepX;
+    this.lookDeltaY -= stepY;
+    return {
+      dx: stepX * this.sensitivity,
+      dy: stepY * this.sensitivity,
     };
-    this.lookDeltaX = 0;
-    this.lookDeltaY = 0;
-    return delta;
   }
 
   /**

@@ -195,7 +195,7 @@ export class ThrowableSystem {
   /** 每帧：推进本地抛物线（与服务端共用 shared 的 stepGrenadePhysics），并做烟雾淡入淡出。 */
   public update(dtSeconds: number, nowMs: number): void {
     for (const grenade of this.grenades.values()) {
-      // 物理与服务端 `stepGrenade` 是**同一个函数**（shared/grenade-physics.ts）：
+      // 物理与服务端 `stepGrenade` 是**同一个函数**（shared 的 `stepGrenadePhysics`）：
       // 重力、地面反弹、64 个掩体 AABB 的推出反弹、场地边界一次全做，
       // 因此本地预测不会再出现"手雷直线穿墙飞进掩体"的视觉脱节。
       stepGrenadePhysics(grenade, dtSeconds, GRENADE_COLLIDERS);

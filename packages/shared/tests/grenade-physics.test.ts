@@ -13,7 +13,7 @@ import { describe, it } from "node:test";
 import { GRENADE_RADIUS, MAP_BOUNDS, type Aabb } from "../src/index.js";
 // 直接引用物理模块而不是 index 的再导出：这样本文件在"物理模块先落地"的提交里就能独立跑绿，
 // 应用层经由 index.js 的再导出路径由 `pnpm -r typecheck` 覆盖。
-import { stepGrenadePhysics, type GrenadeBody } from "../src/grenade-physics.js";
+import { stepGrenadePhysics, type GrenadeBody } from "../src/index.js";
 
 /** 一面 2m 厚、3m 高的墙：x ∈ [0, 2], z ∈ [-2, 2]。 */
 const WALL: Aabb = { minX: 0, maxX: 2, minY: 0, maxY: 3, minZ: -2, maxZ: 2 };

@@ -18,6 +18,9 @@ import { MELEE_COOLDOWN_MS, THROW_COOLDOWN_MS } from "@colyseus-fps/shared";
 import {
   KNIFE_SWING_FORWARD_MS,
   KNIFE_SWING_TOTAL_MS,
+  KNIFE_TWIRL_CYCLE_MS,
+  KNIFE_TWIRL_GAP_MS,
+  KNIFE_TWIRL_MS,
   THROW_RELEASE_RATIO,
   VIEWMODEL_BASE_POSITION,
   VIEWMODEL_BASE_ROTATION,
@@ -28,6 +31,7 @@ import {
   computeReloadChargeOffset,
   computeReloadMagazineOffset,
   computeViewmodelPose,
+  knifeTwirlAngle,
   smoothstep,
   switchPoseEase,
   type KnifeSwingPose,
@@ -198,15 +202,17 @@ describe("fire 后坐", () => {
 });
 
 describe("reload 关键帧", () => {
-  it("下压阶段枪口下垂 17°、枪身右倾 31.5°、下沉 10cm（p = 0.3）", () => {
+  it("下压阶段枪口下垂 24°、枪身右倾 46°、下沉 15cm（p = 0.3）", () => {
     const base = computeViewmodelPose(restState(), 0);
     const reloading = computeViewmodelPose(restState({ reloadProgress: 0.3 }), 0);
 
     const pitchDeg = (reloading.rotation.x - base.rotation.x) * RAD_TO_DEG;
     const rollDeg = (reloading.rotation.z - base.rotation.z) * RAD_TO_DEG;
-    assert.ok(pitchDeg < -16 && pitchDeg > -18, `枪口应下垂约 17°，实际 ${pitchDeg.toFixed(2)}°`);
-    assert.ok(rollDeg > 30 && rollDeg < 33, `枪身应右倾约 31.5°，实际 ${rollDeg.toFixed(2)}°`);
-    assert.ok(reloading.position.y < base.position.y - 0.09, "枪身应下沉约 10cm");
+    assert.ok(pitchDeg < -23 && pitchDeg > -25, `枪口应下垂约 24°，实际 ${pitchDeg.toFixed(2)}°`);
+    assert.ok(rollDeg > 45 && rollDeg < 47, `枪身应右倾约 46°，实际 ${rollDeg.toFixed(2)}°`);
+    assert.ok(reloading.position.y < base.position.y - 0.14, "枪身应下沉约 15cm");
+    // 侧转是"把弹匣井亮给玩家看"的那一项，没有它换弹动作会被枪身自己遮住
+    assert.ok(reloading.rotation.y < base.rotation.y - 0.2, "枪身应侧转约 17°");
   });
 
   it("进度回到 1.0 时姿态完全归零（不会停在换弹姿势）", () => {
@@ -408,5 +414,42 @@ describe("屏幕构图判据（16:9 / fov 80）", () => {
     const slope = (muzzle.x - root.x) / (muzzle.y - root.y);
     const atCenterY = muzzle.x + slope * (50 - muzzle.y);
     assert.ok(atCenterY > 48 && atCenterY < 52, `延长线应穿过准心，实际 ${atCenterY.toFixed(1)}%`);
+  });
+});
+
+describe("蝴蝶刀花式转刀", () => {
+  it("静置段角度必须恒为 0（刀不能自己飘）", () => {
+    for (const ms of [0, 1, KNIFE_TWIRL_GAP_MS * 0.5, KNIFE_TWIRL_GAP_MS]) {
+      assert.equal(knifeTwirlAngle(ms), 0, `twirlMs=${ms} 应静止`);
+    }
+  });
+
+  it("转刀段必须走满一整圈（2π），且单调不回头", () => {
+    let previous = -1;
+    for (let ms = KNIFE_TWIRL_GAP_MS; ms <= KNIFE_TWIRL_CYCLE_MS; ms += 5) {
+      const angle = knifeTwirlAngle(ms);
+      assert.ok(angle >= previous, `twirlMs=${ms} 角度回退了（${angle} < ${previous}）`);
+      previous = angle;
+    }
+    assert.ok(Math.abs(knifeTwirlAngle(KNIFE_TWIRL_CYCLE_MS) - Math.PI * 2) < 1e-9);
+  });
+
+  it("首尾角速度接近 0（smoothstep 软入软出，不能硬急停）", () => {
+    const early = knifeTwirlAngle(KNIFE_TWIRL_GAP_MS + KNIFE_TWIRL_MS * 0.02);
+    const late = knifeTwirlAngle(KNIFE_TWIRL_GAP_MS + KNIFE_TWIRL_MS * 0.98);
+    const mid = knifeTwirlAngle(KNIFE_TWIRL_GAP_MS + KNIFE_TWIRL_MS * 0.5);
+    assert.ok(early < 0.02, `起步应几乎没转，实际 ${early.toFixed(4)} rad`);
+    assert.ok(Math.PI * 2 - late < 0.02, `收尾应几乎到位，实际差 ${(Math.PI * 2 - late).toFixed(4)} rad`);
+    assert.ok(Math.abs(mid - Math.PI) < 1e-9, "中点应正好半圈");
+  });
+
+  it("非法输入按 0 处理（NaN / Infinity 不能污染 rotation）", () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -100]) {
+      assert.equal(knifeTwirlAngle(bad), 0);
+    }
+  });
+
+  it("转刀不能盖过挥刀（周期时长必须留出足够静置）", () => {
+    assert.ok(KNIFE_TWIRL_GAP_MS > KNIFE_TWIRL_MS * 3, "静置段应远长于转刀段，否则像直升机");
   });
 });

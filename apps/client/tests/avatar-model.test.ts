@@ -19,6 +19,7 @@ import {
 } from "@colyseus-fps/shared";
 
 import {
+  AVATAR_DECOR,
   AVATAR_PALETTE,
   AVATAR_PARTS,
   AvatarModel,
@@ -156,7 +157,7 @@ describe("队伍配色与材质共享", () => {
     assert.equal(AVATAR_PALETTE.T.skin, AVATAR_PALETTE.CT.skin);
   });
 
-  it("同队两次构建必须共用同一批材质实例（每队 4 个，不能每 avatar new 一套）", () => {
+  it("同队两次构建必须共用同一批材质实例（每队 8 个，不能每 avatar new 一套）", () => {
     const first = buildAvatarModel("T");
     const second = buildAvatarModel("T");
     const otherTeam = buildAvatarModel("CT");
@@ -167,8 +168,8 @@ describe("队伍配色与材质共享", () => {
       assert.equal(first.materials.gear, second.materials.gear);
       // 队伍之间必须不同实例
       assert.notEqual(first.materials.cloth, otherTeam.materials.cloth);
-      // 每队 4 个材质
-      assert.equal(Object.keys(materials).length, 4);
+      // 每队 8 个材质：布料 / 皮肤 / 装具 / 深色 / 牛仔 / 靴 / 识别色 / 刀身
+      assert.equal(Object.keys(materials).length, 8);
       // 部件真的用了共享材质
       const torso = first.parts.get("torso")!;
       const torsoMaterial = torso.material as THREE.MeshStandardMaterial;
@@ -277,5 +278,54 @@ describe("材质释放", () => {
     const after = avatarMaterials("T");
     assert.notEqual(after, before, "缓存应被清空并重建");
     disposeAvatarMaterials();
+  });
+});
+
+describe("装饰件（参考图细节）", () => {
+  it("装饰件必须全部实例化，且一律挂在骨骼组上", () => {
+    const model = buildAvatarModel("CT");
+    try {
+      const attached: THREE.Object3D[] = [];
+      model.root.traverse((object) => {
+        if (object.name.startsWith("decor-")) {
+          attached.push(object);
+        }
+      });
+      assert.equal(attached.length, AVATAR_DECOR.length, "装饰件数量必须与 AVATAR_DECOR 一致");
+      const torsoCount = AVATAR_DECOR.filter((decor) => decor.parent === "torso").length;
+      const thighCount = AVATAR_DECOR.length - torsoCount;
+      assert.equal(
+        attached.filter((object) => object.name === "decor-torso").length,
+        torsoCount,
+      );
+      assert.equal(
+        attached.filter((object) => object.name === "decor-thighR").length,
+        thighCount,
+      );
+    } finally {
+      model.dispose();
+    }
+  });
+
+  it("装饰件不得进入 parts 表（不参与判定，也不改总高）", () => {
+    const model = buildAvatarModel("CT");
+    try {
+      assert.equal(model.parts.size, 16);
+      for (const name of model.parts.keys()) {
+        assert.ok(!name.startsWith("decor-"), `${name} 不该是判定部件`);
+      }
+      // 总高仍然由判定体推导的结果决定
+      assert.ok(Math.abs(model.totalHeight - PLAYER_HEIGHT) < 1e-9);
+    } finally {
+      model.dispose();
+    }
+  });
+
+  it("战术背心 / 枪套这类体积件不能反过来撑宽判定宽度（必须比躯干窄）", () => {
+    for (const decor of AVATAR_DECOR) {
+      if (decor.parent === "torso") {
+        assert.ok(decor.size.x <= TORSO_WIDTH, `${JSON.stringify(decor.pos)} 的装饰件比躯干还宽`);
+      }
+    }
   });
 });

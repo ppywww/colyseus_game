@@ -465,6 +465,26 @@ kbd {
   backdrop-filter: blur(4px);
 }
 
+/* 左上角小地图：面板本身由 Minimap 画在 canvas 上，这里只负责定位与外观。
+   放在状态条下面（top 58px），不遮挡它。 */
+.hud-minimap {
+  position: absolute;
+  top: 58px;
+  left: 16px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(9, 14, 22, 0.5);
+  box-shadow:
+    0 10px 24px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(148, 163, 184, 0.18);
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+}
+
+.hud-minimap canvas {
+  display: block;
+}
+
 .hud-players {
   display: flex;
   flex-direction: column;

@@ -297,7 +297,26 @@ export class Game {
   private reserve = 0;
   private pistolAmmo = 0;
   private pistolReserve = 0;
-  private reloadEndAt = 0;
+
+  /**
+   * 换弹状态机 —— 全部用**本机** `performance.now()` 计时。
+   *
+   * 历史实现直接采用服务端 `Player.reloadEndAt` 当倒计时终点，有两个致命问题：
+   *   1. 它是服务端的 `Date.now()`，和本机时钟没有任何保证关系（云服务器 NTP 与
+   *      本地差几秒很常见）。差 +3s 时 `1 − (end−now)/duration` 全程为负 → 换弹动画
+   *      **一次都不播**，1.8 秒后弹药凭空跳满，看起来就是"子弹自己增加"。
+   *   2. 就算时钟同步，30Hz 补丁里只要有一帧是"服务端还没处理 RELOAD"的旧值 0，
+   *      就会把本地刚开的换弹状态覆盖掉（请求与回显之间隔着一个 RTT）。
+   * 现在服务端字段只当布尔用（>0 = 在换弹），时长、进度、补弹时刻全部本地记账。
+   */
+  private reloadStartedAtMs = 0;
+  private reloadDurationMs = 0;
+  private reloadWasEmpty = false;
+  private reloadStageFired = 0;
+  /** 已处理过的服务端换弹令牌（原始时间戳值），用于一次换弹只触发一次动画。 */
+  private handledServerReloadAt = 0;
+  /** 本地补弹后服务端补丁要晚一个 RTT 才追上；这段时间不接受"更小"的服务端弹匣值。 */
+  private ammoSyncLockUntil = 0;
   private frags = 0;
   private flashes = 0;
   private smokes = 0;
@@ -499,7 +518,7 @@ export class Game {
     if (Date.now() < this.switchEndAt) {
       return;
     }
-    if (this.reloadEndAt > Date.now()) {
+    if (this.isReloading(nowMs)) {
       return;
     }
 
@@ -626,31 +645,96 @@ export class Game {
     if (this.currentMag() >= profile.magSize || this.currentReserve() <= 0) {
       return;
     }
-    if (this.reloadEndAt > Date.now()) {
+    const now: number = performance.now();
+    if (this.isReloading(now)) {
       return;
     }
     // 空仓换弹（弹匣打空）比战术换弹多一次拉枪机：声音与动作都更重。
     // 服务端只认一个 `reloadEndAt`，所以时长保持一致，差别放在音效与视模型姿态上。
-    const wasEmpty: boolean = this.currentMag() === 0;
-    this.reloadEndAt = Date.now() + WEAPON_RELOAD_MS;
+    this.beginReload(now, this.currentMag() === 0);
     // 换弹重置两个游标（服务端 `handleReload` 同步做同样的事）：
     // 换完第一发必须回到首发精度，否则会接着上一串的扩散继续打。
     this.shotIndex = 0;
     this.spreadIndex = 0;
     this.connection.sendReload();
+  }
+
+  /** 是否在换弹中（本机时钟判定）。 */
+  private isReloading(nowMs: number = performance.now()): boolean {
+    return this.reloadStartedAtMs > 0 && nowMs - this.reloadStartedAtMs < this.reloadDurationMs;
+  }
+
+  /** 开始（或补上）一段换弹动画。服务端回包只用来触发，不参与计时。 */
+  private beginReload(nowMs: number, wasEmpty: boolean): void {
+    this.reloadStartedAtMs = nowMs;
+    this.reloadDurationMs = WEAPON_RELOAD_MS;
+    this.reloadWasEmpty = wasEmpty;
+    this.reloadStageFired = 0;
+    // 第一段：卸弹匣（金属碰撞）。后面两段由 updateReload 按进度补上。
     this.audio.reloadStart();
-    window.setTimeout(() => {
-      if (!this.disposed) {
-        this.audio.reloadEnd();
-      }
-    }, WEAPON_RELOAD_MS - 160);
-    if (wasEmpty) {
-      window.setTimeout(() => {
-        if (!this.disposed) {
-          this.audio.boltAction();
-        }
-      }, WEAPON_RELOAD_MS - 90);
+  }
+
+  /** 中断换弹（切枪 / 死亡）：不补弹，也不播收尾音。 */
+  private cancelReload(): void {
+    this.reloadStartedAtMs = 0;
+    this.reloadDurationMs = 0;
+    this.reloadWasEmpty = false;
+    this.reloadStageFired = 0;
+  }
+
+  /**
+   * 每帧推进换弹：返回 0→1 的进度，并在关键帧补音效、在末尾**本地补弹**。
+   *
+   * 本地补弹的意义是让"动画结束"和"子弹变多"落在同一帧。旧实现等服务的补丁，
+   * 于是动画早就该结束了、弹药却过一会儿突然跳一下——正是玩家报的"子弹自己增加"。
+   * 服务端仍然是权威：它算出的值和这里一模一样（同样先算 need 再取 min），
+   * 之后的补丁只会确认这个结果。
+   */
+  private updateReload(nowMs: number): number {
+    if (this.reloadStartedAtMs <= 0) {
+      return 0;
     }
+    const elapsed: number = nowMs - this.reloadStartedAtMs;
+    const progress: number = Math.min(1, Math.max(0, elapsed / this.reloadDurationMs));
+    // 弹匣拍入（0.55）与空仓拉枪机（0.88）两个声音锚点，与视模型的部件动画对齐
+    if (this.reloadStageFired < 1 && progress >= 0.55) {
+      this.reloadStageFired = 1;
+      this.audio.reloadEnd();
+    }
+    if (this.reloadStageFired < 2 && this.reloadWasEmpty && progress >= 0.88) {
+      this.reloadStageFired = 2;
+      this.audio.boltAction();
+    }
+    if (progress >= 1) {
+      this.completeReload(nowMs);
+      return 0;
+    }
+    return progress;
+  }
+
+  /** 换弹收尾：把弹匣补满、扣备弹。与服务端 `handleReload` 的结算式逐字一致。 */
+  private completeReload(nowMs: number): void {
+    const profile = fireProfileOf(this.weaponSlot);
+    this.cancelReload();
+    if (profile === null) {
+      return;
+    }
+    const mag: number = this.currentMag();
+    const reserve: number = this.currentReserve();
+    if (mag < 0 || reserve <= 0) {
+      return;
+    }
+    const take: number = Math.min(profile.magSize - mag, reserve);
+    if (take <= 0) {
+      return;
+    }
+    this.setCurrentMag(mag + take);
+    if (this.weaponSlot === WEAPON_SLOTS.PISTOL) {
+      this.pistolReserve = Math.max(0, reserve - take);
+    } else {
+      this.reserve = Math.max(0, reserve - take);
+    }
+    this.ammoSyncLockUntil = nowMs + 700;
   }
 
   /**
@@ -750,6 +834,9 @@ export class Game {
   private applySlotLocally(slot: WeaponSlot, durationMs: number): void {
     // 切枪必须松开"扳机"：否则按住左键滚轮切枪，新枪会在切枪动画结束的下一帧自动开火
     this.firing = false;
+    // 切枪中断换弹：服务端 `handleReload` 的定时结算会照常把上一把枪补满，
+    // 所以这里只中断"表现"与本地记账，不撤回请求。
+    this.cancelReload();
     this.weaponSlot = slot;
     this.viewModel.setWeaponSlot(slot);
     this.switchDurationMs = durationMs;
@@ -1093,6 +1180,7 @@ export class Game {
     this.latestPlayers = players;
     this.remotePlayers.sync(players, this.selfSessionId, performance.now());
     this.hud.setPlayers(players, this.selfSessionId);
+    this.hud.setRadarPlayers(players, this.selfSessionId);
 
     const self = players.find((player) => player.sessionId === this.selfSessionId);
     if (!self) {
@@ -1119,9 +1207,11 @@ export class Game {
       this.audio.stopHeartbeat();
     }
 
-    // 死亡即断扳机：否则落地那一刻仍然按着左键，重生后第一帧就会"自动"打出一发
+    // 死亡即断扳机：否则落地那一刻仍然按着左键，重生后第一帧就会"自动"打出一发。
+    // 同时中断换弹：尸体不该继续播放换弹动作，也不该在死亡瞬间把弹匣补满。
     if (!self.alive) {
       this.firing = false;
+      this.cancelReload();
     }
     this.selfAlive = self.alive;
     this.selfHp = self.hp;
@@ -1136,18 +1226,36 @@ export class Game {
       this.applySlotLocally(self.weaponSlot as WeaponSlot, 0);
     }
 
-    // 弹药/道具：本地已做乐观扣减，服务端状态更新更慢时会短暂"回跳"。
-    // 刚开火/投掷后的 300ms 内保留本地较小值，其余情况一律以服务端为准。
+    // 弹药/道具：本地已做乐观扣减与乐观补弹，服务端状态更新更慢时会短暂"回跳"。
+    // 刚开火后的 300ms 内保留本地较小值；本地补弹后的 700ms 内不接受更小的服务端弹匣值。
+    // 其余情况一律以服务端为准。
     const now = performance.now();
-    if (now - this.lastFireAt > 300 || self.ammo <= this.ammo) {
-      this.ammo = self.ammo;
+    if (now - this.lastFireAt > 300) {
+      const staleReloadAmmo: boolean = now < this.ammoSyncLockUntil;
+      if (!(staleReloadAmmo && self.ammo < this.ammo)) {
+        this.ammo = self.ammo;
+      }
+      if (!(staleReloadAmmo && self.pistolAmmo < this.pistolAmmo)) {
+        this.pistolAmmo = self.pistolAmmo;
+      }
     }
     this.reserve = self.reserve;
-    if (now - this.lastFireAt > 300 || self.pistolAmmo <= this.pistolAmmo) {
-      this.pistolAmmo = self.pistolAmmo;
-    }
     this.pistolReserve = self.pistolReserve;
-    this.reloadEndAt = self.reloadEndAt;
+    // 换弹：**只把服务端字段当布尔用**（>0 = 服务端也在换弹）。
+    // 它的绝对时间戳属于服务端时钟，直接和本机 `performance.now()` 相比没有意义。
+    // 用"时间戳值"本身做去重令牌：同一个值只处理一次，换弹结束时服务端把它归零。
+    // 这样既不会被陈旧补丁（值为 0）打断动画，也不会在自己刚补完弹、服务端定时器
+    // 还没到期的那几十毫秒里"再开一段换弹"。
+    if (self.reloadEndAt > 0) {
+      if (this.handledServerReloadAt !== self.reloadEndAt) {
+        this.handledServerReloadAt = self.reloadEndAt;
+        if (!this.isReloading(now) && now >= this.ammoSyncLockUntil) {
+          this.beginReload(now, this.currentMag() === 0);
+        }
+      }
+    } else if (this.handledServerReloadAt !== 0) {
+      this.handledServerReloadAt = 0;
+    }
     if (now - this.lastThrowAt > 300) {
       this.frags = self.frags;
       this.flashes = self.flashes;
@@ -1337,8 +1445,8 @@ export class Game {
     this.effects.update(nowMs);
 
     // 视模型摆动/换弹动作
-    const reloadProgress =
-      this.reloadEndAt > Date.now() ? 1 - (this.reloadEndAt - Date.now()) / WEAPON_RELOAD_MS : 0;
+    // 换弹进度必须本机算：`updateReload` 同时负责在关键帧补音效、在末尾补弹。
+    const reloadProgress = this.updateReload(nowMs);
     // 视模型：五态动画（idle / walk / fire / reload / throw）+ 切枪下压，全部由这里驱动
     this.viewModel.update(dtSeconds, {
       moving: movingNow,

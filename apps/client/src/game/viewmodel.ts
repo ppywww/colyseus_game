@@ -96,6 +96,15 @@ export const KNIFE_SWING_FORWARD_MS = 120;
 /** 单次挥砍总时长（毫秒）：由服务端 `MELEE_COOLDOWN_MS`（650ms）留出余量。 */
 export const KNIFE_SWING_TOTAL_MS = 260;
 
+/* ---------------- 蝴蝶刀花式转刀（待机表演） ---------------- */
+
+/** 一次完整 360° 转刀用时（毫秒）：太慢像坏掉，太快看不清刃口。 */
+export const KNIFE_TWIRL_MS = 620;
+/** 两次转刀之间的静置时长（毫秒）。 */
+export const KNIFE_TWIRL_GAP_MS = 3000;
+/** 一个完整转刀周期。 */
+export const KNIFE_TWIRL_CYCLE_MS = KNIFE_TWIRL_GAP_MS + KNIFE_TWIRL_MS;
+
 /**
  * 投掷出手的时机（占整个 700ms 投掷动作的比例）：`0.45 × 700 = 315ms`，
  * 正好落在投掷动作第二段（180–420ms 的"甩出/停顿"）里，看起来是球从手心飞出去。
@@ -233,6 +242,28 @@ export interface KnifeSwingPose {
 }
 
 /**
+ * 花式转刀的旋转角（弧度）。
+ *
+ * 静置段返回 0；进入转刀段后用 smoothstep 跑满 2π，首尾角速度都是 0，
+ * 所以"开始转"和"转完停下"都不会有突兀的急停。非法输入一律按 0 处理。
+ *
+ * @param twirlMs 周期内相位（0 … {@link KNIFE_TWIRL_CYCLE_MS}）
+ */
+export function knifeTwirlAngle(twirlMs: number): number {
+  if (!Number.isFinite(twirlMs)) {
+    return 0;
+  }
+  const t = Math.min(1, Math.max(0, (twirlMs - KNIFE_TWIRL_GAP_MS) / KNIFE_TWIRL_MS));
+  if (t <= 0) {
+    return 0;
+  }
+  if (t >= 1) {
+    return Math.PI * 2;
+  }
+  return t * t * (3 - 2 * t) * Math.PI * 2;
+}
+
+/**
  * 求某一时刻的挥刀姿态增量。
  *
  * 曲线设计：0–120ms 用 smoothstep 快速"左下横扫 + 抬腕"，
@@ -297,13 +328,16 @@ export function computeViewmodelPose(state: ViewmodelPoseState, tSeconds: number
   // ---- 落地冲击：一次性下沉后指数回弹 ----
   dy += state.landing;
 
-  // ---- reload：枪身下压 + 右倾，与相机 recoil 完全解耦（只改视模型） ----
+  // ---- reload：枪身下压 + 右倾 + 侧转（把弹匣井朝向玩家，才看得见"换弹匣"） ----
+  // 幅度按 CS2 的换弹幅度给：枪身整体转 24°、右倾 46°、下沉 15cm。
+  // 太小（旧值 17°/31°/10cm）在 1080p 下会被枪身自身遮住，玩家读不到"正在换弹"。
   const reloadEase = reloadPoseEase(state.reloadProgress);
   if (reloadEase > 0) {
-    rx += -0.3 * reloadEase;
-    rz += 0.55 * reloadEase;
-    dy += -0.1 * reloadEase;
-    dz += 0.06 * reloadEase;
+    rx += -0.42 * reloadEase;
+    ry += -0.3 * reloadEase;
+    rz += 0.8 * reloadEase;
+    dy += -0.15 * reloadEase;
+    dz += 0.08 * reloadEase;
     const progress = Math.min(1, state.reloadProgress);
     // 弹匣入位的那一下：0.55–0.70 之间补一个快速下沉 + 上抬，动作才有"节奏点"。
     // 没有它的话整个换弹是一条平缓的曲线，看起来像"枪自己慢慢沉下去"，不像人在操作。
@@ -428,6 +462,14 @@ interface ViewmodelMaterials {
   gloveHi: THREE.MeshStandardMaterial;
   sleeve: THREE.MeshStandardMaterial;
   gunmetal: THREE.MeshStandardMaterial;
+  /** 刀身四段渐变（多普勒：柄端深蓝 → 刀尖亮蓝）。 */
+  dopplerDeep: THREE.MeshStandardMaterial;
+  dopplerMid: THREE.MeshStandardMaterial;
+  dopplerHi: THREE.MeshStandardMaterial;
+  /** 刃口：几乎白的高光条，负责"刀很锋利"的读感。 */
+  dopplerEdge: THREE.MeshStandardMaterial;
+  /** 刀柄：石墨黑带一点冷蓝，和刀身的蓝拉开明度。 */
+  dopplerGrip: THREE.MeshStandardMaterial;
 }
 
 /** {@link ViewModel#update} 的入参：全部来自本地游戏状态，纯表现，不影响弹道。 */
@@ -455,6 +497,8 @@ export class ViewModel {
   private readonly gunGroup: THREE.Group;
   private readonly pistolGroup: THREE.Group;
   private readonly knifeGroup: THREE.Group;
+  /** 蝴蝶刀的刀身 + 双柄组件，绕轴销做 360° 花式转刀（待机表演）。 */
+  private readonly knifeSpin: THREE.Group;
   private readonly throwableGroup: THREE.Group;
   private readonly muzzleAnchor: THREE.Object3D;
   private readonly pistolMuzzle: THREE.Object3D;
@@ -478,6 +522,8 @@ export class ViewModel {
   private throwElapsedMs = 0;
   /** 挥刀已进行的毫秒数；≥ {@link KNIFE_SWING_TOTAL_MS} 表示本次挥砍结束。 */
   private knifeSwingMs = KNIFE_SWING_TOTAL_MS;
+  /** 花式转刀的周期内相位；只在"持刀且没在挥"时推进。 */
+  private knifeTwirlMs = KNIFE_TWIRL_GAP_MS;
   private previousGrounded = true;
   private previousVerticalSpeed = 0;
   /** 已经处理过的开火时间戳，避免 update 与 recoil 重复叠加。 */
@@ -496,10 +542,29 @@ export class ViewModel {
       worn: new THREE.MeshStandardMaterial({ color: 0x6b5418, metalness: 0.6, roughness: 0.55 }),
       wood: new THREE.MeshStandardMaterial({ color: 0x7a2e1e, metalness: 0, roughness: 0.72 }),
       mag: new THREE.MeshStandardMaterial({ color: 0x4e1c12, metalness: 0.1, roughness: 0.65 }),
-      glove: new THREE.MeshStandardMaterial({ color: 0x2c2a28, metalness: 0, roughness: 0.88 }),
-      gloveHi: new THREE.MeshStandardMaterial({ color: 0x43403b, metalness: 0.1, roughness: 0.75 }),
-      sleeve: new THREE.MeshStandardMaterial({ color: 0x7a6a4f, metalness: 0, roughness: 0.95 }),
+      glove: new THREE.MeshStandardMaterial({ color: 0x35322e, metalness: 0, roughness: 0.88 }),
+      gloveHi: new THREE.MeshStandardMaterial({ color: 0x4d4842, metalness: 0.1, roughness: 0.75 }),
+      // 藏青夹克（对齐参考图里 FBI 特警的上衣），旧值 0x7a6a4f 是卡其，
+      // 在小刀视图里会变成一截"木头"接在手腕上
+      sleeve: new THREE.MeshStandardMaterial({ color: 0x2f3a4d, metalness: 0, roughness: 0.95 }),
       gunmetal: new THREE.MeshStandardMaterial({ color: 0x3a3835, metalness: 0.85, roughness: 0.42 }),
+
+      // ---- 蝴蝶刀（蓝色多普勒）：低粗糙 + 高金属度，靠环境光出冷蓝反光 ----
+      dopplerDeep: new THREE.MeshStandardMaterial({
+        color: 0x16306b, metalness: 0.95, roughness: 0.24, emissive: 0x061027, emissiveIntensity: 0.5,
+      }),
+      dopplerMid: new THREE.MeshStandardMaterial({
+        color: 0x2f63c8, metalness: 0.95, roughness: 0.2, emissive: 0x0a1c46, emissiveIntensity: 0.6,
+      }),
+      dopplerHi: new THREE.MeshStandardMaterial({
+        color: 0x74a8ea, metalness: 0.92, roughness: 0.16, emissive: 0x123055, emissiveIntensity: 0.7,
+      }),
+      dopplerEdge: new THREE.MeshStandardMaterial({
+        color: 0xd6ecff, metalness: 0.98, roughness: 0.08, emissive: 0x3f7fc4, emissiveIntensity: 0.9,
+      }),
+      dopplerGrip: new THREE.MeshStandardMaterial({
+        color: 0x1c2230, metalness: 0.82, roughness: 0.44,
+      }),
     };
 
     this.holder = new THREE.Group();
@@ -598,8 +663,11 @@ export class ViewModel {
     // ---- 小刀（槽位 2）----
     this.knifeGroup = new THREE.Group();
     this.knifeGroup.name = "viewmodel-knife";
+    this.knifeSpin = new THREE.Group();
+    this.knifeSpin.name = "viewmodel-knife-spin";
+    this.knifeGroup.add(this.knifeSpin);
     this.holder.add(this.knifeGroup);
-    this.buildKnife(this.knifeGroup);
+    this.buildKnife(this.knifeSpin, this.knifeGroup);
 
     // ---- 投掷物（槽位 3/4/5）：持握手 + 道具球 ----
     this.throwableGroup = new THREE.Group();
@@ -649,20 +717,99 @@ export class ViewModel {
     );
   }
 
-  /** 小刀视模型（槽位 2）：刀身 + 刀尖 + 护手 + 刀柄 + 持刀手。 */
-  private buildKnife(group: THREE.Group): void {
-    // 刀身（−Z 为刀尖方向）：主段 + 收窄的刀尖
-    group.add(this.box(0.009, 0.038, 0.2, this.materials.goldHi, 0, 0.012, -0.235));
-    group.add(this.box(0.007, 0.022, 0.06, this.materials.goldHi, 0, 0.008, -0.352));
-    // 护手
-    group.add(this.box(0.055, 0.014, 0.02, this.materials.gunmetal, 0, 0.01, -0.132));
-    // 刀柄
-    group.add(this.cylinder(0.015, 0.1, this.materials.mag, 0, 0.004, -0.075, Math.PI / 2));
-    // 持刀手 + 右前臂
-    group.add(this.box(0.06, 0.07, 0.08, this.materials.glove, 0.004, 0, -0.07, 0.2, 0, 0.1));
-    group.add(this.box(0.054, 0.044, 0.028, this.materials.gloveHi, 0, -0.012, -0.108, 0.2, 0, 0.06));
-    group.add(
-      this.limb(new THREE.Vector3(0.02, -0.03, 0), new THREE.Vector3(0.12, -0.24, 0.28), 0.042, this.materials.sleeve),
+  /**
+   * 小刀视模型（槽位 2）：参考图里的**蓝色多普勒蝴蝶刀**（展开态）。
+   *
+   * 结构分两层，是为了一眼能看出"这是蝴蝶刀"：
+   *   - `spin`（刀身 + 双柄 + 轴销）挂在轴销上，可绕轴销整圈自转 → 待机花式转刀；
+   *   - 持握手与前臂挂在 `hand`（**不跟着转**），否则整只手跟着刀一起转，像断手风车。
+   *
+   * 刀身用四段收窄 + 一条亮刃口：多普勒的"渐变蓝"靠材质分段实现，
+   * 比给盒子打顶点色便宜，也比贴图稳（无外部资源依赖）。
+   */
+  private buildKnife(spin: THREE.Group, hand: THREE.Group): void {
+    // ---- 持刀姿态 ----
+    // 不用欧拉角，直接构造基向量：刀轴斜指左上、刀面法线正对镜头。
+    // 试欧拉角时踩过两个坑：① 绕 Y 转多了，手柄正对镜头被压成一根黑棒；
+    // ② 绕刀轴滚过头，只看得见一条白刃口，蓝色刀面整个侧过去。
+    const bladeAxis = new THREE.Vector3(-0.46, 0.82, -0.24).normalize();
+    const zAxis = bladeAxis.clone().negate();                       // 局部 +Z = 刀根方向
+    const facing = new THREE.Vector3(0, 0, 1);
+    const xAxis = facing.clone().addScaledVector(bladeAxis, -facing.dot(bladeAxis)).normalize();
+    const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+    this.knifeGroup.position.set(-0.026, 0.126, 0.03);
+    this.knifeGroup.quaternion.setFromRotationMatrix(
+      new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis),
+    );
+    // 再滚 10°：完全正对会显得"贴图一样平"，露出一点厚度才像实物
+    this.knifeGroup.rotateZ(-0.18);
+
+    // ---- 刀身：挤出成型的锥形刃（不是叠方块）----
+    // 用 `ExtrudeGeometry` 而不是几个 `BoxGeometry`：叠方块在斜视角下会露出台阶，
+    // 一眼就是"积木刀"。这里给一个真实的水滴形轮廓：刀背直、刃口上收、尖端收成一点。
+    // 轮廓画在 XY 平面（+X = 刀尖方向），挤出后绕 Y 转 90° 让 +X 对齐 −Z。
+    const bladeShape = new THREE.Shape();
+    bladeShape.moveTo(0, -0.025);
+    bladeShape.lineTo(0.05, -0.027);
+    bladeShape.lineTo(0.2, -0.019);
+    bladeShape.lineTo(0.26, 0);          // 刀尖
+    bladeShape.lineTo(0.212, 0.016);
+    bladeShape.lineTo(0.05, 0.024);
+    bladeShape.lineTo(0, 0.026);
+    bladeShape.closePath();
+    const blade = new THREE.Mesh(
+      new THREE.ExtrudeGeometry(bladeShape, {
+        depth: 0.007,
+        bevelEnabled: true,
+        bevelThickness: 0.0016,
+        bevelSize: 0.0016,
+        bevelSegments: 1,
+        curveSegments: 1,
+      }),
+      // 双材质：`ExtrudeGeometry` 会自动分组——group 0 是前后大面（多普勒蓝），
+      // group 1 是侧壁含倒角（刃口亮白）。这样"刃口高光"是几何本身，不需要再贴一条假亮条。
+      [this.materials.dopplerMid, this.materials.dopplerEdge],
+    );
+    blade.rotation.y = Math.PI / 2;
+    blade.position.x = -0.0035;
+    spin.add(blade);
+
+    // 刀根压条（多普勒的深色根段：让"渐变蓝"有个起点，不然整片一样亮）
+    spin.add(this.box(0.0095, 0.048, 0.04, this.materials.dopplerDeep, 0, 0.0, -0.018));
+
+    // ---- 双柄：绕轴销上下张开成 V 形（参考图的展开态）----
+    // 必须用 pivot 组：直接给盒子加 rotation.x 会绕盒子自己的中心转，
+    // 柄会在轴销处裂开一道缝。pivot 放在轴销上，盒子挂在 +Z 一侧，才是真的"开合"。
+    const addHandle = (side: -1 | 1, withLatch: boolean): void => {
+      const pivot = new THREE.Group();
+      pivot.rotation.x = side * 0.17;
+      pivot.add(this.box(0.0085, 0.036, 0.128, this.materials.dopplerGrip, side * 0.0098, 0, 0.07));
+      // 柄内衬：露出一线深蓝，两根柄才不会糊成一根
+      pivot.add(this.box(0.0075, 0.022, 0.106, this.materials.dopplerDeep, side * 0.0098, 0, 0.066));
+      if (withLatch) {
+        pivot.add(this.box(0.028, 0.011, 0.018, this.materials.gunmetal, side * 0.004, 0, 0.135));
+      }
+      spin.add(pivot);
+    };
+    addHandle(-1, false);
+    addHandle(1, true);
+    // 轴销（横穿两根柄，圆柱轴向要转到 X 轴）
+    const pin = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0095, 0.0095, 0.036, 12),
+      this.materials.gunmetal,
+    );
+    pin.rotation.z = Math.PI / 2;
+    spin.add(pin);
+
+    // ---- 持握手 + 右前臂（挂在 knifeGroup 上，不参与转刀）----
+    // 手比枪模的手小一号：刀的握把只有 3cm 宽，用枪的手会把刀身整段遮掉。
+    // 位置抓在柄的中后段（z≈0.115），把手柄前段和轴销让出来——那块是"这是蝴蝶刀"的关键信息。
+    hand.add(this.box(0.048, 0.058, 0.072, this.materials.glove, 0.004, 0.002, 0.1, 0.14, 0, 0.1));
+    hand.add(this.box(0.044, 0.026, 0.064, this.materials.gloveHi, 0.002, -0.026, 0.096, 0.14, 0, 0.1));
+    // 食指压在柄侧（朝镜头一侧，打破"方块手"）
+    hand.add(this.box(0.02, 0.028, 0.05, this.materials.gloveHi, 0.028, 0.022, 0.074, 0.1, 0.2, 0.35));
+    hand.add(
+      this.limb(new THREE.Vector3(0.014, -0.018, 0.16), new THREE.Vector3(0.115, -0.25, 0.4), 0.04, this.materials.sleeve),
     );
   }
 
@@ -707,6 +854,16 @@ export class ViewModel {
   /** 当前显示的武器槽位。 */
   public get weaponSlot(): number {
     return this.currentSlot;
+  }
+
+  /**
+   * 视模型根节点（**只读诊断用**：离线出图工具 `scripts/preview-viewmodel.mts` 靠它遍历几何）。
+   *
+   * 运行时不要用它改姿态 —— 所有姿态都必须经 {@link ViewModel#update} 求解，
+   * 否则 idle / walk / 后坐会互相打架。
+   */
+  public get visualRoot(): THREE.Object3D {
+    return this.holder;
   }
 
   /**
@@ -799,6 +956,17 @@ export class ViewModel {
 
     // ---- 挥刀计时（内部推进，调用方只需在按键时调 swing()） ----
     this.knifeSwingMs = Math.min(KNIFE_SWING_TOTAL_MS, this.knifeSwingMs + dt * 1000);
+
+    // ---- 蝴蝶刀待机花式转刀：只在「持刀 + 没在挥」时推进 ----
+    // 挥刀/切枪期间冻结相位（不归零）：刀组此时正在快速位移，冻结看不出来；
+    // 归零反而会让转了一半的刀瞬间弹回原位，出现"跳帧"。
+    if (this.currentSlot === WEAPON_SLOTS.KNIFE && this.knifeSwingMs >= KNIFE_SWING_TOTAL_MS) {
+      this.knifeTwirlMs = (this.knifeTwirlMs + dt * 1000) % KNIFE_TWIRL_CYCLE_MS;
+    }
+    // 绕**刀轴**（局部 Z）转，不是绕轴销转：
+    // 绕轴销转 360° 会让刀身扫出一个 26cm 半径的圆，其中半圈刀会整个甩出画面下沿，
+    // 看起来像"刀凭空消失 300ms"。绕刀轴转则刀身朝向不变，只是刃面在闪——既安全又有表演感。
+    this.knifeSpin.rotation.z = knifeTwirlAngle(this.knifeTwirlMs);
 
     // ---- 投掷命中"离手"帧：t ≈ 45% 时道具球消失，之后随切枪/复位回到手上 ----
     // 这一条只在持投掷物时生效；枪/刀组整体不可见，球的真假无所谓。

@@ -133,14 +133,46 @@ export const FALL_DURATION_MS = 600;
  * 配色与材质（按队伍共享）
  * ------------------------------------------------------------------ */
 
-export type AvatarMaterialKind = "cloth" | "skin" | "gear" | "dark";
+export type AvatarMaterialKind =
+  | "cloth"
+  | "skin"
+  | "gear"
+  | "dark"
+  /** 牛仔裤（比夹克深一号的蓝灰，和上衣拉开层次）。 */
+  | "denim"
+  /** 战术靴（沙色/深棕，脚部一眼能看出不是"黑棍"）。 */
+  | "boot"
+  /** 高亮识别色（胸前的 FBI 贴条）。 */
+  | "accent"
+  /** 刀身（蓝色多普勒，两队共用同一抹冷蓝）。 */
+  | "blade";
 
 export type AvatarMaterials = Record<AvatarMaterialKind, THREE.MeshStandardMaterial>;
 
 /** 两队可辨识优先：禁止用 sessionId 哈希取色（队友与敌人会撞色）。 */
 export const AVATAR_PALETTE: Record<TeamId, Record<AvatarMaterialKind, number>> = {
-  T: { cloth: 0xb4793a, gear: 0x6b4f2a, skin: 0xd9a97f, dark: 0x1b1b1f },
-  CT: { cloth: 0x3f6fa8, gear: 0x27384f, skin: 0xd9a97f, dark: 0x1b1b1f },
+  // T：沙漠民兵（卡其 / 深棕 / 旧皮革）
+  T: {
+    cloth: 0xa06b3c,
+    gear: 0x4a3a26,
+    skin: 0xd9a97f,
+    dark: 0x201a14,
+    denim: 0x4a3f33,
+    boot: 0x3b3027,
+    accent: 0xc0392b,
+    blade: 0x3f74c8,
+  },
+  // CT：参考图里的 FBI 特警——藏青夹克 + 黑色战术背心 + 牛仔裤 + 沙色战术靴
+  CT: {
+    cloth: 0x3c5584,
+    gear: 0x232935,
+    skin: 0xd9a97f,
+    dark: 0x14171e,
+    denim: 0x44546f,
+    boot: 0x8a7351,
+    accent: 0xd8b53f,
+    blade: 0x3f74c8,
+  },
 };
 
 const teamMaterialCache = new Map<TeamId, AvatarMaterials>();
@@ -155,6 +187,17 @@ function createMaterials(team: TeamId): AvatarMaterials {
     skin: make(palette.skin),
     gear: make(palette.gear),
     dark: make(palette.dark),
+    denim: make(palette.denim),
+    boot: make(palette.boot),
+    accent: make(palette.accent),
+    // 刀身单独给金属参数：低粗糙 + 高金属度才有"刀"的反光，不能混进布料的 make()
+    blade: new THREE.MeshStandardMaterial({
+      color: palette.blade,
+      roughness: 0.18,
+      metalness: 0.92,
+      emissive: 0x0d2a5c,
+      emissiveIntensity: 0.35,
+    }),
   };
 }
 
@@ -303,7 +346,7 @@ export const AVATAR_PARTS: readonly AvatarPartSpec[] = [
     geometry: "box",
     size: { x: THIGH_WIDTH, y: THIGH_HEIGHT, z: THIGH_WIDTH },
     pos: { x: -LEG_X, y: HIP_Y - THIGH_HEIGHT / 2, z: 0 },
-    material: "cloth",
+    material: "denim",
   },
   {
     name: "thighR",
@@ -311,7 +354,7 @@ export const AVATAR_PARTS: readonly AvatarPartSpec[] = [
     geometry: "box",
     size: { x: THIGH_WIDTH, y: THIGH_HEIGHT, z: THIGH_WIDTH },
     pos: { x: LEG_X, y: HIP_Y - THIGH_HEIGHT / 2, z: 0 },
-    material: "cloth",
+    material: "denim",
   },
   {
     name: "shinL",
@@ -319,7 +362,7 @@ export const AVATAR_PARTS: readonly AvatarPartSpec[] = [
     geometry: "box",
     size: { x: SHIN_WIDTH, y: SHIN_HEIGHT, z: SHIN_WIDTH },
     pos: { x: -LEG_X, y: KNEE_Y - SHIN_HEIGHT / 2, z: 0 },
-    material: "cloth",
+    material: "denim",
   },
   {
     name: "shinR",
@@ -327,7 +370,7 @@ export const AVATAR_PARTS: readonly AvatarPartSpec[] = [
     geometry: "box",
     size: { x: SHIN_WIDTH, y: SHIN_HEIGHT, z: SHIN_WIDTH },
     pos: { x: LEG_X, y: KNEE_Y - SHIN_HEIGHT / 2, z: 0 },
-    material: "cloth",
+    material: "denim",
   },
   {
     name: "footL",
@@ -335,7 +378,7 @@ export const AVATAR_PARTS: readonly AvatarPartSpec[] = [
     geometry: "box",
     size: { x: FOOT_WIDTH, y: FOOT_HEIGHT, z: FOOT_DEPTH },
     pos: { x: -LEG_X, y: FOOT_HEIGHT / 2, z: FOOT_Z },
-    material: "gear",
+    material: "boot",
   },
   {
     name: "footR",
@@ -343,8 +386,61 @@ export const AVATAR_PARTS: readonly AvatarPartSpec[] = [
     geometry: "box",
     size: { x: FOOT_WIDTH, y: FOOT_HEIGHT, z: FOOT_DEPTH },
     pos: { x: LEG_X, y: FOOT_HEIGHT / 2, z: FOOT_Z },
-    material: "gear",
+    material: "boot",
   },
+];
+
+/* ------------------------------------------------------------------ *
+ * 纯装饰件（参考图细节：棒球帽檐、耳机、战术背心与弹匣袋、FBI 贴条、腿挂枪套）
+ *
+ * **不进入 `parts` 表**：这些件不参与任何判定，也不该被「16 个判定部件」的
+ * 验收用例卡住。它们挂在既有的骨骼组上（躯干枢轴 / 右髋），跟随行走、下蹲、倒地。
+ * ------------------------------------------------------------------ */
+
+export type AvatarDecorParent = "torso" | "thighR" | "thighL";
+
+export interface AvatarDecorSpec extends MeshSpecLike {
+  /** 挂点：躯干的 y 用世界高度，大腿的 y 用相对髋枢轴的局部坐标（向下为负）。 */
+  parent: AvatarDecorParent;
+}
+
+export const AVATAR_DECOR: readonly AvatarDecorSpec[] = [
+  // ---- 头部：棒球帽檐 + 耳机两侧耳罩 + 麦克风 ----
+  { parent: "torso", geometry: "box", size: { x: 0.2, y: 0.016, z: 0.1 },
+    pos: { x: 0, y: PLAYER_HEIGHT - 0.052, z: -0.105 }, material: "gear" },
+  // 耳罩必须贴在**视觉头半径**（HEAD_RADIUS）外侧，不能用判定半径 0.13 来摆——
+  // 判定体比模型宽 4.5cm/侧，照着判定摆会让耳机悬空飞在耳朵外 6cm。
+  { parent: "torso", geometry: "box", size: { x: 0.028, y: 0.062, z: 0.056 },
+    pos: { x: -(HEAD_RADIUS + 0.012), y: HEAD_CENTER_Y, z: 0.004 }, material: "gear" },
+  { parent: "torso", geometry: "box", size: { x: 0.028, y: 0.062, z: 0.056 },
+    pos: { x: HEAD_RADIUS + 0.012, y: HEAD_CENTER_Y, z: 0.004 }, material: "gear" },
+  // 麦克风：从右耳罩往前下伸，起点同样贴头面
+  { parent: "torso", geometry: "box", size: { x: 0.011, y: 0.011, z: 0.085 },
+    pos: { x: HEAD_RADIUS - 0.004, y: HEAD_CENTER_Y - 0.052, z: -0.05 }, rotY: -0.5, material: "dark" },
+
+  // ---- 躯干：前后战术背心 + 三个弹匣袋 + 黄色 FBI 贴条 + 肩垫 ----
+  { parent: "torso", geometry: "box", size: { x: TORSO_WIDTH - 0.02, y: TORSO_HEIGHT * 0.92, z: 0.05 },
+    pos: { x: 0, y: TORSO_CENTER_Y + 0.01, z: -TORSO_DEPTH / 2 - 0.012 }, material: "gear" },
+  { parent: "torso", geometry: "box", size: { x: TORSO_WIDTH - 0.02, y: TORSO_HEIGHT * 0.78, z: 0.045 },
+    pos: { x: 0, y: TORSO_CENTER_Y - 0.02, z: TORSO_DEPTH / 2 + 0.012 }, material: "gear" },
+  { parent: "torso", geometry: "box", size: { x: 0.075, y: 0.085, z: 0.026 },
+    pos: { x: -0.088, y: TORSO_CENTER_Y - 0.09, z: -TORSO_DEPTH / 2 - 0.045 }, material: "gear" },
+  { parent: "torso", geometry: "box", size: { x: 0.075, y: 0.085, z: 0.026 },
+    pos: { x: 0, y: TORSO_CENTER_Y - 0.09, z: -TORSO_DEPTH / 2 - 0.045 }, material: "gear" },
+  { parent: "torso", geometry: "box", size: { x: 0.075, y: 0.085, z: 0.026 },
+    pos: { x: 0.088, y: TORSO_CENTER_Y - 0.09, z: -TORSO_DEPTH / 2 - 0.045 }, material: "gear" },
+  { parent: "torso", geometry: "box", size: { x: 0.092, y: 0.022, z: 0.006 },
+    pos: { x: 0.062, y: TORSO_CENTER_Y + 0.105, z: -TORSO_DEPTH / 2 - 0.05 }, material: "accent" },
+  { parent: "torso", geometry: "box", size: { x: 0.08, y: 0.06, z: 0.15 },
+    pos: { x: -(ARM_X - 0.005), y: SHOULDER_Y - 0.028, z: 0 }, material: "gear" },
+  { parent: "torso", geometry: "box", size: { x: 0.08, y: 0.06, z: 0.15 },
+    pos: { x: ARM_X - 0.005, y: SHOULDER_Y - 0.028, z: 0 }, material: "gear" },
+
+  // ---- 右腿：腿挂枪套 + 绑带（参考图里最显眼的那块装备） ----
+  { parent: "thighR", geometry: "box", size: { x: 0.088, y: 0.15, z: 0.075 },
+    pos: { x: 0.025, y: -THIGH_HEIGHT * 0.52, z: -0.045 }, material: "gear" },
+  { parent: "thighR", geometry: "box", size: { x: 0.1, y: 0.022, z: 0.085 },
+    pos: { x: 0.025, y: -THIGH_HEIGHT * 0.3, z: -0.04 }, material: "dark" },
 ];
 
 /* ------------------------------------------------------------------ *
@@ -373,10 +469,24 @@ const PISTOL_MESHES: readonly WeaponMeshSpec[] = [
   { geometry: "box", size: { x: 0.035, y: 0.11, z: 0.05 }, pos: { x: 0, y: -0.07, z: 0.06 }, rotX: 0.3, material: "dark" },
 ];
 
+/**
+ * 蝴蝶刀（第三人称）：展开态——刀身朝 −Z 逐段收窄，双柄折在刀根后方并排成握把。
+ *
+ * 第三人称距离远，只要轮廓对（细长蓝刀 + 明显两根柄 + 轴销）就够，不做刀身倒角。
+ * 蓝色的色相来自 `blade` 材质，刀柄用 `dark`（石墨黑），一眼能和步枪/手枪区分开。
+ */
 const KNIFE_MESHES: readonly WeaponMeshSpec[] = [
-  { geometry: "box", size: { x: 0.012, y: 0.045, z: 0.2 }, pos: { x: 0, y: 0, z: -0.12 }, material: "skin" },
-  { geometry: "box", size: { x: 0.03, y: 0.05, z: 0.02 }, pos: { x: 0, y: 0, z: -0.01 }, material: "gear" },
-  { geometry: "cylinder", size: { x: 0.028, y: 0.09, z: 0.028 }, pos: { x: 0, y: 0, z: 0.05 }, rotX: Math.PI / 2, material: "dark" },
+  // 刀身：三段收窄 + 刀尖，读起来有"渐薄"的锥度
+  { geometry: "box", size: { x: 0.013, y: 0.05, z: 0.1 }, pos: { x: 0, y: 0.004, z: -0.07 }, material: "blade" },
+  { geometry: "box", size: { x: 0.011, y: 0.042, z: 0.08 }, pos: { x: 0, y: 0.002, z: -0.155 }, material: "blade" },
+  { geometry: "box", size: { x: 0.008, y: 0.026, z: 0.05 }, pos: { x: 0, y: 0, z: -0.215 }, material: "blade" },
+  // 轴销（两根柄的转轴）
+  { geometry: "box", size: { x: 0.05, y: 0.018, z: 0.02 }, pos: { x: 0, y: 0.002, z: -0.014 }, material: "gear" },
+  // 双柄：并排两根，折在刀根后方当握把
+  { geometry: "box", size: { x: 0.011, y: 0.044, z: 0.13 }, pos: { x: -0.014, y: 0.002, z: 0.065 }, material: "dark" },
+  { geometry: "box", size: { x: 0.011, y: 0.044, z: 0.13 }, pos: { x: 0.014, y: 0.002, z: 0.065 }, material: "dark" },
+  // 柄尾保险扣
+  { geometry: "box", size: { x: 0.038, y: 0.014, z: 0.022 }, pos: { x: 0, y: 0.002, z: 0.128 }, material: "gear" },
 ];
 
 function throwableMeshes(color: number): readonly WeaponMeshSpec[] {
@@ -406,6 +516,8 @@ interface MeshSpecLike {
   size: { x: number; y: number; z: number };
   pos: { x: number; y: number; z: number };
   rotX?: number;
+  rotY?: number;
+  rotZ?: number;
   material: AvatarMaterialKind | "throwable";
   color?: number;
 }
@@ -431,6 +543,12 @@ function createMesh(spec: MeshSpecLike, materials: AvatarMaterials): THREE.Mesh 
   mesh.position.set(spec.pos.x, spec.pos.y, spec.pos.z);
   if (typeof spec.rotX === "number") {
     mesh.rotation.x = spec.rotX;
+  }
+  if (typeof spec.rotY === "number") {
+    mesh.rotation.y = spec.rotY;
+  }
+  if (typeof spec.rotZ === "number") {
+    mesh.rotation.z = spec.rotZ;
   }
   mesh.castShadow = true;
   return mesh;
@@ -583,6 +701,25 @@ export class AvatarModel {
     attachLeg(1, hipR, kneeR, "thighR", "shinR", "footR");
 
     this.parts = parts;
+
+    // ---- 装饰件：只挂骨骼、不进 parts 表（不参与判定，也不改总高）----
+    // 躯干件按世界高度写在 AVATAR_DECOR 里，挂到 torsoPivot 要减掉腰线；
+    // 大腿件本身就是相对髋枢轴的局部坐标（向下为负），直接挂。
+    for (const decor of AVATAR_DECOR) {
+      const mesh = createMesh(decor, this.materials);
+      mesh.name = `decor-${decor.parent}`;
+      mesh.castShadow = false;
+      if (decor.parent === "thighR") {
+        mesh.position.set(decor.pos.x, decor.pos.y, decor.pos.z);
+        hipR.add(mesh);
+      } else if (decor.parent === "thighL") {
+        mesh.position.set(decor.pos.x, decor.pos.y, decor.pos.z);
+        hipL.add(mesh);
+      } else {
+        mesh.position.set(decor.pos.x, decor.pos.y - WAIST_Y, decor.pos.z);
+        torsoPivot.add(mesh);
+      }
+    }
 
     // ---- 武器挂点：右前臂子节点 ----
     // 规格要求 `rotation.y = π`；武器模型按「枪口朝 −Z」建模（与规格 2.4 的 z 偏移一致），

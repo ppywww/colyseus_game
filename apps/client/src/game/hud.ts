@@ -6,6 +6,8 @@
  * 全部用 DOM 实现，避免额外渲染库；每帧只更新变化的文本/样式。
  */
 
+import { Minimap } from "./minimap.js";
+import type { PlayerState } from "../net/types.js";
 import {
   CROSSHAIR_DEFAULT,
   SLOT_KEY,
@@ -67,6 +69,11 @@ export class Hud {
   private readonly killBanner: HTMLElement;
   /** 爆头击杀的「NICE!」奖励横幅（与普通击杀横幅分层，可以同时出现）。 */
   private readonly niceBanner: HTMLElement;
+  /** 左上角雷达的容器（面板本身由 {@link Minimap} 负责绘制）。 */
+  private readonly minimap: Minimap;
+  /** 雷达需要完整玩家状态（位置/朝向/队伍），与击杀面板用的 `HudPlayerRow` 是两套。 */
+  private radarPlayers: readonly PlayerState[] = [];
+  private radarSelfId = "";
   private readonly lockOverlay: HTMLElement;
   private readonly lockSettings: HTMLElement;
   private readonly positionLine: HTMLElement;
@@ -130,6 +137,11 @@ export class Hud {
     this.killFeed.className = "hud-killfeed";
 
     topBar.append(this.statusLine, this.playerList, this.killFeed);
+
+    // 左上角小地图：容器只负责定位，画布由 Minimap 自己创建
+    const minimapContainer = document.createElement("div");
+    minimapContainer.className = "hud-minimap";
+    this.minimap = new Minimap(minimapContainer);
 
     this.killBanner = document.createElement("div");
     this.killBanner.id = "kill-banner";
@@ -221,6 +233,7 @@ export class Hud {
       this.niceBanner,
       this.killBanner,
       topBar,
+      minimapContainer,
       hpWrap,
       weaponBar,
       ammoPanel,
@@ -291,6 +304,17 @@ export class Hud {
     this.crosshair.classList.toggle("outline", settings.outline);
     // 间距/动态开关变化后要强制重算一次 --spread，否则要等下一次扩散值变化才生效
     this.lastSpread = -1;
+  }
+
+  /**
+   * 把完整玩家状态交给雷达（位置、朝向、队伍、存活）。
+   *
+   * 与 {@link setPlayers} 分开：击杀面板只需要行数据，雷达需要每帧的连续位置，
+   * 混成一个接口会让两边的字段需求互相绑架。
+   */
+  public setRadarPlayers(players: readonly PlayerState[], selfId: string): void {
+    this.radarPlayers = players;
+    this.radarSelfId = selfId;
   }
 
   public setPlayers(players: readonly HudPlayerRow[], selfId: string): void {
@@ -443,6 +467,7 @@ export class Hud {
   }
 
   public update(snapshot: HudSnapshot): void {
+    this.minimap.update(this.radarPlayers, this.radarSelfId, performance.now());
     const { x, y, z } = snapshot.position;
     this.positionLine.textContent = `位置 (${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)})`;
     this.statusLine.textContent = `房间在线 ${snapshot.playerCount} 人 · 远端渲染 ${snapshot.remoteCount} 人`;

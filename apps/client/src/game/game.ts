@@ -1207,10 +1207,12 @@ export class Game {
     // 蹲下是"按住"不是"切换"（与 CS 一致）：松开立刻起身。死亡时不蹲。
     const crouchHeld: boolean =
       locked && this.selfAlive && (this.input.isDown("ControlLeft") || this.input.isDown("KeyC"));
-    // 指数缓动而不是线性插值：帧率波动时收敛速度一致，且不会有"到点硬停"的顿挫
+    // 指数缓动而不是线性插值：帧率波动时收敛速度一致，且不会有"到点硬停"的顿挫。
+    // τ 取 CROUCH_TRANSITION_MS/3：约 3τ（≈130ms）到达 95%，30fps 与 120fps 观感一致
+    //（用"每帧乘固定系数"会在 30fps 下变成瞬移）。
     const crouchTarget: number = crouchHeld ? 1 : 0;
-    this.crouchAmount +=
-      (crouchTarget - this.crouchAmount) * Math.min(1, (dtSeconds * 1000) / CROUCH_TRANSITION_MS * 6);
+    const crouchTau: number = CROUCH_TRANSITION_MS / 1000 / 3;
+    this.crouchAmount += (crouchTarget - this.crouchAmount) * (1 - Math.exp(-dtSeconds / crouchTau));
     if (Math.abs(crouchTarget - this.crouchAmount) < 0.002) {
       this.crouchAmount = crouchTarget;
     }

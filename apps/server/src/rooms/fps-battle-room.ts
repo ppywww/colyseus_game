@@ -2,7 +2,7 @@ import { Room, type Client } from "@colyseus/core";
 import type { Logger } from "pino";
 
 import {
-  EYE_HEIGHT,
+  eyeHeightOf,
   GAME_TICK_INTERVAL_MS,
   MAX_DISPLAY_NAME_LENGTH,
   MAX_PLAYERS_PER_ROOM,
@@ -16,7 +16,7 @@ import {
   PROTOCOL_VERSION,
   THROWABLES,
   THROW_COOLDOWN_MS,
-  THROW_ORIGIN_FORWARD,
+  throwOriginOf,
   THROW_SPEED,
   THROWABLE_TYPES,
   WEAPON_MAG_SIZE,
@@ -620,11 +620,9 @@ export class FPSBattleRoom extends Room<BattleState> {
     player.weaponSlot = slotOfThrowable(type);
     player.switchEndAt = 0;
 
-    const origin = {
-      x: player.x + dir.x * THROW_ORIGIN_FORWARD,
-      y: player.y + EYE_HEIGHT - 0.15 + dir.y * THROW_ORIGIN_FORWARD,
-      z: player.z + dir.z * THROW_ORIGIN_FORWARD,
-    };
+    // 出手点走共享函数：客户端画的那条抛物线预览用的是同一个公式，
+    // 且蹲下投掷时眼睛高度真的会下沉（旧版这里硬写 EYE_HEIGHT，蹲投时雷从头顶上方飞出去）。
+    const origin = throwOriginOf(player.x, player.y, player.z, dir, eyeHeightOf(player.crouch === true));
     const id = this.nextGrenadeId;
     this.nextGrenadeId += 1;
 

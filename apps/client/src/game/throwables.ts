@@ -20,6 +20,7 @@ import {
 } from "@colyseus-fps/shared";
 
 import { CombatEffects } from "./effects.js";
+import { ARC_MAX_POINTS, computeThrowArc } from "./throw-arc.js";
 
 interface LocalGrenade {
   id: number;
@@ -44,9 +45,20 @@ interface SmokeVisual {
 
 const SMOKE_SPRITE_COUNT = 14;
 
+/** 落点环的世界半径（米）：画面里的最小尺寸由 {@link LANDING_RING_MIN_NDC} 兜底。 */
+const LANDING_RING_RADIUS = 0.3;
+
 /**
- * 手雷弹道用的掩体 AABB（64 条，与客户端物理、服务端弹道遮挡同一份数据）。
- * 只算一次：地图是静态的，没必要每帧重建 64 个盒子。
+ * 落点环的**最小半屏占比**（NDC，1 = 半个屏幕高）。
+ *
+ * 换算成 1080p 大约是 40px 半径：不管扔多远，玩家都能一眼看到"雷会停在这儿"。
+ * 不兜底的话，18m 外的环只有 20px 宽，会被点阵和地面纹理吃掉。
+ */
+const LANDING_RING_MIN_NDC = 0.075;
+
+/**
+ * 手雷弹道用的掩体 AABB（与客户端物理、服务端弹道遮挡同一份数据）。
+ * 只算一次：地图是静态的，没必要每帧重建上百个盒子。
  */
 const GRENADE_COLLIDERS: readonly Aabb[] = obstacleColliders();
 
@@ -78,99 +90,203 @@ export class ThrowableSystem {
 
   /* ---------------- 投掷抛物线辅助 ---------------- */
 
-  /** 辅助弧线上同时显示的点数（每 1/10 秒一个点，够看出落点又不会糊成一条实线）。 */
-  private static readonly ARC_DOTS = 40;
-  private readonly arcDots: THREE.InstancedMesh;
-  private readonly arcMaterial: THREE.MeshBasicMaterial;
+  /**
+   * 辅助线上的点。
+   *
+   * 用 `THREE.Points` + 自定义 shader，**屏幕像素恒定**，而不是 3D 小球：
+   * 3D 小球会被透视缩放——出手点离眼睛只有 45cm，那颗球在 1080p 下能画成 150px 的
+   * 大圆盘糊在屏幕正中；而 20m 外的点只有 2px，整条线看起来像"一串越来越小的水泡"。
+   * 恒定像素才是"瞄准辅助线"该有的读感（CS2 的投掷轨迹、Valorant 的技能路径都是这么画的）。
+   */
+  private readonly arcPoints: THREE.Points;
+  private readonly arcGeometry: THREE.BufferGeometry;
+  private readonly arcPositions: Float32Array;
+  private readonly arcFades: Float32Array;
+  private readonly arcMaterial: THREE.ShaderMaterial;
+  /** 生效点环：玩家真正想看的是"雷会在这儿生效"，不是一个渐隐的点。 */
+  private readonly landingRing: THREE.Mesh;
+  private readonly landingMaterial: THREE.MeshBasicMaterial;
   private arcType: ThrowableType | null = null;
 
   public constructor(
     private readonly scene: THREE.Scene,
     private readonly effects: CombatEffects,
   ) {
-    this.arcMaterial = new THREE.MeshBasicMaterial({
-      color: 0xffc46b,
+    this.arcPositions = new Float32Array(ARC_MAX_POINTS * 3);
+    this.arcFades = new Float32Array(ARC_MAX_POINTS);
+    this.arcGeometry = new THREE.BufferGeometry();
+    this.arcGeometry.setAttribute("position", new THREE.BufferAttribute(this.arcPositions, 3));
+    this.arcGeometry.setAttribute("aFade", new THREE.BufferAttribute(this.arcFades, 1));
+    this.arcGeometry.setDrawRange(0, 0);
+
+    this.arcMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uColor: { value: new THREE.Color(0x3d8ce8) },
+        // CSS 像素，着色器里再乘设备像素比
+        uSize: { value: 7 },
+        uPixelRatio: { value: 1 },
+        uOpacity: { value: 0.95 },
+      },
+      vertexShader: `
+        attribute float aFade;
+        uniform float uSize;
+        uniform float uPixelRatio;
+        varying float vFade;
+        void main() {
+          vFade = aFade;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          // 不做距离衰减：点的大小是"屏幕像素"，与远近无关
+          gl_PointSize = uSize * uPixelRatio;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uColor;
+        uniform float uOpacity;
+        varying float vFade;
+        void main() {
+          // gl_PointCoord 是 0..1 的方形贴图坐标：裁成圆，并留 1 像素软边
+          float d = length(gl_PointCoord - vec2(0.5));
+          float alpha = smoothstep(0.5, 0.34, d);
+          if (alpha <= 0.02) {
+            discard;
+          }
+          gl_FragColor = vec4(uColor, alpha * vFade * uOpacity);
+        }
+      `,
       transparent: true,
-      opacity: 0.62,
       depthWrite: false,
-      // 弧线贴地但不抢戏：不参与深度写入，被墙挡住时会自然消失
+      // 仍然参与深度测试：被墙、箱子挡住时辅助线要跟着消失，
+      // 否则会出现"隔墙能看见落点"的透视挂效果。
+      depthTest: true,
+    });
+
+    this.arcPoints = new THREE.Points(this.arcGeometry, this.arcMaterial);
+    this.arcPoints.frustumCulled = false;
+    this.arcPoints.visible = false;
+    this.arcPoints.name = "throw-arc";
+    this.arcPoints.renderOrder = 3;
+    this.scene.add(this.arcPoints);
+
+    this.landingMaterial = new THREE.MeshBasicMaterial({
+      color: 0x3d8ce8,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
       side: THREE.DoubleSide,
     });
-    this.arcDots = new THREE.InstancedMesh(
-      new THREE.SphereGeometry(0.045, 6, 5),
-      this.arcMaterial,
-      ThrowableSystem.ARC_DOTS,
+    // 用 Ring 而不是实心圆：环不遮挡落点下方的地面细节，也更容易和"点"区分开。
+    this.landingRing = new THREE.Mesh(
+      // 环带占外径的 34%：缩到最小尺寸时也有 5px 厚，远距离不会细成一根线
+      new THREE.RingGeometry(LANDING_RING_RADIUS * 0.66, LANDING_RING_RADIUS, 28),
+      this.landingMaterial,
     );
-    this.arcDots.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.arcDots.frustumCulled = false;
-    this.arcDots.visible = false;
-    this.arcDots.name = "throw-arc";
-    this.scene.add(this.arcDots);
+    this.landingRing.rotation.x = -Math.PI / 2;
+    this.landingRing.visible = false;
+    this.landingRing.name = "throw-arc-landing";
+    this.landingRing.renderOrder = 3;
+    this.scene.add(this.landingRing);
   }
 
   /**
    * 更新投掷抛物线辅助线。
    *
-   * 用**与服务端完全相同的** {@link stepGrenadePhysics} 从出手点向前积分，
-   * 每隔 1/10 秒打一个点，直到落地或撞墙。这意味着辅助线画到哪里、手雷就飞到哪里：
-   * 它不是"提示"、不是"大概方向"，而是一条可复现的预测轨迹。
+   * 几何完全交给 {@link computeThrowArc}（和"雷会飞到哪里"是同一份计算），
+   * 这里只做两件事：把点搬进 GPU 缓冲、把落点环摆到预测停下的位置。
    *
-   * 用 `InstancedMesh` 而不是 `Line`：单个 draw call、点数固定、不会每帧创建几何体。
+   * @param origin 出手点（用 shared 的 `throwOriginOf` 算，与服务端出膛点一致）
+   * @param dir 归一化投掷方向
+   * @param speed 初速度
+   * @param type 投掷物类型（决定颜色与**引信时长**——烟雾 1.4s 就起烟，不按引信截断的线会骗人）
+   * @param camera 相机（空中引爆时落点环要正对镜头；不传就平铺）
    */
   public updateAimArc(
     origin: { x: number; y: number; z: number },
     dir: { x: number; y: number; z: number },
     speed: number,
     type: ThrowableType,
+    camera: THREE.Camera | null = null,
   ): void {
     if (this.arcType !== type) {
       this.arcType = type;
       // 三种投掷物用不同颜色，避免"以为拿的是闪、其实是烟"
-      this.arcMaterial.color.setHex(type === "frag" ? 0xffb066 : type === "flash" ? 0xffffff : 0x9fd4ff);
+      // 三种投掷物用三种颜色，避免"以为拿的是闪、其实是烟"。
+      // 都用**中饱和**色：浅色点在米色天空上看不见，深色点在暗墙上又看不见。
+      const color: number = type === "frag" ? 0xff8a3d : type === "flash" ? 0xf5f9ff : 0x3d8ce8;
+      (this.arcMaterial.uniforms.uColor?.value as THREE.Color).setHex(color);
+      this.landingMaterial.color.setHex(color);
     }
 
-    const body = {
-      x: origin.x,
-      y: origin.y,
-      z: origin.z,
-      vx: dir.x * speed,
-      vy: dir.y * speed,
-      vz: dir.z * speed,
-    };
+    const arc = computeThrowArc(
+      origin,
+      dir,
+      speed,
+      GRENADE_COLLIDERS,
+      THROWABLES[type].fuseMs / 1000,
+    );
+    const count = arc.points.length;
 
-    const matrix = new THREE.Matrix4();
-    const position = new THREE.Vector3();
-    const quaternion = new THREE.Quaternion();
-    const scale = new THREE.Vector3(1, 1, 1);
-    const stepSeconds = 1 / 60;
-    let dotted = 0;
+    for (let index = 0; index < count; index += 1) {
+      const point = arc.points[index]!;
+      this.arcPositions[index * 3] = point.x;
+      this.arcPositions[index * 3 + 1] = point.y;
+      this.arcPositions[index * 3 + 2] = point.z;
+      // 越远越淡：尾巴收干净，落点环才站出来当主角
+      this.arcFades[index] = 1 - 0.55 * (count <= 1 ? 0 : index / (count - 1));
+    }
+    this.arcGeometry.setDrawRange(0, count);
+    (this.arcGeometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
+    (this.arcGeometry.getAttribute("aFade") as THREE.BufferAttribute).needsUpdate = true;
 
-    for (let step = 0; step < 260 && dotted < ThrowableSystem.ARC_DOTS; step += 1) {
-      stepGrenadePhysics(body, stepSeconds, GRENADE_COLLIDERS);
-      // 每 6 帧一个点 ≈ 每 0.1 秒
-      if (step % 6 !== 0) {
-        continue;
-      }
-      // 越远越淡：用缩放代替透明度（InstancedMesh 共享材质，无法逐点改 opacity）
-      const shrink = 1 - (dotted / ThrowableSystem.ARC_DOTS) * 0.45;
-      position.set(body.x, body.y, body.z);
-      scale.setScalar(shrink);
-      matrix.compose(position, quaternion, scale);
-      this.arcDots.setMatrixAt(dotted, matrix);
-      dotted += 1;
-      // 已经静止在地上：后面的点会全叠在一处，没有信息量
-      if (body.y <= GRENADE_RADIUS + 0.02 && Math.abs(body.vy) < 0.8) {
-        break;
-      }
+    // 材质里存的是 CSS 像素，乘上设备像素比才是真实帧缓冲像素（高分屏不糊、低分屏不虚）
+    this.arcMaterial.uniforms.uPixelRatio!.value =
+      typeof window === "undefined" ? 1 : Math.min(2, window.devicePixelRatio || 1);
+    this.arcPoints.visible = count > 0;
+
+    if (arc.endpoint === null) {
+      this.landingRing.visible = false;
+      return;
     }
 
-    this.arcDots.count = Math.max(1, dotted);
-    this.arcDots.instanceMatrix.needsUpdate = true;
-    this.arcDots.visible = dotted > 0;
+    // 环的**屏幕尺寸**要兜个底：18m 外的 0.3m 圆环只有 20px，正好被点阵盖住，
+    // 等于白画。这里按投影矩阵把"最小屏幕尺寸"折回世界尺寸，距离越远环越大，
+    // 位置仍然精确（只是标记变大，像地图 pin 那样）。
+    const pulse = 1 + 0.06 * Math.sin(performance.now() / 180);
+    let scale = pulse;
+    if (camera !== null) {
+      const projY = camera.projectionMatrix.elements[5] as number;
+      const distance = camera.position.distanceTo(
+        new THREE.Vector3(arc.endpoint.x, arc.endpoint.y, arc.endpoint.z),
+      );
+      if (projY > 1e-6 && distance > 0.1) {
+        const minWorldRadius = (LANDING_RING_MIN_NDC * distance) / projY;
+        scale *= Math.max(1, minWorldRadius / LANDING_RING_RADIUS);
+      }
+    }
+    this.landingRing.scale.setScalar(scale);
+    if (arc.atGround) {
+      // 静止/贴地：环平铺在支撑面上（body.y = 支撑面 + 半径，抬 2cm 防 z-fighting）
+      this.landingRing.position.set(
+        arc.endpoint.x,
+        arc.endpoint.y - GRENADE_RADIUS + 0.02,
+        arc.endpoint.z,
+      );
+      this.landingRing.rotation.set(-Math.PI / 2, 0, 0);
+    } else {
+      // 空中引爆（引信到点时雷还在飞）：平铺的环会被看成"地上有个圈"，
+      // 所以改成正对镜头的圆环，读作"这里会炸"。
+      this.landingRing.position.set(arc.endpoint.x, arc.endpoint.y, arc.endpoint.z);
+      if (camera !== null) {
+        this.landingRing.lookAt(camera.position);
+      } else {
+        this.landingRing.rotation.set(-Math.PI / 2, 0, 0);
+      }
+    }
+    this.landingRing.visible = true;
   }
 
   public hideAimArc(): void {
-    this.arcDots.visible = false;
+    this.arcPoints.visible = false;
+    this.landingRing.visible = false;
   }
 
   /** 服务端广播投掷：立刻生成本地预测的飞行体。 */
@@ -326,8 +442,11 @@ export class ThrowableSystem {
     }
     this.grenadeGeometry.dispose();
     this.smoke.dispose();
-    this.scene.remove(this.arcDots);
-    this.arcDots.geometry.dispose();
+    this.scene.remove(this.arcPoints);
+    this.arcGeometry.dispose();
     this.arcMaterial.dispose();
+    this.scene.remove(this.landingRing);
+    this.landingRing.geometry.dispose();
+    this.landingMaterial.dispose();
   }
 }

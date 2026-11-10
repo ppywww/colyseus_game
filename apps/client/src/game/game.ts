@@ -41,6 +41,7 @@ import {
   spreadHalfAngleDeg,
   spreadToPixels,
   switchDurationOf,
+  throwOriginOf,
   throwableTypeOfSlot,
   type DamageTakenMessage,
   type ExplosionMessage,
@@ -863,6 +864,24 @@ export class Game {
     this.selectSlot(picked, { quiet: true });
   }
 
+  /**
+   * 当前视线下的投掷方向（已按 `THROW_MAX_PITCH` 钳制并归一化）。
+   *
+   * **抛物线预览和真正发出的 THROW 必须调同一个函数**：旧版预览用带后坐力的
+   * `pitchWithRecoil`，实际投掷用 `kinematics.pitch`，抬枪扫射时两者能差半米，
+   * 玩家照着线扔会扔歪——那比不画线更糟。
+   * 钳制也与服务端 `clampThrowDirection` 等价（都把竖直分量限在 ±sin(MAX_PITCH)）。
+   */
+  private throwDirection(): { x: number; y: number; z: number } {
+    const pitch: number = Math.min(THROW_MAX_PITCH, Math.max(-THROW_MAX_PITCH, this.kinematics.pitch));
+    const cosPitch: number = Math.cos(pitch);
+    return {
+      x: -Math.sin(this.kinematics.yaw) * cosPitch,
+      y: Math.sin(pitch),
+      z: -Math.cos(this.kinematics.yaw) * cosPitch,
+    };
+  }
+
   /** 投掷道具：方向取当前视线（含俯仰），位置与速度由服务端裁定。 */
   private tryThrow(type: ThrowableType, nowMs: number): void {
     if (!this.selfAlive) {
@@ -884,13 +903,7 @@ export class Game {
     this.applySlotLocally(throwSlot, 0);
 
     this.lastThrowAt = nowMs;
-    const cosPitch = Math.cos(this.kinematics.pitch);
-    const dir = {
-      x: -Math.sin(this.kinematics.yaw) * cosPitch,
-      y: Math.sin(this.kinematics.pitch),
-      z: -Math.cos(this.kinematics.yaw) * cosPitch,
-    };
-    this.connection.sendThrow(type, dir);
+    this.connection.sendThrow(type, this.throwDirection());
     this.audio.pinPull();
     this.audio.throwWhoosh();
     if (type === THROWABLE_TYPES.FRAG) {
@@ -1465,19 +1478,18 @@ export class Game {
     // 本作把线画出来，玩家的练习成本从"背点位"降到"看线"。
     const throwableSlot: ThrowableType | null = throwableTypeOfSlot(this.weaponSlot);
     if (throwableSlot !== null && locked && this.selfAlive) {
-      const pitch: number = Math.min(THROW_MAX_PITCH, Math.max(-THROW_MAX_PITCH, pitchWithRecoil));
-      const cosPitch: number = Math.cos(pitch);
-      const dir = {
-        x: -Math.sin(yawWithRecoil) * cosPitch,
-        y: Math.sin(pitch),
-        z: -Math.cos(yawWithRecoil) * cosPitch,
-      };
-      const origin = {
-        x: this.kinematics.x + dir.x * 0.45,
-        y: this.kinematics.y + eyeHeight - 0.18,
-        z: this.kinematics.z + dir.z * 0.45,
-      };
-      this.throwables.updateAimArc(origin, dir, THROW_SPEED, throwableSlot);
+      // 方向与真正发出去的 THROW **完全同源**（{@link Game#throwDirection}）：
+      // 旧版预览带后坐力偏移、实际投掷不带，抬枪扫射时预览线和落点能差半米。
+      const dir = this.throwDirection();
+      // 出手点也走共享函数：服务端 `handleThrow` 用的是同一个公式
+      const origin = throwOriginOf(
+        this.kinematics.x,
+        this.kinematics.y,
+        this.kinematics.z,
+        dir,
+        eyeHeight,
+      );
+      this.throwables.updateAimArc(origin, dir, THROW_SPEED, throwableSlot, this.camera);
     } else {
       this.throwables.hideAimArc();
     }

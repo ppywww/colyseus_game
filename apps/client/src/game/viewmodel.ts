@@ -821,13 +821,15 @@ export class ViewModel {
    * @returns 道具球（出手瞬间由 {@link ViewModel#update} 按投掷进度自动隐藏）
    */
   private buildThrowable(group: THREE.Group): THREE.Mesh {
-    group.add(this.box(0.07, 0.07, 0.09, this.materials.glove, 0.02, -0.14, -0.28, 0.1, 0, -0.1));
-    group.add(this.box(0.064, 0.03, 0.086, this.materials.gloveHi, 0.022, -0.1, -0.29, 0.1, 0, -0.08));
+    // 手里这颗雷的位置必须与 `THROW_ORIGIN_SIDE / THROW_ORIGIN_DROP` 对齐：
+    // 抛物线辅助线就是从这颗球的位置起飞的，对不齐会看到"线从手旁边飞出去"。
+    group.add(this.box(0.07, 0.07, 0.09, this.materials.glove, 0.12, -0.2, -0.28, 0.1, 0, -0.1));
+    group.add(this.box(0.064, 0.03, 0.086, this.materials.gloveHi, 0.122, -0.16, -0.29, 0.1, 0, -0.08));
     const ball = new THREE.Mesh(new THREE.SphereGeometry(0.05, 14, 10), this.materials.gunmetal);
-    ball.position.set(0.02, -0.122, -0.35);
+    ball.position.set(0.12, -0.2, -0.35);
     group.add(ball);
     group.add(
-      this.limb(new THREE.Vector3(0.02, -0.17, -0.24), new THREE.Vector3(0.12, -0.32, 0.06), 0.04, this.materials.sleeve),
+      this.limb(new THREE.Vector3(0.1, -0.24, -0.24), new THREE.Vector3(0.16, -0.34, 0.06), 0.04, this.materials.sleeve),
     );
     return ball;
   }

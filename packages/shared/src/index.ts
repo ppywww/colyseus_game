@@ -1642,6 +1642,48 @@ function stepGrenadeOnce(body: GrenadeBody, dtSeconds: number, obstacles: readon
 /** 手雷脱离手部的位置（相对眼睛）。 */
 export const THROW_ORIGIN_FORWARD: number = 0.45;
 
+/** 出手点相对眼睛的下沉量（雷在胸口高度，不是从眼睛射出去）。 */
+export const THROW_ORIGIN_DROP: number = 0.2;
+
+/**
+ * 出手点向**右手的横移量**（米）。
+ *
+ * 这不只是"更真实"，它是抛物线辅助线**能看清**的前提：
+ * 出手点与视线同轴时，整条弧在屏幕上会被压缩成一根竖条（透视下沿视线方向的线没有横向分量）。
+ * 移到右手侧 12cm 后，弧线从画面右下扫向准星，才是一条能读的抛物线。
+ * 代价是落点会比准星偏左 ~12cm —— 这正是"从手里扔出去"的真实结果，也是画这条线的意义。
+ */
+export const THROW_ORIGIN_SIDE: number = 0.12;
+
+/**
+ * 投掷出手点：**客户端抛物线预览与服务端出膛点必须逐字一致**。
+ *
+ * 旧版两端各写一份公式（客户端 `y + eye - 0.18`、服务端 `y + EYE_HEIGHT - 0.15 + dir.y * 0.45`），
+ * 于是"预览线画到哪、雷就落到哪"只是口号：抬头投时纵向差了 `dir.y * 0.45`（最多 45cm），
+ * 蹲下投时又差了整个蹲伏高度差。现在两端都调这一个函数，改常量即两端同时改。
+ *
+ * @param feetX/feetY/feetZ 玩家**脚底**坐标
+ * @param dir 归一化投掷方向
+ * @param eyeHeight 当前眼睛高度（站立/蹲下不同，见 {@link eyeHeightOf}）
+ */
+export function throwOriginOf(
+  feetX: number,
+  feetY: number,
+  feetZ: number,
+  dir: { x: number; y: number; z: number },
+  eyeHeight: number,
+): { x: number; y: number; z: number } {
+  // 右手方向 = 水平朝向绕 Y 轴转 −90°：朝向 (0,0,−1) → 右手 (1,0,0)
+  const horizontal = Math.hypot(dir.x, dir.z);
+  const rightX = horizontal < 1e-6 ? 1 : -dir.z / horizontal;
+  const rightZ = horizontal < 1e-6 ? 0 : dir.x / horizontal;
+  return {
+    x: feetX + dir.x * THROW_ORIGIN_FORWARD + rightX * THROW_ORIGIN_SIDE,
+    y: feetY + eyeHeight - THROW_ORIGIN_DROP + dir.y * THROW_ORIGIN_FORWARD,
+    z: feetZ + dir.z * THROW_ORIGIN_FORWARD + rightZ * THROW_ORIGIN_SIDE,
+  };
+}
+
 /** 客户端上行：投掷请求。方向由客户端提供，位置与速度由服务端裁定。 */
 export interface ThrowMessage {
   type: ThrowableType;

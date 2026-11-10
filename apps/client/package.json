@@ -5,6 +5,7 @@
   "description": "浏览器客户端：Vite 开发服务、Colyseus 联机大厅与后续 FPS 渲染",
   "type": "module",
   "scripts": {
+    "preview:throw-arc": "tsx scripts/preview-throw-arc.mts",
     "preview:viewmodel": "tsx scripts/preview-viewmodel.mts",
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -p tsconfig.json --noEmit && vite build",

@@ -12,10 +12,11 @@ import * as THREE from "three";
 import { PLAYER_HEIGHT, type TeamId } from "@colyseus-fps/shared";
 
 import {
-  AvatarModel,
   BOB_FADE_TAU,
   BOB_RAD_PER_METER,
   FALL_DURATION_MS,
+  buildAvatarModelOfIndex,
+  type AvatarModel,
 } from "./avatar-model.js";
 import { InterpolationBuffer, type TransformSample } from "./interpolation.js";
 import type { PlayerState } from "../net/types.js";
@@ -44,26 +45,53 @@ function teamOf(player: PlayerState): TeamId {
   return player.team === "CT" ? "CT" : "T";
 }
 
-function createNameLabel(displayName: string): THREE.Sprite {
+/**
+ * 头顶名牌：奶油纸标签 + 3px 墨线 + 硬投影，和整套 UI 是同一张纸。
+ *
+ * 旧版是半透明深色胶囊（FPS 常见样式），放在厨房这种明亮场景里会糊成一块灰。
+ * 现在改成"贴在场景里的小纸牌"，既跟 HUD 同源，也保证亮背景上的对比度。
+ */
+function createNameLabel(displayName: string, team: TeamId): THREE.Sprite {
+  const width = 320;
+  const height = 80;
   const canvas = document.createElement("canvas");
-  canvas.width = 256;
-  canvas.height = 64;
+  canvas.width = width;
+  canvas.height = height;
   const context = canvas.getContext("2d");
   if (context) {
-    context.font = "bold 32px 'Segoe UI', sans-serif";
+    context.font = "700 34px 'Baloo 2', 'Microsoft YaHei', sans-serif";
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.fillStyle = "rgba(10, 14, 22, 0.55)";
-    const width = context.measureText(displayName).width + 28;
-    context.fillRect(128 - width / 2, 8, width, 48);
-    context.fillStyle = "#e2e8f0";
-    context.fillText(displayName, 128, 34);
+    const textWidth = Math.min(width - 56, context.measureText(displayName).width);
+    const plateWidth = textWidth + 48;
+    const left = (width - plateWidth) / 2;
+    const top = 10;
+    const radius = (height - top * 2) / 2;
+    context.fillStyle = "rgba(43, 27, 47, 0.35)";
+    context.beginPath();
+    context.roundRect(left, top + 5, plateWidth, height - top * 2, radius);
+    context.fill();
+    context.fillStyle = "#FFF8E9";
+    context.strokeStyle = "#2B1B2F";
+    context.lineWidth = 5;
+    context.beginPath();
+    context.roundRect(left, top, plateWidth, height - top * 2, radius);
+    context.fill();
+    context.stroke();
+    // 队伍色小圆点：名牌读字之前先读色，混战时能少看半秒
+    context.fillStyle = team === "CT" ? "#3FA9E0" : "#E8432F";
+    context.beginPath();
+    context.arc(left + 20, height / 2, 7, 0, Math.PI * 2);
+    context.fill();
+    context.fillStyle = "#2B1B2F";
+    context.fillText(displayName, width / 2 + 10, height / 2 - 1);
   }
   const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
   const sprite = new THREE.Sprite(
-    new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false }),
+    new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false, depthTest: false }),
   );
-  sprite.scale.set(2.2, 0.55, 1);
+  sprite.scale.set(2.4, 0.6, 1);
   return sprite;
 }
 
@@ -98,12 +126,12 @@ class RemotePlayerAvatar {
   private armSwingDurationMs = 0;
 
   public constructor(player: PlayerState, interpolationDelayMs: number) {
-    this.model = new AvatarModel(teamOf(player));
+    this.model = buildAvatarModelOfIndex(teamOf(player), player.character ?? 0);
     this.root = this.model.root;
     this.root.name = `remote-${player.sessionId}`;
     this.buffer = new InterpolationBuffer(interpolationDelayMs);
 
-    this.label = createNameLabel(player.displayName);
+    this.label = createNameLabel(player.displayName, teamOf(player));
     this.label.position.y = LABEL_Y_ALIVE;
     this.root.add(this.label);
 

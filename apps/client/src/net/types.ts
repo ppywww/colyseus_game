@@ -34,6 +34,8 @@ export interface PlayerState {
   crouch?: boolean;
   /** 队伍（"T" / "CT"）：远端模型配色与出生朝向共用，协议 v2 新增。 */
   team: string;
+  /** 角色下标（`CHARACTER_IDS` 的顺序）：只影响外观，决定远端模型与头像。 */
+  character: number;
 }
 
 /** 与 Colyseus MapSchema 结构兼容的最小只读接口。 */

@@ -214,7 +214,7 @@ kbd {
   width: min(1180px, 100%);
   min-height: 100%;
   margin: 0 auto;
-  padding: 6vh 40px 12vh;
+  padding: 4vh 40px 9vh;
   display: grid;
   /* 两栏都定宽并居中：品牌区不跟着窗口一起拉宽，
      否则宽屏下标题与进入卡之间会出现一大块空白 */
@@ -309,7 +309,7 @@ kbd {
   border: 2.5px solid var(--ink);
 }
 
-/* ---- 阵容条 ---- */
+/* ---- 阵容条（可点的角色卡） ---- */
 
 .roster {
   margin-top: 6px;
@@ -338,25 +338,64 @@ kbd {
 }
 
 .roster-list {
-  display: flex;
+  /* 2×2 网格：四张卡在 flex-wrap 下会变成"3+1"，最后一张孤零零吊在第二行 */
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
-  flex-wrap: wrap;
+  /* 卡片的影子与位移会溢出容器，留一点空间免得被裁掉 */
+  padding: 3px 1px 7px;
 }
 
 .roster-card {
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 7px 13px 7px 7px;
+  padding: 7px 9px 7px 7px;
   border: 2.5px solid var(--ink);
   border-radius: 999px;
+  /* button 默认不继承字体与颜色，这里显式接上 token，否则会掉回 Times 12px */
+  font: inherit;
+  color: var(--ink);
+  text-align: left;
+  text-decoration: none;
   background: var(--paper);
-  box-shadow: 0 3px 0 rgba(43, 27, 47, 0.24);
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  /* 只过渡会变的三样：位移 / 投影 / 底色；宽度用 flex 自适应不参与过渡 */
+  transition: transform 110ms ease, box-shadow 110ms ease, background-color 110ms ease;
+}
+
+.roster-card:hover {
+  background: var(--paper-2);
+  transform: translateY(-1px);
+  box-shadow: 0 5px 0 rgba(43, 27, 47, 0.28);
+}
+
+/* 按下时"压回桌面"：投影收到 1px，位移 +2px，形成实体按键的错觉 */
+.roster-card:active {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 rgba(43, 27, 47, 0.3);
+}
+
+.roster-card:focus-visible {
+  outline: 3px solid var(--sky);
+  outline-offset: 3px;
+}
+
+.roster-card.selected {
+  background: var(--cheese);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 0 var(--cheese-deep);
+}
+
+.roster-card.selected:hover {
+  background: var(--cheese);
+  box-shadow: 0 7px 0 var(--cheese-deep);
 }
 
 .roster-face {
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
   flex: none;
   border-radius: 50%;
   border: 2.5px solid var(--ink);
@@ -366,8 +405,15 @@ kbd {
 }
 
 .roster-face svg {
-  width: 27px;
-  height: 27px;
+  width: 31px;
+  height: 31px;
+}
+
+/* 名字 + 定位两行：flex 列布局，不能用 block 叠（父级是行内排列的 flex item） */
+.roster-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .roster-name {
@@ -387,6 +433,35 @@ kbd {
   font-weight: 700;
   color: var(--ink-3);
   line-height: 1.1;
+}
+
+.roster-card.selected .roster-role {
+  color: var(--ink-2);
+}
+
+/* 选中勾：不占位时宽度收到 0，避免未选中的卡之间空出 18px 的洞 */
+.roster-check {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 0;
+  height: 18px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--cheese);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  opacity: 0;
+  transform: scale(0.6);
+  transition: width 120ms ease, opacity 120ms ease, transform 120ms ease;
+}
+
+.roster-card.selected .roster-check {
+  width: 18px;
+  opacity: 1;
+  transform: scale(1);
 }
 
 /* ---- 右侧进入卡 ---- */
@@ -1230,21 +1305,30 @@ kbd {
   to { opacity: 1; transform: none; }
 }
 
-/* ---- 调试信息（雷达下方，默认很淡） ---- */
+/* ---- 调试信息（雷达下方）----
+   每一行都套一层奶油底小胶囊：这行字是叠在 3D 画面上的，
+   只靠半透明的墨色文字，遇到深色橱柜就完全读不出来。 */
 
 .hud-debug {
   position: absolute;
   left: 18px;
-  top: 268px;
+  top: 272px;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  align-items: flex-start;
+  gap: 4px;
   font-family: var(--f-num);
-  font-weight: 600;
+  font-weight: 700;
   font-size: 10.5px;
   letter-spacing: 0.06em;
-  color: rgba(43, 27, 47, 0.5);
-  text-shadow: 0 1px 0 rgba(255, 248, 233, 0.8);
+  color: var(--ink-3);
+}
+
+.hud-debug > div {
+  padding: 2px 9px;
+  border: 2px solid rgba(43, 27, 47, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 248, 233, 0.8);
 }
 
 .hud-debug .hud-position,

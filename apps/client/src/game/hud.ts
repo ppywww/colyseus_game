@@ -8,7 +8,7 @@
 
 import { Minimap } from "./minimap.js";
 import type { PlayerState } from "../net/types.js";
-import { HEADS, WEAPON_ICONS } from "../ui/art.js";
+import { CHARACTERS, HEADS, WEAPON_ICONS } from "../ui/art.js";
 import {
   CROSSHAIR_DEFAULT,
   SLOT_KEY,
@@ -16,6 +16,7 @@ import {
   SLOT_ORDER,
   THROWABLE_TYPES,
   WEAPON_SLOTS,
+  characterOfIndex,
   throwableTypeOfSlot,
   type CrosshairSettings,
   type WeaponSlot,
@@ -80,6 +81,8 @@ export class Hud {
   private readonly lockOverlay: HTMLElement;
   private readonly lockSettings: HTMLElement;
   private readonly positionLine: HTMLElement;
+  /** 生命面板左侧的头像（跟随玩家选的角色）。 */
+  private readonly hpFace: HTMLElement;
   private readonly hpBar: HTMLElement;
   private readonly hpText: HTMLElement;
   private readonly ammoTag: HTMLElement;
@@ -199,6 +202,7 @@ export class Hud {
     const hpFace = document.createElement("div");
     hpFace.className = "hud-vitals-face";
     hpFace.innerHTML = HEADS.jerry;
+    this.hpFace = hpFace;
 
     const hpMain = document.createElement("div");
     hpMain.className = "hud-vitals-main";
@@ -373,6 +377,19 @@ export class Hud {
     this.crosshair.classList.toggle("outline", settings.outline);
     // 间距/动态开关变化后要强制重算一次 --spread，否则要等下一次扩散值变化才生效
     this.lastSpread = -1;
+  }
+
+  /**
+   * 更新生命面板头像（= 玩家在大厅选的角色）。
+   *
+   * 头像与第三人称模型、大厅卡片共用 `ui/art.ts` 的同一份 SVG：
+   * 换角色只换这一张图和底色，不需要重建面板。
+   */
+  public setSelfCharacter(characterIndex: number): void {
+    const id = characterOfIndex(characterIndex);
+    this.hpFace.innerHTML = HEADS[id];
+    const profile = CHARACTERS.find((character) => character.id === id);
+    this.hpFace.style.background = profile?.tint ?? "var(--paper-2)";
   }
 
   /**

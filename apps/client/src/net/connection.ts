@@ -1,6 +1,7 @@
 import { Client, type Room } from "colyseus.js";
 
 import {
+  CHARACTER_DEFAULT,
   DEFAULT_ROOM_NAME,
   MESSAGE_TYPES,
   PROTOCOL_VERSION,
@@ -47,7 +48,7 @@ export class LobbyConnection {
     this.client = new Client(serverUrl);
   }
 
-  public async join(displayName: string): Promise<ConnectionInfo> {
+  public async join(displayName: string, character: string = CHARACTER_DEFAULT): Promise<ConnectionInfo> {
     if (this.room !== null) {
       throw new Error("当前连接已经在房间中");
     }
@@ -55,6 +56,9 @@ export class LobbyConnection {
     const room = await this.client.joinOrCreate<BattleRoomState>(DEFAULT_ROOM_NAME, {
       name: displayName,
       protocolVersion: PROTOCOL_VERSION,
+      // 角色随入房选项上送：服务端写进 `Player.character` 再同步回来，
+      // 于是"别人看你"和"你看自己"永远是同一个角色。
+      character,
     });
 
     this.room = room;
@@ -88,6 +92,7 @@ export class LobbyConnection {
           weaponSlot: player.weaponSlot,
           switchEndAt: player.switchEndAt,
           team: player.team,
+          character: player.character ?? 0,
         });
       });
       players.sort((left, right) => left.joinedAt - right.joinedAt);

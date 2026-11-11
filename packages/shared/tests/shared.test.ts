@@ -81,6 +81,13 @@ import {
   clampCrosshairColor,
   parseSettings,
   serializeSettings,
+  CHARACTER_COUNT,
+  CHARACTER_DEFAULT,
+  CHARACTER_IDS,
+  MAP_ZONES,
+  THROWABLES,
+  characterIndexOf,
+  characterOfIndex,
 } from "../src/index.js";
 
 describe("时间与频率常量", () => {
@@ -345,6 +352,113 @@ describe("投掷物 ↔ 槽位映射", () => {
     for (const slot of [WEAPON_SLOTS.RIFLE, WEAPON_SLOTS.PISTOL, WEAPON_SLOTS.KNIFE]) {
       assert.equal(throwableTypeOfSlot(slot), null);
     }
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * 主题层：猫和老鼠
+ * ------------------------------------------------------------------ */
+
+describe("角色常量（纯外观）", () => {
+  it("四个角色，默认是 tom，下标与数组顺序一致", () => {
+    assert.equal(CHARACTER_IDS.length, 4);
+    assert.equal(CHARACTER_COUNT, CHARACTER_IDS.length);
+    assert.equal(CHARACTER_DEFAULT, "tom");
+    assert.equal(CHARACTER_IDS.indexOf(CHARACTER_DEFAULT), 0);
+    // 不允许重名（否则索引会静默指向第一个）
+    assert.equal(new Set(CHARACTER_IDS).size, CHARACTER_IDS.length);
+  });
+
+  it("characterIndexOf 把数字钳制在合法区间内", () => {
+    assert.equal(characterIndexOf(0), 0);
+    assert.equal(characterIndexOf(3), 3);
+    // 越界钳制而不是回退默认：否则最后一个角色永远选不上
+    assert.equal(characterIndexOf(99), CHARACTER_COUNT - 1);
+    assert.equal(characterIndexOf(-5), 0);
+    // 小数截断
+    assert.equal(characterIndexOf(2.9), 2);
+    // NaN / Infinity 不是有限数 → 回退默认
+    assert.equal(characterIndexOf(Number.NaN), CHARACTER_IDS.indexOf(CHARACTER_DEFAULT));
+    assert.equal(characterIndexOf(Number.POSITIVE_INFINITY), CHARACTER_IDS.indexOf(CHARACTER_DEFAULT));
+  });
+
+  it("characterIndexOf 接受字符串（大小写 / 空格容错），非法值回退默认", () => {
+    assert.equal(characterIndexOf("jerry"), 1);
+    assert.equal(characterIndexOf("  SPIKE  "), 2);
+    assert.equal(characterIndexOf("butch"), 3);
+    assert.equal(characterIndexOf("daffy"), CHARACTER_IDS.indexOf(CHARACTER_DEFAULT));
+    assert.equal(characterIndexOf(""), CHARACTER_IDS.indexOf(CHARACTER_DEFAULT));
+    // 非字符串非数字（含数组、null、对象）一律回退，不能静默变成 0 之外的怪值
+    assert.equal(characterIndexOf([]), CHARACTER_IDS.indexOf(CHARACTER_DEFAULT));
+    assert.equal(characterIndexOf(null), CHARACTER_IDS.indexOf(CHARACTER_DEFAULT));
+    assert.equal(characterIndexOf(undefined), CHARACTER_IDS.indexOf(CHARACTER_DEFAULT));
+    assert.equal(characterIndexOf({}), CHARACTER_IDS.indexOf(CHARACTER_DEFAULT));
+  });
+
+  it("characterOfIndex 永不返回 undefined（服务端直接赋值给 uint8）", () => {
+    for (const index of [-10, 0, 1, 2, 3, 77, 2.5]) {
+      const id = characterOfIndex(index);
+      assert.ok(CHARACTER_IDS.includes(id), `下标 ${index} 得到了非法角色 ${id}`);
+    }
+    assert.equal(characterOfIndex(1), "jerry");
+  });
+});
+
+describe("投掷物换皮为厨房道具", () => {
+  it("三种投掷物全部是厨具，且名称不重复、颜色可区分", () => {
+    const labels = Object.values(THROWABLES).map((config) => config.label);
+    assert.deepEqual(labels, ["平底锅", "胡椒瓶", "面粉袋"]);
+    assert.equal(new Set(labels).size, labels.length);
+    const colors = Object.values(THROWABLES).map((config) => config.color);
+    assert.equal(new Set(colors).size, colors.length, "三件道具的颜色必须能分开");
+  });
+
+  it("换皮不改手感：引信与半径仍是原数值", () => {
+    assert.equal(THROWABLES.frag.fuseMs, 2200);
+    assert.equal(THROWABLES.frag.radius, 9.5);
+    assert.equal(THROWABLES.frag.maxDamage, 100);
+    assert.equal(THROWABLES.flash.fuseMs, 1600);
+    assert.equal(THROWABLES.flash.radius, 16);
+    assert.equal(THROWABLES.flash.maxBlindMs, 3200);
+    assert.equal(THROWABLES.smoke.fuseMs, 1400);
+    assert.equal(THROWABLES.smoke.radius, 7);
+    assert.equal(THROWABLES.smoke.cloudDurationMs, 16000);
+  });
+});
+
+describe("地图分区（只改中文名，id 是契约）", () => {
+  it("分区 id 一个都不能变（小地图标签、可达性测试、下包判定都靠它）", () => {
+    const expected: readonly string[] = [
+      "site_a",
+      "site_b",
+      "spawn_t",
+      "spawn_ct",
+      "long_a",
+      "outside_long",
+      "short_a",
+      "catwalk",
+      "ct_mid",
+      "mid",
+      "b_doors",
+      "tunnels",
+      "lower_tunnel",
+      "ct_to_b",
+      "ct_to_a",
+    ];
+    assert.deepEqual(MAP_ZONES.map((zone) => zone.id), expected);
+  });
+
+  it("每个分区都有互不重复的中文名（厨房语义）", () => {
+    const labels = MAP_ZONES.map((zone) => zone.label);
+    assert.equal(new Set(labels).size, labels.length, "分区中文名不能重复，否则小地图无法区分");
+    for (const label of labels) {
+      assert.ok(/^[\u4e00-\u9fa5]+$/.test(label), `${label} 应为纯中文`);
+    }
+    // 两个包点、两个出生点必须点题
+    assert.equal(MAP_ZONES.find((zone) => zone.id === "site_a")?.label, "灶台");
+    assert.equal(MAP_ZONES.find((zone) => zone.id === "site_b")?.label, "水槽");
+    assert.equal(MAP_ZONES.find((zone) => zone.id === "spawn_t")?.label, "鼠洞");
+    assert.equal(MAP_ZONES.find((zone) => zone.id === "spawn_ct")?.label, "猫窝");
   });
 });
 

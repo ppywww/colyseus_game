@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>厨房地图 · 离线预览</title>
+    <!--
+      地图离线预览工具（开发用，不参与构建）。
+
+      为什么需要它：地图是纯 three.js 场景，`preview-viewmodel.mts` 那套软光栅只处理
+      单个人/单把枪，画不了 80×80m 的厨房。这里用真实 WebGL 渲一帧静态截图，
+      用来验收"贴图有没有糊、体块有没有穿模、光照有没有过曝"。
+
+      用法（先 `pnpm dev:client`）：
+        http://127.0.0.1:5173/tools/arena-preview.html?x=-4&z=30&yaw=3.14&pitch=-0.05
+      参数：x/z 位置，yaw 朝向（弧度），pitch 俯仰，fov 视场角。
+    -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #f6e3c4;
+      }
+      canvas {
+        display: block;
+      }
+      #hud {
+        position: fixed;
+        left: 12px;
+        bottom: 12px;
+        font: 12px/1.5 monospace;
+        color: #2b1b2f;
+        background: rgba(255, 248, 233, 0.82);
+        border: 2px solid #2b1b2f;
+        border-radius: 8px;
+        padding: 6px 10px;
+        white-space: pre;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="hud">loading…</div>
+    <script type="module">
+      import * as THREE from "three";
+      import { buildArena, ARENA_SKY_COLOR, ARENA_FOG } from "/src/game/map.ts";
+
+      const params = new URLSearchParams(location.search);
+      const num = (key, fallback) => {
+        const raw = params.get(key);
+        if (raw === null) {
+          return fallback;
+        }
+        const parsed = Number(raw);
+        return Number.isFinite(parsed) ? parsed : fallback;
+      };
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setPixelRatio(1);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.0;
+      document.body.appendChild(renderer.domElement);
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(ARENA_SKY_COLOR);
+      scene.fog = new THREE.Fog(ARENA_FOG.color, ARENA_FOG.near, ARENA_FOG.far);
+      scene.add(buildArena());
+
+      const EYE_HEIGHT = 1.6;
+      const camera = new THREE.PerspectiveCamera(num("fov", 80), window.innerWidth / window.innerHeight, 0.1, 400);
+      camera.position.set(num("x", 0), EYE_HEIGHT + num("dy", 0), num("z", 30));
+      const yaw = num("yaw", Math.PI);
+      const pitch = num("pitch", 0);
+      camera.rotation.order = "YXZ";
+      camera.rotation.y = yaw;
+      camera.rotation.x = pitch;
+
+      renderer.render(scene, camera);
+      // 第二帧再渲染一次：贴图在首帧才真正上传寄存器，单帧截图偶尔是全白的
+      requestAnimationFrame(() => {
+        renderer.render(scene, camera);
+        const info = renderer.info;
+        document.getElementById("hud").textContent =
+          `pos (${camera.position.x.toFixed(1)}, ${camera.position.z.toFixed(1)}) yaw ${yaw.toFixed(2)}\n` +
+          `tris ${info.render.triangles}  calls ${info.render.calls}`;
+        document.title = "ready";
+      });
+    </script>
+  </body>
+</html>

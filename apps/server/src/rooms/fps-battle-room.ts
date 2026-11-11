@@ -23,6 +23,7 @@ import {
   WEAPON_RELOAD_MS,
   WEAPON_RESERVE_AMMO,
   WEAPON_SLOTS,
+  characterIndexOf,
   fireProfileOf,
   hashString,
   isSlotEnabled,
@@ -78,6 +79,7 @@ export interface FPSBattleRoomOptions {
 interface JoinOptionsPayload {
   name?: unknown;
   protocolVersion?: unknown;
+  character?: unknown;
 }
 
 function readJoinOptions(options: unknown): JoinOptionsPayload {
@@ -424,6 +426,8 @@ export class FPSBattleRoom extends Room<BattleState> {
     player.sessionId = client.sessionId;
     player.displayName = sanitizeDisplayName(joinOptions.name, client.sessionId);
     player.joinedAt = Date.now();
+    // 角色只影响外观（毛色/耳朵/尾巴），不进任何数值结算；非法输入按默认角色。
+    player.character = characterIndexOf(joinOptions.character);
 
     const team: TeamId = teamOfJoinIndex(this.spawnCursor);
     this.spawnCursor += 1;

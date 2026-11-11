@@ -6,9 +6,10 @@ import {
 import { Game } from "./game/game.js";
 import { LobbyConnection } from "./net/connection.js";
 import type { PlayerState } from "./net/types.js";
-import { CHARACTERS, HEADS } from "./ui/art.js";
+import { loadCharacter, mountCharacterPicker } from "./ui/character.js";
 import { getSettingsStore, mountSettingsPanel } from "./ui/settings.js";
 import type {
+  CharacterId,
   DamageTakenMessage,
   ExplosionMessage,
   FlashEffectMessage,
@@ -75,40 +76,20 @@ playerNameInput.value = `玩家-${Math.floor(Math.random() * 900 + 100)}`;
 mountSettingsPanel(requiredElement<HTMLElement>("settings-body"), getSettingsStore());
 
 /**
- * 大厅阵容条：头像是 `ui/art.ts` 里的同一份 SVG，和 HUD 生命面板完全一致。
- * 这里只做展示（角色选择在第三阶段随模型一起开放），不做假的选择交互。
+ * 大厅阵容条：四张可选卡片，头像是 `ui/art.ts` 里的同一份 SVG，
+ * 和 HUD 生命面板、第三人称模型完全一致（选谁就变成谁）。
+ *
+ * 选择存在 localStorage，进房前再随 join 选项上送，由服务端写进 `Player.character`
+ * 同步给所有人——所以"我选了 Tom、你眼里我是 Jerry"这件事不会发生。
  */
-function mountRoster(): void {
-  const host = document.getElementById("roster-list");
-  if (host === null) {
-    return;
-  }
-  for (const character of CHARACTERS) {
-    const card = document.createElement("div");
-    card.className = "roster-card";
+let selectedCharacter: CharacterId = loadCharacter();
 
-    const face = document.createElement("span");
-    face.className = "roster-face";
-    face.style.background = character.tint;
-    face.innerHTML = HEADS[character.id];
-
-    const name = document.createElement("span");
-    name.className = "roster-name";
-    name.textContent = character.name;
-
-    const role = document.createElement("span");
-    role.className = "roster-role";
-    role.textContent = character.role;
-
-    const text = document.createElement("span");
-    text.append(name, role);
-
-    card.append(face, text);
-    host.append(card);
-  }
+const rosterHost = document.getElementById("roster-list");
+if (rosterHost !== null) {
+  mountCharacterPicker(rosterHost, selectedCharacter, (id: CharacterId) => {
+    selectedCharacter = id;
+  });
 }
-
-mountRoster();
 
 function setStatus(text: string, busy: boolean): void {
   statusBadge.textContent = text;
@@ -188,7 +169,7 @@ joinButton.addEventListener("click", () => {
     });
 
     try {
-      await connection.join(playerNameInput.value);
+      await connection.join(playerNameInput.value, selectedCharacter);
       const selfId = connection.sessionId;
       if (selfId === null) {
         throw new Error("会话未建立");
@@ -201,7 +182,7 @@ joinButton.addEventListener("click", () => {
       lobby.classList.add("hidden");
       gameContainer.classList.remove("hidden");
 
-      game = new Game(gameContainer, connection, selfId, spawn);
+      game = new Game(gameContainer, connection, selfId, spawn, selectedCharacter);
       game.start();
       game.onPlayersChanged(latestPlayers);
     } catch (error: unknown) {

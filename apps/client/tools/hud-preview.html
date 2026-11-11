@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>游戏内 HUD · 离线预览</title>
+    <!--
+      游戏内画面离线预览（开发用，不参与构建）。
+
+      真机截图需要登录服务端 + 点开始 + 等对局加载，headless 浏览器点不了按钮；
+      这里直接把「厨房场景 + HUD」拼起来，喂一份假快照，用来验收界面叠在 3D 上的可读性。
+
+      用法（先 `pnpm dev:client`）：
+        http://127.0.0.1:5199/tools/hud-preview.html?x=0&z=12&character=tom&hp=78
+    -->
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #f6e3c4;
+      }
+      #stage canvas {
+        display: block;
+      }
+      #stage {
+        position: fixed;
+        inset: 0;
+      }
+      #hud-mount {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <div id="hud-mount"></div>
+    <script type="module">
+      import * as THREE from "three";
+      import { buildArena, ARENA_SKY_COLOR, ARENA_FOG } from "/src/game/map.ts";
+      import { Hud } from "/src/game/hud.ts";
+      import { characterIndexOf } from "@colyseus-fps/shared";
+
+      const params = new URLSearchParams(location.search);
+      const num = (key, fallback) => {
+        const raw = params.get(key);
+        if (raw === null) {
+          return fallback;
+        }
+        const parsed = Number(raw);
+        return Number.isFinite(parsed) ? parsed : fallback;
+      };
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setPixelRatio(1);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      document.getElementById("stage").appendChild(renderer.domElement);
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(ARENA_SKY_COLOR);
+      scene.fog = new THREE.Fog(ARENA_FOG.color, ARENA_FOG.near, ARENA_FOG.far);
+      scene.add(buildArena());
+
+      const camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 400);
+      camera.rotation.order = "YXZ";
+      camera.position.set(num("x", 0), 1.6, num("z", 12));
+      camera.rotation.y = num("yaw", 0);
+      camera.rotation.x = num("pitch", -0.02);
+
+      const hud = new Hud(document.getElementById("hud-mount"));
+      const character = params.get("character") ?? "tom";
+      hud.setSelfCharacter(characterIndexOf(character));
+      hud.setCrosshair({ shape: "cross", color: "#39ff88", gap: 6, thickness: 2, length: 6, dot: true });
+      hud.pushKillFeed("Tom 用平底锅 收拾了 Jerry");
+      hud.pushKillFeed("Spike 用高压水枪 打中了 Butch");
+
+      const me = {
+        sessionId: "self",
+        displayName: "Tom",
+        joinedAt: 0,
+        x: camera.position.x,
+        y: 1.6,
+        z: camera.position.z,
+        yaw: 0,
+        pitch: 0,
+        seq: 1,
+        hp: num("hp", 78),
+        alive: true,
+        kills: 4,
+        deaths: 2,
+        respawnSeq: 0,
+        respawnAt: 0,
+        ammo: 24,
+        reserve: 87,
+        reloadEndAt: 0,
+        pistolAmmo: 12,
+        pistolReserve: 36,
+        team: "T",
+        character: characterIndexOf(character),
+      };
+      const others = [
+        { sessionId: "a", displayName: "Spike", x: 6, z: 6, yaw: 2.2, team: "T", alive: true },
+        { sessionId: "b", displayName: "Butch", x: -5, z: 4, yaw: -0.6, team: "CT", alive: true },
+        { sessionId: "c", displayName: "Jerry", x: 2, z: 9, yaw: 3.0, team: "CT", alive: false },
+      ].map((row) => ({ ...me, ...row, hp: 100, kills: 1, deaths: 3 }));
+
+      hud.setRadarPlayers([me, ...others], "self");
+      hud.setPlayers(
+        [
+          { sessionId: "self", displayName: "Tom", kills: 4, deaths: 2, alive: true },
+          { sessionId: "a", displayName: "Spike", kills: 3, deaths: 3, alive: true },
+          { sessionId: "b", displayName: "Butch", kills: 2, deaths: 4, alive: true },
+          { sessionId: "c", displayName: "Jerry", kills: 1, deaths: 5, alive: false },
+        ],
+        "self",
+      );
+
+      hud.update({
+        position: { x: camera.position.x, y: 1.6, z: camera.position.z },
+        playerCount: 4,
+        remoteCount: 3,
+        selfHp: num("hp", 78),
+        selfAlive: true,
+        selfRespawnAt: 0,
+        weaponSlot: num("slot", 0),
+        ammo: 24,
+        reserve: 87,
+        pistolAmmo: 12,
+        pistolReserve: 36,
+        reloadProgress: 0,
+        frags: 2,
+        flashes: 2,
+        smokes: 1,
+        spread: 0.01,
+      });
+
+      renderer.render(scene, camera);
+      requestAnimationFrame(() => {
+        renderer.render(scene, camera);
+        document.title = "ready";
+      });
+    </script>
+  </body>
+</html>

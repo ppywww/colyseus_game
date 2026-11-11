@@ -29,6 +29,8 @@ import path from "node:path";
 
 import * as THREE from "three";
 
+import { characterIndexOf, characterOfIndex } from "@colyseus-fps/shared";
+
 import { ViewModel, KNIFE_TWIRL_CYCLE_MS, KNIFE_TWIRL_GAP_MS } from "../src/game/viewmodel.js";
 import { AvatarModel } from "../src/game/avatar-model.js";
 
@@ -58,6 +60,7 @@ const RELOAD = arg("reload", 0);
 const OUT = path.resolve(strArg("out", "preview.png"));
 const TARGET = strArg("target", "viewmodel");
 const TEAM = strArg("team", "CT") === "T" ? "T" : "CT";
+const CHARACTER = characterOfIndex(characterIndexOf(strArg("character", "tom")));
 const YAW = arg("yaw", 0);
 const DEBUG_COLORS = process.argv.includes("--debug-colors");
 
@@ -71,7 +74,7 @@ if (TARGET === "avatar") {
   camera.fov = 40;
   camera.position.set(Math.sin(YAW) * 0.01 + 0.55, 1.18, -2.75);
   camera.lookAt(0, 0.98, 0);
-  const avatar = new AvatarModel(TEAM);
+  const avatar = new AvatarModel(TEAM, CHARACTER);
   avatar.root.rotation.y = YAW;
   avatar.root.updateMatrixWorld(true);
   rootObject = avatar.root;
@@ -151,7 +154,9 @@ interface Triangle {
 
 const triangles: Triangle[] = [];
 let debugIndex = 0;
-const lightDir = new THREE.Vector3(-0.35, 0.75, 0.55).normalize();
+// 主光方向必须跟着相机走：视模型的相机在原点朝 −Z，人物模式的相机在 −Z 朝 +Z。
+// 用一条固定光，总有一个模式是"背着光"——正面全变成 45% 亮度，肤色/毛色根本判不出来。
+const lightDir = new THREE.Vector3(-0.38, 0.72, TARGET === "avatar" ? -0.58 : 0.55).normalize();
 const a = new THREE.Vector3();
 const b = new THREE.Vector3();
 const c = new THREE.Vector3();

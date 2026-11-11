@@ -208,6 +208,8 @@
       .muted { color: var(--ink-3); font-size: 13.5px; }
 
       .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+      figure { margin: 0; }
+      figcaption { margin-top: 8px; font-size: 12px; font-weight: 700; color: #8a7590; letter-spacing: 0.04em; }
       .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
       .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
 
@@ -800,8 +802,85 @@
         </div>
       </section>
 
+
+      <section id="g7">
+        <div class="h2">
+          <div class="no">07</div>
+          <h2>实机实现</h2>
+          <div class="en">BUILT &amp; SHIPPED</div>
+        </div>
+
+        <div class="card">
+          <h3>三阶段已全部落地，以下是真机截图</h3>
+          <p class="muted">
+            第 03–06 节是设计提案，本节是<b>代码跑出来的画面</b>。截图来自离线预览工具：
+            大厅走无头浏览器、地图与 HUD 走 <code>tools/arena-preview.html</code> 与
+            <code>tools/hud-preview.html</code>、角色走 <code>scripts/preview-viewmodel.mts --target avatar</code>。
+            三套工具都留在仓库里，改完样式可以随时重出图对照。
+          </p>
+        </div>
+
+        <div class="card" style="margin-top: 18px">
+          <h3>大厅 · 角色选择</h3>
+          <img class="shot" src="screenshots/01-lobby.png" alt="大厅" />
+          <p class="muted">
+            左侧品牌区 + 2×2 角色卡。选中态用奶酪黄 + 抬起 2px + 黑色对勾，
+            卡片是真正的 <code>&lt;button&gt;</code>，支持 Tab 与键盘触发；选择写入 localStorage，
+            进游戏后左上角头像与第三人称模型都跟着换。
+          </p>
+        </div>
+
+        <div class="card" style="margin-top: 18px">
+          <h3>对局内 · HUD</h3>
+          <img class="shot" src="screenshots/02-hud.png" alt="HUD" />
+          <p class="muted">
+            左上圆形雷达（厨房分区中文名独立成胶囊，不挤在圆盘里）、左下生命面板带头像、
+            中下六槽位武器栏、右下弹药。调试信息改成奶油底小胶囊——直接压在深色橱柜上原本完全读不出来。
+          </p>
+        </div>
+
+        <div class="card" style="margin-top: 18px">
+          <h3>地图 · 厨房</h3>
+          <img class="shot" src="screenshots/03-arena-mid.png" alt="中央地砖" />
+          <img class="shot" src="screenshots/04-arena-siteb.png" alt="水槽包点" />
+          <img class="shot" src="screenshots/05-arena-wide.png" alt="台面长台" />
+          <p class="muted">
+            地砖 / 橱柜门板 / 小白砖 / 木箱四张程序化贴图，全部按<b>世界尺度</b>平铺
+            （盒子投影 UV，一格砖 0.85m），所以 3m 的矮柜和 30m 的外墙贴图密度一致。
+            高柜换成白瓷砖立柱，是为了让 30m 外的玩家有两个明度锚点分清方位。
+          </p>
+        </div>
+
+        <div class="card" style="margin-top: 18px">
+          <h3>角色 · 四只</h3>
+          <div class="grid2">
+            <figure>
+              <img class="shot" src="screenshots/06-character-tom.png" alt="Tom" />
+              <figcaption>Tom · 灰蓝猫 · 围巾</figcaption>
+            </figure>
+            <figure>
+              <img class="shot" src="screenshots/06-character-jerry.png" alt="Jerry" />
+              <figcaption>Jerry · 棕鼠 · 领结</figcaption>
+            </figure>
+            <figure>
+              <img class="shot" src="screenshots/06-character-spike.png" alt="Spike" />
+              <figcaption>Spike · 斗牛犬 · 项圈</figcaption>
+            </figure>
+            <figure>
+              <img class="shot" src="screenshots/06-character-butch.png" alt="Butch" />
+              <figcaption>Butch · 黑猫 · 领结</figcaption>
+            </figure>
+          </div>
+          <p class="muted">
+            关节处全部加了「气球球」把胶囊段的断口吞掉，这是低多边形角色不显廉价的关键。
+            角色只改毛色 / 耳朵 / 尾巴 / 配饰，判定体与手感完全一致——
+            敌我识别交给围巾颜色（T 番茄红 / CT 天空蓝），不交给毛色。
+          </p>
+        </div>
+      </section>
+
       <footer>
-        猫鼠战场 · 产品视觉效果手册 v0.1 · 2026-11-11 · 界面与地图均为设计提案，非最终实现
+        猫鼠战场 · 产品视觉效果手册 v0.3 · 2026-11-12 · 第 07 节为实机截图，其余为已落地的设计稿
       </footer>
     </div>
   </body>

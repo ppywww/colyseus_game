@@ -25,8 +25,8 @@ import { ARC_MAX_POINTS, computeThrowArc } from "./throw-arc.js";
 interface LocalGrenade {
   id: number;
   type: ThrowableType;
-  mesh: THREE.Mesh;
-  material: THREE.MeshStandardMaterial;
+  /** 飞行中的道具本体（平底锅 / 胡椒瓶 / 面粉袋，按类型从模板克隆）。 */
+  mesh: THREE.Object3D;
   x: number;
   y: number;
   z: number;
@@ -86,7 +86,17 @@ export class ThrowableSystem {
   private readonly grenades = new Map<number, LocalGrenade>();
   private readonly clouds = new Map<string, SmokeVisual>();
   private readonly smoke = smokeTexture();
-  private readonly grenadeGeometry = new THREE.SphereGeometry(GRENADE_RADIUS, 12, 10);
+  /**
+   * 三种道具的飞行模型模板（每个类型一套几何 + 材质）。
+   *
+   * 为什么用模板克隆而不是每次 new：投掷物在 2.2 秒里可能同时有 3–4 个在飞，
+   * 每次 `new CylinderGeometry(...)` 都会在 GPU 上再传一份顶点数据；
+   * 克隆共享几何与材质，`remove` 时也不需要 dispose（只在整局销毁时释放一次）。
+   */
+  private readonly propTemplates: Record<ThrowableType, THREE.Group>;
+  private readonly propMaterials: THREE.Material[] = [];
+  /** 落点环的第二层（内圈）：和主环一起旋转，读起来像"瞄准标尺"。 */
+  private readonly landingInner: THREE.Mesh;
 
   /* ---------------- 投掷抛物线辅助 ---------------- */
 
@@ -121,9 +131,11 @@ export class ThrowableSystem {
 
     this.arcMaterial = new THREE.ShaderMaterial({
       uniforms: {
-        uColor: { value: new THREE.Color(0x3d8ce8) },
+        uColor: { value: new THREE.Color(0xff6a4d) },
+        // 墨色描边：整条辅助线在米色地砖、白瓷砖、木柜上都读得出来
+        uRim: { value: new THREE.Color(0x2b1b2f) },
         // CSS 像素，着色器里再乘设备像素比
-        uSize: { value: 7 },
+        uSize: { value: 9 },
         uPixelRatio: { value: 1 },
         uOpacity: { value: 0.95 },
       },
@@ -141,16 +153,22 @@ export class ThrowableSystem {
       `,
       fragmentShader: `
         uniform vec3 uColor;
+        uniform vec3 uRim;
         uniform float uOpacity;
         varying float vFade;
         void main() {
           // gl_PointCoord 是 0..1 的方形贴图坐标：裁成圆，并留 1 像素软边
           float d = length(gl_PointCoord - vec2(0.5));
-          float alpha = smoothstep(0.5, 0.34, d);
+          // 核心半径 32%、外圈是 3px 墨线。
+          // 之前是纯色圆点：白点在米色天空/瓷砖上直接消失，玩家以为"线断了"。
+          // 加墨边之后，任何底色上都有轮廓，读感接近 CS2 的投掷轨迹。
+          float alpha = smoothstep(0.5, 0.43, d);
           if (alpha <= 0.02) {
             discard;
           }
-          gl_FragColor = vec4(uColor, alpha * vFade * uOpacity);
+          float core = smoothstep(0.36, 0.3, d);
+          vec3 color = mix(uRim, uColor, core);
+          gl_FragColor = vec4(color, alpha * vFade * uOpacity);
         }
       `,
       transparent: true,
@@ -185,6 +203,87 @@ export class ThrowableSystem {
     this.landingRing.name = "throw-arc-landing";
     this.landingRing.renderOrder = 3;
     this.scene.add(this.landingRing);
+
+    // 内圈：一根细环，跟着主环一起脉动，让落点标记有"准星"的层次而不是一个大圈
+    this.landingInner = new THREE.Mesh(
+      new THREE.RingGeometry(LANDING_RING_RADIUS * 0.16, LANDING_RING_RADIUS * 0.26, 22),
+      this.landingMaterial,
+    );
+    this.landingInner.rotation.x = -Math.PI / 2;
+    this.landingInner.visible = false;
+    this.landingInner.renderOrder = 3;
+    this.scene.add(this.landingInner);
+
+    this.propTemplates = this.buildPropTemplates();
+  }
+
+  /**
+   * 三种投掷物的飞行模型：**平底锅 / 胡椒瓶 / 面粉袋**。
+   *
+   * 尺寸以 {@link GRENADE_RADIUS}（0.11m 碰撞半径）为基准放大 20%：碰撞体是隐形的，
+   * 视觉略大一点才不会出现"锅沿明明贴到墙了却没弹"的观感。
+   */
+  private buildPropTemplates(): Record<ThrowableType, THREE.Group> {
+    const make = (color: number, roughness = 0.6, metalness = 0.08): THREE.MeshStandardMaterial => {
+      const material = new THREE.MeshStandardMaterial({ color, roughness, metalness });
+      this.propMaterials.push(material);
+      return material;
+    };
+    const panMetal = make(0x4a4150, 0.42, 0.55);
+    const wood = make(0x8a5a34, 0.8, 0.02);
+    const cream = make(0xfff3e0, 0.82, 0.02);
+    const cheese = make(0xffc63d, 0.55, 0.05);
+    const r = GRENADE_RADIUS * 1.2;
+
+    // 0 · 平底锅：锅面竖着（飞行时转起来才像"翻着跟头飞出去的锅"）
+    const pan = new THREE.Group();
+    const panBody = new THREE.Mesh(new THREE.CylinderGeometry(r * 1.25, r * 1.15, r * 0.35, 16), panMetal);
+    panBody.rotation.x = Math.PI / 2;
+    pan.add(panBody);
+    const handle = new THREE.Mesh(new THREE.BoxGeometry(r * 0.22, r * 0.22, r * 1.4), wood);
+    handle.position.z = r * 1.1;
+    pan.add(handle);
+    // 锅底那颗煎蛋：飞起来时最显眼的识别点
+    const egg = new THREE.Mesh(new THREE.SphereGeometry(r * 0.5, 12, 8), cream);
+    egg.scale.set(1, 0.35, 1);
+    egg.position.z = -r * 0.2;
+    egg.rotation.x = Math.PI / 2;
+    pan.add(egg);
+    const yolk = new THREE.Mesh(new THREE.SphereGeometry(r * 0.22, 10, 8), cheese);
+    yolk.scale.set(1, 0.5, 1);
+    yolk.position.z = -r * 0.28;
+    yolk.rotation.x = Math.PI / 2;
+    pan.add(yolk);
+
+    // 1 · 胡椒瓶：瓶身 + 旋盖
+    const pepper = new THREE.Group();
+    const bottle = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.62, r * 0.7, r * 1.7, 14), cream);
+    pepper.add(bottle);
+    const cap = new THREE.Mesh(new THREE.ConeGeometry(r * 0.62, r * 0.6, 14), panMetal);
+    cap.position.y = r * 1.15;
+    pepper.add(cap);
+    pepper.add(new THREE.Mesh(new THREE.CylinderGeometry(r * 0.74, r * 0.74, r * 0.2, 14), cheese));
+
+    // 2 · 面粉袋：鼓袋 + 扎口 + 撒出来的粉
+    const flour = new THREE.Group();
+    const sack = new THREE.Mesh(new THREE.SphereGeometry(r * 1.05, 14, 10), cream);
+    sack.scale.set(1, 1.18, 0.94);
+    flour.add(sack);
+    const tie = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.34, r * 0.46, r * 0.42, 12), wood);
+    tie.position.y = r * 1.2;
+    flour.add(tie);
+    const puff = new THREE.Mesh(new THREE.SphereGeometry(r * 0.44, 10, 8), cream);
+    puff.scale.set(1, 0.68, 1);
+    puff.position.y = r * 1.5;
+    flour.add(puff);
+    // 袋子上的"面粉"印字块（没有文字，只用一块浅色标签示意）
+    const label = new THREE.Mesh(new THREE.BoxGeometry(r * 0.9, r * 0.7, r * 0.02), cheese);
+    label.position.z = -r * 0.92;
+    flour.add(label);
+    // 让袋子中心落在碰撞球心上（否则"球心在地上时袋子还悬着半截"）
+    sack.position.y = -r * 0.18;
+
+    return { frag: pan, flash: pepper, smoke: flour };
   }
 
   /**
@@ -208,10 +307,10 @@ export class ThrowableSystem {
   ): void {
     if (this.arcType !== type) {
       this.arcType = type;
-      // 三种投掷物用不同颜色，避免"以为拿的是闪、其实是烟"
-      // 三种投掷物用三种颜色，避免"以为拿的是闪、其实是烟"。
-      // 都用**中饱和**色：浅色点在米色天空上看不见，深色点在暗墙上又看不见。
-      const color: number = type === "frag" ? 0xff8a3d : type === "flash" ? 0xf5f9ff : 0x3d8ce8;
+      // 三种道具用三种颜色，避免"以为拿的是胡椒瓶、其实是面粉袋"：
+      //   平底锅 = 番茄红（危险）、胡椒瓶 = 奶酪黄（刺眼）、面粉袋 = 冰蓝（烟幕）。
+      // 都用**中饱和**色：纯白在米色地砖上会消失，深色在木柜前又会糊掉。
+      const color: number = type === "frag" ? 0xff6a4d : type === "flash" ? 0xffd35c : 0xa8dcf5;
       (this.arcMaterial.uniforms.uColor?.value as THREE.Color).setHex(color);
       this.landingMaterial.color.setHex(color);
     }
@@ -244,6 +343,7 @@ export class ThrowableSystem {
 
     if (arc.endpoint === null) {
       this.landingRing.visible = false;
+      this.landingInner.visible = false;
       return;
     }
 
@@ -282,11 +382,17 @@ export class ThrowableSystem {
       }
     }
     this.landingRing.visible = true;
+    // 内圈永远跟主环同位置同姿态：一个"环 + 芯"的靶心比单环更容易在远处读出圆心
+    this.landingInner.position.copy(this.landingRing.position);
+    this.landingInner.rotation.copy(this.landingRing.rotation);
+    this.landingInner.scale.copy(this.landingRing.scale);
+    this.landingInner.visible = true;
   }
 
   public hideAimArc(): void {
     this.arcPoints.visible = false;
     this.landingRing.visible = false;
+    this.landingInner.visible = false;
   }
 
   /** 服务端广播投掷：立刻生成本地预测的飞行体。 */
@@ -294,15 +400,8 @@ export class ThrowableSystem {
     if (this.grenades.has(message.id)) {
       return;
     }
-    const config = THROWABLES[message.type];
-    const material = new THREE.MeshStandardMaterial({
-      color: config.color,
-      roughness: 0.55,
-      metalness: 0.35,
-      emissive: config.color,
-      emissiveIntensity: message.type === "frag" ? 0.25 : 0.1,
-    });
-    const mesh = new THREE.Mesh(this.grenadeGeometry, material);
+    // 克隆模板：几何与材质共享，只复制层级结构（成本约等于一次 group 构造）
+    const mesh = this.propTemplates[message.type].clone(true);
     mesh.position.set(message.origin.x, message.origin.y, message.origin.z);
     this.scene.add(mesh);
 
@@ -310,7 +409,6 @@ export class ThrowableSystem {
       id: message.id,
       type: message.type,
       mesh,
-      material,
       x: message.origin.x,
       y: message.origin.y,
       z: message.origin.z,
@@ -396,7 +494,7 @@ export class ThrowableSystem {
       return;
     }
     this.scene.remove(grenade.mesh);
-    grenade.material.dispose();
+    // 几何与材质来自共享模板，这里不能 dispose（否则下一个同类道具会变成黑块）
     this.grenades.delete(id);
   }
 
@@ -433,14 +531,23 @@ export class ThrowableSystem {
   public dispose(): void {
     for (const grenade of this.grenades.values()) {
       this.scene.remove(grenade.mesh);
-      grenade.material.dispose();
     }
     this.grenades.clear();
 
     for (const [id, visual] of this.clouds) {
       this.destroyCloud(id, visual);
     }
-    this.grenadeGeometry.dispose();
+    // 模板的几何只在这里释放一次（飞行体全部是共享几何的克隆）
+    for (const template of Object.values(this.propTemplates)) {
+      template.traverse((object) => {
+        if (object instanceof THREE.Mesh) {
+          object.geometry.dispose();
+        }
+      });
+    }
+    for (const material of this.propMaterials) {
+      material.dispose();
+    }
     this.smoke.dispose();
     this.scene.remove(this.arcPoints);
     this.arcGeometry.dispose();
@@ -448,5 +555,7 @@ export class ThrowableSystem {
     this.scene.remove(this.landingRing);
     this.landingRing.geometry.dispose();
     this.landingMaterial.dispose();
+    this.scene.remove(this.landingInner);
+    this.landingInner.geometry.dispose();
   }
 }

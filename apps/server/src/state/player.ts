@@ -126,6 +126,16 @@ export class Player extends Schema {
   @type("string")
   public team: string = "T";
 
+  /**
+   * 角色下标（{@link CHARACTER_IDS} 的顺序）。
+   *
+   * 只影响外观：远端玩家按它选毛色/耳朵/尾巴，HUD 与结算按它取头像。
+   * 为什么会进状态同步而不是"各客户端自己随机"：角色是玩家在大厅主动选的，
+   * 别人看到的必须和他自己看到的一致，否则"我选了 Tom，你眼里我是 Jerry"。
+   */
+  @type("uint8")
+  public character: number = 0;
+
   /* ---------------- 仅服务端使用（不同步） ---------------- */
 
   /** 上次出生使用的队内下标（出生点"避免连续同点"用），-1 表示尚未出生。 */

@@ -5,30 +5,39 @@
  * **一致性**——大厅卡片、HUD 生命面板、武器栏、结算表如果各自存一份路径，
  * 改一次配色就要找四个地方，迟早会不一致。
  *
+ * 头像与第三人称模型是**同一套设定**：`CHARACTERS[i].id` 决定毛色与耳朵，
+ * `HEADS[id]` 是它的正面剪影。两者必须一起改，否则"大厅看着是 Tom、进去是灰兵"。
+ *
  * 约定：
  *   - 全部 52×52（头像）或 40×40（图标）viewBox，调用方用 CSS 控制尺寸；
  *   - 描边统一 `#2B1B2F`（--ink）、3px，圆角连接——这是整套视觉的骨架；
  *   - 图标用 `currentColor`，跟随武器栏的选中态变色，不写死颜色。
  */
 
-/** 角色 id（与设计手册「角色」一节一致）。 */
-export type CharacterId = "tom" | "jerry" | "spike" | "butch";
+import type { CharacterId } from "@colyseus-fps/shared";
+
+export type { CharacterId };
 
 export interface CharacterProfile {
   id: CharacterId;
   name: string;
-  /** 一句话定位，显示在大厅阵容卡与结算表。 */
+  /** 一句话定位，显示在大厅阵容卡与结算表（**不含数值**：四个角色属性完全一致）。 */
   role: string;
   /** 头像底色（比角色主色更浅，保证墨线头像能压住）。 */
   tint: string;
 }
 
-/** 四个角色的元数据：大厅阵容卡、HUD 头像、结算表共用。 */
+/**
+ * 四个角色的元数据：大厅阵容卡、HUD 头像、结算表共用。
+ *
+ * 为什么角色没有数值差异：4v4 竞技射击里"选人 = 选强度"会让路人局第一秒就在抢人。
+ * 四只角色的血量、移速、武器完全一致，只换毛色、耳朵、尾巴与配饰。
+ */
 export const CHARACTERS: readonly CharacterProfile[] = [
-  { id: "tom", name: "Tom", role: "均衡 · 100 血", tint: "#DCE6EF" },
-  { id: "jerry", name: "Jerry", role: "敏捷 · 85 血", tint: "#F7DFC4" },
-  { id: "spike", name: "Spike", role: "重装 · 130 血", tint: "#EFDCBA" },
-  { id: "butch", name: "Butch", role: "狙击 · 90 血", tint: "#DAD1E0" },
+  { id: "tom", name: "Tom", role: "灰蓝猫 · 家常", tint: "#DCE6EF" },
+  { id: "jerry", name: "Jerry", role: "小老鼠 · 灵巧", tint: "#F7DFC4" },
+  { id: "spike", name: "Spike", role: "斗牛犬 · 敦实", tint: "#EFDCBA" },
+  { id: "butch", name: "Butch", role: "黑猫 · 冷面", tint: "#DAD1E0" },
 ];
 
 const INK = "#2B1B2F";

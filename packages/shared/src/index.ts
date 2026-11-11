@@ -81,10 +81,54 @@ export const MESSAGE_TYPES = {
 
 export type MessageType = (typeof MESSAGE_TYPES)[keyof typeof MESSAGE_TYPES];
 
+/* ------------------------------------------------------------------ *
+ * 角色（纯外观：只决定第三人称模型、头像与大厅卡片）
+ *
+ * 为什么角色**不带任何数值差异**：本作是 4v4 竞技射击，血量/移速/伤害一旦按角色
+ * 分档，等于把"选人"变成"选强度"，路人局第一秒就在抢 Spike。
+ * 所以四个角色只改毛色、耳朵、尾巴与体型轮廓，判定体与手感完全一致。
+ * 角色下标随状态同步（`Player.character`），保证"别人看你"和"你看自己"是同一只。
+ * ------------------------------------------------------------------ */
+
+export const CHARACTER_IDS = ["tom", "jerry", "spike", "butch"] as const;
+
+export type CharacterId = (typeof CHARACTER_IDS)[number];
+
+export const CHARACTER_COUNT: number = CHARACTER_IDS.length;
+
+/** 默认角色（未选择 / 非法输入时的兜底）。 */
+export const CHARACTER_DEFAULT: CharacterId = "tom";
+
+/**
+ * 把任意输入（下标数字 / 角色 id 字符串）折成合法下标。
+ *
+ * 双入口是必要的：大厅传 id 字符串（可读、抗改名），状态同步传下标（uint8 省字节）。
+ */
+export function characterIndexOf(raw: unknown): number {
+  // 先排数组与 null：`[]` 也满足 typeof === "object"，而且 Number([]) === 0 会静默通过
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return Math.min(CHARACTER_COUNT - 1, Math.max(0, Math.trunc(raw)));
+  }
+  if (typeof raw === "string") {
+    const index: number = CHARACTER_IDS.indexOf(raw.trim().toLowerCase() as CharacterId);
+    if (index >= 0) {
+      return index;
+    }
+  }
+  return CHARACTER_IDS.indexOf(CHARACTER_DEFAULT);
+}
+
+/** 下标 → 角色 id（越界自动钳制，永不返回 undefined）。 */
+export function characterOfIndex(index: number): CharacterId {
+  return CHARACTER_IDS[characterIndexOf(index)] as CharacterId;
+}
+
 /** 加入房间时客户端提交的选项。 */
 export interface JoinRoomOptions {
   name?: string;
   protocolVersion: number;
+  /** 角色 id（{@link CHARACTER_IDS} 之一）；缺省 / 非法时按 {@link CHARACTER_DEFAULT}。 */
+  character?: string;
 }
 
 /** 客户端 Ping 消息，用于验证消息通道。 */
@@ -931,25 +975,29 @@ export interface MapZone {
 /**
  * 分区表（与小地图上的字一一对应）。
  *
+ * 主题层：这张图在设定上是"一只猫/鼠眼里的厨房"——80×80m 的台面、地砖、桌下通道。
+ * **id 保持原样**（site_a / mid / tunnels …）：小地图标签集合、可达性测试与
+ * 将来的下包/拆包判定都靠 id 定位，改 id 会同时改掉三处契约；只改中文名。
+ *
  * 只用于**显示与语义**，不参与碰撞或判定：碰撞永远只看 {@link OBSTACLES}。
- * 区域的矩形允许互相重叠（例如「中门」落在「中路」里），标注时按数组顺序取第一个命中的。
+ * 区域的矩形允许互相重叠（例如「水槽门」落在「水槽」里），标注时按数组顺序取第一个命中的。
  */
 export const MAP_ZONES: readonly MapZone[] = [
-  { id: "site_a", label: "A 点", kind: "site", minX: -38, maxX: -18, minZ: -30, maxZ: -14 },
-  { id: "site_b", label: "B 点", kind: "site", minX: 18, maxX: 38, minZ: -30, maxZ: -14 },
-  { id: "spawn_t", label: "T 出生点", kind: "spawn", minX: -9, maxX: 9, minZ: 26, maxZ: 37 },
-  { id: "spawn_ct", label: "CT 出生点", kind: "spawn", minX: -9, maxX: 9, minZ: -37, maxZ: -27 },
-  { id: "long_a", label: "A 大", kind: "lane", minX: -38, maxX: -29, minZ: -14, maxZ: 17 },
-  { id: "outside_long", label: "A 外", kind: "area", minX: -38, maxX: -21, minZ: 18, maxZ: 37 },
-  { id: "short_a", label: "短 A", kind: "lane", minX: -17, maxX: -11, minZ: -22, maxZ: -14 },
+  { id: "site_a", label: "灶台", kind: "site", minX: -38, maxX: -18, minZ: -30, maxZ: -14 },
+  { id: "site_b", label: "水槽", kind: "site", minX: 18, maxX: 38, minZ: -30, maxZ: -14 },
+  { id: "spawn_t", label: "鼠洞", kind: "spawn", minX: -9, maxX: 9, minZ: 26, maxZ: 37 },
+  { id: "spawn_ct", label: "猫窝", kind: "spawn", minX: -9, maxX: 9, minZ: -37, maxZ: -27 },
+  { id: "long_a", label: "台面长台", kind: "lane", minX: -38, maxX: -29, minZ: -14, maxZ: 17 },
+  { id: "outside_long", label: "台面外", kind: "area", minX: -38, maxX: -21, minZ: 18, maxZ: 37 },
+  { id: "short_a", label: "短台", kind: "lane", minX: -17, maxX: -11, minZ: -22, maxZ: -14 },
   { id: "catwalk", label: "猫道", kind: "lane", minX: -15, maxX: -11, minZ: -14, maxZ: -8 },
-  { id: "ct_mid", label: "CT 中路", kind: "area", minX: -9, maxX: 9, minZ: -25, maxZ: -8 },
-  { id: "mid", label: "中路", kind: "lane", minX: -5, maxX: 5, minZ: -8, maxZ: 24 },
-  { id: "b_doors", label: "B 门", kind: "lane", minX: 11, maxX: 17, minZ: -22, maxZ: -18 },
-  { id: "tunnels", label: "B 洞", kind: "lane", minX: 28, maxX: 38, minZ: 2, maxZ: 18 },
-  { id: "lower_tunnel", label: "下隧道", kind: "lane", minX: 24, maxX: 30, minZ: -14, maxZ: -4 },
-  { id: "ct_to_b", label: "CT → B", kind: "lane", minX: 11, maxX: 26, minZ: -37, maxZ: -28 },
-  { id: "ct_to_a", label: "CT 坡道", kind: "lane", minX: -28, maxX: -11, minZ: -37, maxZ: -31 },
+  { id: "ct_mid", label: "冰箱前", kind: "area", minX: -9, maxX: 9, minZ: -25, maxZ: -8 },
+  { id: "mid", label: "中央地砖", kind: "lane", minX: -5, maxX: 5, minZ: -8, maxZ: 24 },
+  { id: "b_doors", label: "水槽门", kind: "lane", minX: 11, maxX: 17, minZ: -22, maxZ: -18 },
+  { id: "tunnels", label: "桌下通道", kind: "lane", minX: 28, maxX: 38, minZ: 2, maxZ: 18 },
+  { id: "lower_tunnel", label: "桌下低道", kind: "lane", minX: 24, maxX: 30, minZ: -14, maxZ: -4 },
+  { id: "ct_to_b", label: "后厨走廊", kind: "lane", minX: 11, maxX: 26, minZ: -37, maxZ: -28 },
+  { id: "ct_to_a", label: "灶台坡道", kind: "lane", minX: -28, maxX: -11, minZ: -37, maxZ: -31 },
 ];
 
 /** 查询某点所属区域（重叠时返回数组中靠前的一块）。 */
@@ -1387,33 +1435,39 @@ export interface ThrowableConfig {
   cloudDurationMs?: number;
 }
 
-/** 三种投掷物的统一配置（客户端 HUD 与服务端结算共用）。 */
+/** 三种投掷物的统一配置（客户端 HUD 与服务端结算共用）。
+ *
+ * 主题层：三种投掷物全部换成厨房道具——平底锅 / 胡椒瓶 / 面粉袋。
+ * 名称与配色只影响表现；`fuseMs` / `radius` / 伤害仍是原来那套数值（手感不变）。 */
 export const THROWABLES: Record<ThrowableType, ThrowableConfig> = {
   frag: {
-    label: "手雷",
+    // 平底锅：扔出去"哐"地一声砸在地上，2.2 秒后锅底炸开
+    label: "平底锅",
     // 半径 6 → 9.5：21m/s 的出手速度下，手雷会滑到 8–9m 外才停下，
     // 6m 半径意味着"看得见的爆炸、打不到的伤害"。9.5 ≈ CS 的 350u 杀伤半径。
     initialCount: 2,
     fuseMs: 2200,
     radius: 9.5,
-    color: 0x4b5563,
+    color: 0xe8432f,
     maxDamage: 100,
     minDamage: 18,
   },
   flash: {
-    label: "闪光弹",
+    // 胡椒瓶：摔碎后一蓬胡椒粉，正面的人直接被呛到睁不开眼
+    label: "胡椒瓶",
     initialCount: 2,
     fuseMs: 1600,
     radius: 16,
-    color: 0xd1d5db,
+    color: 0xffc63d,
     maxBlindMs: 3200,
   },
   smoke: {
-    label: "烟雾弹",
+    // 面粉袋：破口后扬起一大团面粉白雾，正好当烟幕用
+    label: "面粉袋",
     initialCount: 2,
     fuseMs: 1400,
     radius: 7,
-    color: 0x9ca3af,
+    color: 0xfff8e9,
     cloudDurationMs: 16000,
   },
 };

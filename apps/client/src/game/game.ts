@@ -33,6 +33,7 @@ import {
   WEAPON_RELOAD_MS,
   WEAPON_SLOTS,
   ZONE_LABEL,
+  characterIndexOf,
   fireProfileOf,
   isGunSlot,
   nextSlot,
@@ -56,6 +57,7 @@ import {
   type ThrowableType,
   type WeaponFireProfile,
   type WeaponSlot,
+  type CharacterId,
 } from "@colyseus-fps/shared";
 
 import type { LobbyConnection } from "../net/connection.js";
@@ -368,6 +370,7 @@ export class Game {
     private readonly connection: LobbyConnection,
     private readonly selfSessionId: string,
     spawn: { x: number; y: number; z: number },
+    selfCharacter: CharacterId = "tom",
   ) {
     this.scene = new THREE.Scene();
     // 沙漠天空 + 暖沙色雾（雾 near = 40m，视模型最远 0.97m，绝不会被雾影响）
@@ -399,6 +402,10 @@ export class Game {
     this.hud = new Hud(container);
     this.remotePlayers = new RemotePlayerManager(this.scene, CLIENT_INTERPOLATION_DELAY_MS);
     this.viewModel = new ViewModel(this.camera);
+    // 角色只影响外观：HUD 头像、第一人称袖口/爪垫都跟着变（第三人称由 Player.character 同步）。
+    const characterIndex: number = characterIndexOf(selfCharacter);
+    this.hud.setSelfCharacter(characterIndex);
+    this.viewModel.setCharacter(characterIndex);
     this.effects = new CombatEffects(this.scene, this.camera);
     this.throwables = new ThrowableSystem(this.scene, this.effects);
 

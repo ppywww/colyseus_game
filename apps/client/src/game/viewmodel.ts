@@ -23,8 +23,11 @@ import * as THREE from "three";
 import {
   THROW_COOLDOWN_MS,
   WEAPON_SLOTS,
+  characterOfIndex,
   throwableTypeOfSlot,
 } from "@colyseus-fps/shared";
+
+import { CHARACTER_STYLES } from "./avatar-model.js";
 
 /* ------------------------------------------------------------------ *
  * 静态姿态与枪口挂点（数值来自参考文档 2.3.1 / 2.6.1，不要随手改）
@@ -451,24 +454,41 @@ export function computeReloadChargeOffset(progress: number): number {
  * 视模型：几何体装配 + 每帧动画
  * ------------------------------------------------------------------ */
 
-/** 共享材质组：25 个部件只引用这 9 个材质实例（不要每个 part new 一个）。 */
+/**
+ * 共享材质组：所有部件只引用这一小组实例（不要每个 part new 一个）。
+ *
+ * **主题层（v2）**：整套第一人称道具从"真枪 + 多普勒刀"换成**塑料玩具与餐具**。
+ * 卡通质感的判据不是"画得圆"，而是**反照率**：金属度压到 0.06、粗糙度提到 0.55 以上，
+ * 高光面积小、颜色才会像注塑件；留着 0.9 金属度就算涂成黄色也还是"镀金 AK"。
+ * 字段名沿用旧名（gold / wood / gunmetal）以免大面积改动几何代码，语义见每行注释。
+ */
 interface ViewmodelMaterials {
+  /** 主壳：奶酪黄注塑。 */
   gold: THREE.MeshStandardMaterial;
+  /** 高光件：浅奶酪。 */
   goldHi: THREE.MeshStandardMaterial;
+  /** 阴影件：深奶酪（原「磨损金属」）。 */
   worn: THREE.MeshStandardMaterial;
+  /** 配件塑料：天空蓝（握把 / 护木 / 枪托）。 */
   wood: THREE.MeshStandardMaterial;
+  /** 深蓝塑料：弹匣 / 内衬。 */
   mag: THREE.MeshStandardMaterial;
+  /** 爪垫（跟角色毛色一起变）。 */
   glove: THREE.MeshStandardMaterial;
   gloveHi: THREE.MeshStandardMaterial;
+  /** 袖口 = 角色毛色。 */
   sleeve: THREE.MeshStandardMaterial;
+  /** 墨色塑料：枪管、小件、叉颈。 */
   gunmetal: THREE.MeshStandardMaterial;
-  /** 刀身四段渐变（多普勒：柄端深蓝 → 刀尖亮蓝）。 */
+  /** 水箱：半透明天空蓝，玩具水枪的灵魂部件。 */
+  tank: THREE.MeshStandardMaterial;
+  /** 刀身四段渐变（现在是餐叉的四根齿：不锈钢的明暗过渡）。 */
   dopplerDeep: THREE.MeshStandardMaterial;
   dopplerMid: THREE.MeshStandardMaterial;
   dopplerHi: THREE.MeshStandardMaterial;
-  /** 刃口：几乎白的高光条，负责"刀很锋利"的读感。 */
+  /** 刃口：几乎白的高光条。 */
   dopplerEdge: THREE.MeshStandardMaterial;
-  /** 刀柄：石墨黑带一点冷蓝，和刀身的蓝拉开明度。 */
+  /** 柄：深蓝塑料。 */
   dopplerGrip: THREE.MeshStandardMaterial;
 }
 
@@ -502,8 +522,10 @@ export class ViewModel {
   private readonly throwableGroup: THREE.Group;
   private readonly muzzleAnchor: THREE.Object3D;
   private readonly pistolMuzzle: THREE.Object3D;
-  /** 投掷物球体：出手瞬间（t≈45%）会隐藏，切回该槽位时复位。 */
-  private readonly throwableBall: THREE.Mesh;
+  /** 手里那件道具的根节点：出手瞬间（t≈45%）整组隐藏，切回该槽位时复位。 */
+  private readonly throwableBall: THREE.Group;
+  /** 平底锅 / 胡椒瓶 / 面粉袋：按槽位切 visible（索引 0–2 ↔ 槽位 3–5）。 */
+  private readonly throwableProps: THREE.Group[] = [];
   private readonly magazineGroup: THREE.Group;
   private readonly charging: THREE.Mesh;
   private readonly materials: ViewmodelMaterials;
@@ -530,41 +552,33 @@ export class ViewModel {
   private handledFiringAt = 0;
 
   public constructor(private readonly camera: THREE.Camera) {
+    // 注塑件：metalness 一律 0.06，roughness 0.5–0.62 —— 只留一点点镜面，高光小而硬
+    const plastic = (color: number, roughness = 0.58): THREE.MeshStandardMaterial =>
+      new THREE.MeshStandardMaterial({ color, metalness: 0.06, roughness });
     this.materials = {
-      gold: new THREE.MeshStandardMaterial({ color: 0xc9a227, metalness: 0.9, roughness: 0.32 }),
-      goldHi: new THREE.MeshStandardMaterial({
-        color: 0xe8c766,
-        metalness: 0.95,
-        roughness: 0.18,
-        emissive: 0x6b5418,
-        emissiveIntensity: 0.12,
+      gold: plastic(0xffc63d, 0.52),
+      goldHi: plastic(0xffe08a, 0.46),
+      worn: plastic(0xe0a21a, 0.62),
+      wood: plastic(0x3fa9e0, 0.55),
+      mag: plastic(0x2b6f96, 0.6),
+      glove: plastic(0xfff3e0, 0.86),
+      gloveHi: plastic(0xffd9b8, 0.82),
+      sleeve: plastic(0x8ca3b8, 0.9),
+      gunmetal: plastic(0x2b1b2f, 0.5),
+      tank: new THREE.MeshStandardMaterial({
+        color: 0x7fd4f5,
+        metalness: 0.04,
+        roughness: 0.24,
+        transparent: true,
+        opacity: 0.72,
       }),
-      worn: new THREE.MeshStandardMaterial({ color: 0x6b5418, metalness: 0.6, roughness: 0.55 }),
-      wood: new THREE.MeshStandardMaterial({ color: 0x7a2e1e, metalness: 0, roughness: 0.72 }),
-      mag: new THREE.MeshStandardMaterial({ color: 0x4e1c12, metalness: 0.1, roughness: 0.65 }),
-      glove: new THREE.MeshStandardMaterial({ color: 0x35322e, metalness: 0, roughness: 0.88 }),
-      gloveHi: new THREE.MeshStandardMaterial({ color: 0x4d4842, metalness: 0.1, roughness: 0.75 }),
-      // 藏青夹克（对齐参考图里 FBI 特警的上衣），旧值 0x7a6a4f 是卡其，
-      // 在小刀视图里会变成一截"木头"接在手腕上
-      sleeve: new THREE.MeshStandardMaterial({ color: 0x2f3a4d, metalness: 0, roughness: 0.95 }),
-      gunmetal: new THREE.MeshStandardMaterial({ color: 0x3a3835, metalness: 0.85, roughness: 0.42 }),
 
-      // ---- 蝴蝶刀（蓝色多普勒）：低粗糙 + 高金属度，靠环境光出冷蓝反光 ----
-      dopplerDeep: new THREE.MeshStandardMaterial({
-        color: 0x16306b, metalness: 0.95, roughness: 0.24, emissive: 0x061027, emissiveIntensity: 0.5,
-      }),
-      dopplerMid: new THREE.MeshStandardMaterial({
-        color: 0x2f63c8, metalness: 0.95, roughness: 0.2, emissive: 0x0a1c46, emissiveIntensity: 0.6,
-      }),
-      dopplerHi: new THREE.MeshStandardMaterial({
-        color: 0x74a8ea, metalness: 0.92, roughness: 0.16, emissive: 0x123055, emissiveIntensity: 0.7,
-      }),
-      dopplerEdge: new THREE.MeshStandardMaterial({
-        color: 0xd6ecff, metalness: 0.98, roughness: 0.08, emissive: 0x3f7fc4, emissiveIntensity: 0.9,
-      }),
-      dopplerGrip: new THREE.MeshStandardMaterial({
-        color: 0x1c2230, metalness: 0.82, roughness: 0.44,
-      }),
+      // ---- 餐叉：不锈钢四齿。金属度保留（餐具就该反光），但粗糙度提一点避免"镜面塑料" ----
+      dopplerDeep: new THREE.MeshStandardMaterial({ color: 0x7d8894, metalness: 0.7, roughness: 0.42 }),
+      dopplerMid: new THREE.MeshStandardMaterial({ color: 0xb9c6d2, metalness: 0.72, roughness: 0.34 }),
+      dopplerHi: new THREE.MeshStandardMaterial({ color: 0xdde7f0, metalness: 0.74, roughness: 0.26 }),
+      dopplerEdge: new THREE.MeshStandardMaterial({ color: 0xf6fbff, metalness: 0.76, roughness: 0.16 }),
+      dopplerGrip: plastic(0x2b6f96, 0.62),
     };
 
     this.holder = new THREE.Group();
@@ -613,6 +627,20 @@ export class ViewModel {
     // ---- 16：拉机柄（换弹时沿 +Z 后拉） ----
     this.charging = this.box(0.014, 0.014, 0.04, this.materials.goldHi, 0.04, 0.048, -0.05);
     this.gunGroup.add(this.charging);
+
+    // ---- 16b：玩具水枪的两件"灵魂部件" ----
+    // 只靠改颜色是骗不了人的：真枪的护木/导气管轮廓 + 黄色 = 一把涂黄的 AK。
+    // 加一只**半透明水箱**和一个**喷嘴圆环**之后，剪影才从"枪"变成"水枪"。
+    this.gunGroup.add(
+      this.cylinder(0.042, 0.2, this.materials.tank, 0, 0.098, -0.12, Math.PI / 2),
+    );
+    // 水箱的绑带（两道深蓝塑料，把透明件"绑"在枪身上，不然像浮在空中）
+    this.gunGroup.add(this.box(0.096, 0.014, 0.016, this.materials.mag, 0, 0.074, -0.05));
+    this.gunGroup.add(this.box(0.096, 0.014, 0.016, this.materials.mag, 0, 0.074, -0.19));
+    // 喷嘴圆环：正对镜头，读作"这是出水口"
+    const nozzle = new THREE.Mesh(new THREE.TorusGeometry(0.027, 0.009, 8, 18), this.materials.mag);
+    nozzle.position.set(0, 0.03, -0.582);
+    this.gunGroup.add(nozzle);
 
     // ---- 17–19：右手套（掌背 / 四指 / 拇指） ----
     this.gunGroup.add(this.box(0.062, 0.075, 0.085, this.materials.glove, 0.005, -0.088, 0.015, 0.3, 0, 0.1));
@@ -744,62 +772,35 @@ export class ViewModel {
     // 再滚 10°：完全正对会显得"贴图一样平"，露出一点厚度才像实物
     this.knifeGroup.rotateZ(-0.18);
 
-    // ---- 刀身：挤出成型的锥形刃（不是叠方块）----
-    // 用 `ExtrudeGeometry` 而不是几个 `BoxGeometry`：叠方块在斜视角下会露出台阶，
-    // 一眼就是"积木刀"。这里给一个真实的水滴形轮廓：刀背直、刃口上收、尖端收成一点。
-    // 轮廓画在 XY 平面（+X = 刀尖方向），挤出后绕 Y 转 90° 让 +X 对齐 −Z。
-    const bladeShape = new THREE.Shape();
-    bladeShape.moveTo(0, -0.025);
-    bladeShape.lineTo(0.05, -0.027);
-    bladeShape.lineTo(0.2, -0.019);
-    bladeShape.lineTo(0.26, 0);          // 刀尖
-    bladeShape.lineTo(0.212, 0.016);
-    bladeShape.lineTo(0.05, 0.024);
-    bladeShape.lineTo(0, 0.026);
-    bladeShape.closePath();
-    const blade = new THREE.Mesh(
-      new THREE.ExtrudeGeometry(bladeShape, {
-        depth: 0.007,
-        bevelEnabled: true,
-        bevelThickness: 0.0016,
-        bevelSize: 0.0016,
-        bevelSegments: 1,
-        curveSegments: 1,
-      }),
-      // 双材质：`ExtrudeGeometry` 会自动分组——group 0 是前后大面（多普勒蓝），
-      // group 1 是侧壁含倒角（刃口亮白）。这样"刃口高光"是几何本身，不需要再贴一条假亮条。
-      [this.materials.dopplerMid, this.materials.dopplerEdge],
-    );
-    blade.rotation.y = Math.PI / 2;
-    blade.position.x = -0.0035;
-    spin.add(blade);
+    // ---- 叉头：一根颈 + 一根横梁 + 四根齿 ----
+    // 为什么用积木拼而不是挤出真实叉形轮廓：挤出的叉齿在斜视角下会出现"叠片台阶"，
+    // 而且 4 根 8mm 的齿挤出来是 4 个薄壁面，近看像纸片。用胶囊感的方齿反而更"道具"。
+    // 局部 +Z = 柄的方向，所以齿朝 −Z、柄朝 +Z，和旧刀身一致（转刀动画不用改）。
+    const tineCount = 4;
+    const tineGap = 0.0165;
+    const tineLength = 0.16;
+    // 颈：从柄到叉头的过渡
+    spin.add(this.box(0.016, 0.014, 0.05, this.materials.dopplerDeep, 0, 0, -0.035));
+    // 横梁：四根齿的根座
+    spin.add(this.box(tineGap * (tineCount - 1) + 0.022, 0.013, 0.016, this.materials.dopplerMid, 0, 0, -0.066));
+    for (let i = 0; i < tineCount; i += 1) {
+      const x = (i - (tineCount - 1) / 2) * tineGap;
+      // 中间两根略长，端部收一点：真叉子的齿是等长的，但等长在透视下会"糊成一块"，
+      // 中间加长 4mm 能让剪影一眼数得出 4 根。
+      const length = tineLength + (i === 1 || i === 2 ? 0.008 : 0);
+      spin.add(this.box(0.0085, 0.0095, length, this.materials.dopplerHi, x, 0, -0.074 - length / 2));
+      // 齿尖：一小段更亮的斜切，模拟刃口反光
+      spin.add(this.box(0.0075, 0.0085, 0.02, this.materials.dopplerEdge, x, 0, -0.074 - length));
+    }
 
-    // 刀根压条（多普勒的深色根段：让"渐变蓝"有个起点，不然整片一样亮）
-    spin.add(this.box(0.0095, 0.048, 0.04, this.materials.dopplerDeep, 0, 0.0, -0.018));
-
-    // ---- 双柄：绕轴销上下张开成 V 形（参考图的展开态）----
-    // 必须用 pivot 组：直接给盒子加 rotation.x 会绕盒子自己的中心转，
-    // 柄会在轴销处裂开一道缝。pivot 放在轴销上，盒子挂在 +Z 一侧，才是真的"开合"。
-    const addHandle = (side: -1 | 1, withLatch: boolean): void => {
-      const pivot = new THREE.Group();
-      pivot.rotation.x = side * 0.17;
-      pivot.add(this.box(0.0085, 0.036, 0.128, this.materials.dopplerGrip, side * 0.0098, 0, 0.07));
-      // 柄内衬：露出一线深蓝，两根柄才不会糊成一根
-      pivot.add(this.box(0.0075, 0.022, 0.106, this.materials.dopplerDeep, side * 0.0098, 0, 0.066));
-      if (withLatch) {
-        pivot.add(this.box(0.028, 0.011, 0.018, this.materials.gunmetal, side * 0.004, 0, 0.135));
-      }
-      spin.add(pivot);
-    };
-    addHandle(-1, false);
-    addHandle(1, true);
-    // 轴销（横穿两根柄，圆柱轴向要转到 X 轴）
-    const pin = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.0095, 0.0095, 0.036, 12),
-      this.materials.gunmetal,
-    );
-    pin.rotation.z = Math.PI / 2;
-    spin.add(pin);
+    // ---- 柄：一体式握把（不再是蝴蝶刀的双柄 V 形）----
+    spin.add(this.box(0.017, 0.022, 0.135, this.materials.dopplerGrip, 0, 0, 0.062));
+    // 柄上的防滑纹：三条深色细条，近看才有细节
+    for (let i = 0; i < 3; i += 1) {
+      spin.add(this.box(0.019, 0.007, 0.008, this.materials.gunmetal, 0, 0, 0.03 + i * 0.028));
+    }
+    // 柄尾配重块（让重心读起来在手上，不是"一根签子"）
+    spin.add(this.box(0.023, 0.026, 0.016, this.materials.dopplerDeep, 0, 0, 0.133));
 
     // ---- 持握手 + 右前臂（挂在 knifeGroup 上，不参与转刀）----
     // 手比枪模的手小一号：刀的握把只有 3cm 宽，用枪的手会把刀身整段遮掉。
@@ -814,24 +815,73 @@ export class ViewModel {
   }
 
   /**
-   * 投掷物视模型（槽位 3/4/5）：持握手 + 道具球。
+   * 投掷物视模型（槽位 3/4/5）：持握手 + 道具。
    *
-   * 手部挂点按规格取 `(0.02, −0.14, −0.28)`；球略微偏前偏上，出手时看起来是"从手心甩出"。
+   * 手里这件东西**必须和飞出去的那件一模一样**（平底锅 / 胡椒瓶 / 面粉袋），
+   * 否则"我明明扔的是锅，飞出去是个球"——这种不一致比没有模型更伤。
+   * 三个道具都挂在同一个锚点上，按槽位切 `visible`。
    *
-   * @returns 道具球（出手瞬间由 {@link ViewModel#update} 按投掷进度自动隐藏）
+   * @returns 道具组的根（出手瞬间整组隐藏）
    */
-  private buildThrowable(group: THREE.Group): THREE.Mesh {
-    // 手里这颗雷的位置必须与 `THROW_ORIGIN_SIDE / THROW_ORIGIN_DROP` 对齐：
-    // 抛物线辅助线就是从这颗球的位置起飞的，对不齐会看到"线从手旁边飞出去"。
+  private buildThrowable(group: THREE.Group): THREE.Group {
+    // 手里这件的位置必须与 `THROW_ORIGIN_SIDE / THROW_ORIGIN_DROP` 对齐：
+    // 抛物线辅助线就是从这只手的位置起飞的，对不齐会看到"线从手旁边飞出去"。
     group.add(this.box(0.07, 0.07, 0.09, this.materials.glove, 0.12, -0.2, -0.28, 0.1, 0, -0.1));
     group.add(this.box(0.064, 0.03, 0.086, this.materials.gloveHi, 0.122, -0.16, -0.29, 0.1, 0, -0.08));
-    const ball = new THREE.Mesh(new THREE.SphereGeometry(0.05, 14, 10), this.materials.gunmetal);
-    ball.position.set(0.12, -0.2, -0.35);
-    group.add(ball);
+
+    const root = new THREE.Group();
+    root.name = "viewmodel-throwable-prop";
+    root.position.set(0.118, -0.2, -0.35);
+    group.add(root);
+
+    // 0 · 平底锅：竖着拎，锅面朝右前方（正对镜头会被自己挡成一条线）
+    const pan = new THREE.Group();
+    const panBody = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.068, 0.022, 18), this.materials.gunmetal);
+    panBody.rotation.x = Math.PI / 2;
+    panBody.rotation.z = 0.3;
+    pan.add(panBody);
+    pan.add(this.box(0.016, 0.016, 0.11, this.materials.mag, 0, 0.052, 0.055, 0, 0, 0.9));
+    // 0 · 煎蛋：锅底躺一个蛋黄，让"这是锅"一眼成立
+    const eggWhite = new THREE.Mesh(new THREE.SphereGeometry(0.045, 12, 8), this.materials.glove);
+    eggWhite.scale.set(1, 1, 0.24);
+    eggWhite.position.set(0, 0, -0.012);
+    eggWhite.rotation.x = Math.PI / 2;
+    pan.add(eggWhite);
+    const yolk = new THREE.Mesh(new THREE.SphereGeometry(0.019, 10, 8), this.materials.gold);
+    yolk.scale.set(1, 1, 0.5);
+    yolk.position.set(0, 0, -0.026);
+    yolk.rotation.x = Math.PI / 2;
+    pan.add(yolk);
+
+    // 1 · 胡椒瓶：圆柱瓶身 + 尖顶旋盖
+    const pepper = new THREE.Group();
+    const bottle = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.036, 0.085, 14), this.materials.glove);
+    pepper.add(bottle);
+    const cap = new THREE.Mesh(new THREE.ConeGeometry(0.032, 0.034, 14), this.materials.gunmetal);
+    cap.position.y = 0.058;
+    pepper.add(cap);
+    pepper.add(this.box(0.036, 0.012, 0.036, this.materials.gold, 0, -0.046, 0));
+
+    // 2 · 面粉袋：鼓袋 + 扎口 + 顶上的一撮粉
+    const flour = new THREE.Group();
+    const sack = new THREE.Mesh(new THREE.SphereGeometry(0.062, 14, 10), this.materials.glove);
+    sack.scale.set(1, 1.18, 0.92);
+    flour.add(sack);
+    const tie = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.03, 0.03, 12), this.materials.mag);
+    tie.position.y = 0.072;
+    flour.add(tie);
+    const puff = new THREE.Mesh(new THREE.SphereGeometry(0.028, 10, 8), this.materials.gloveHi);
+    puff.scale.set(1, 0.7, 1);
+    puff.position.y = 0.092;
+    flour.add(puff);
+
+    this.throwableProps.push(pan, pepper, flour);
+    root.add(pan, pepper, flour);
+    // 右前臂：从手腕往后下方伸出画面（和枪模共用同一条 limb，粗细一致）
     group.add(
       this.limb(new THREE.Vector3(0.1, -0.24, -0.24), new THREE.Vector3(0.16, -0.34, 0.06), 0.04, this.materials.sleeve),
     );
-    return ball;
+    return root;
   }
 
   /**
@@ -849,8 +899,27 @@ export class ViewModel {
     this.pistolGroup.visible = index === WEAPON_SLOTS.PISTOL;
     this.knifeGroup.visible = index === WEAPON_SLOTS.KNIFE;
     this.throwableGroup.visible = throwableTypeOfSlot(index) !== null;
-    // 切回投掷物时道具球必须回到手上（上一次投掷可能已经把它藏了）
+    // 切回投掷物时道具必须回到手上（上一次投掷可能已经把它藏了）
     this.throwableBall.visible = true;
+    // 只显示当前槽位对应的那一件（平底锅 / 胡椒瓶 / 面粉袋）
+    const throwableIndex: number = index - WEAPON_SLOTS.FRAG;
+    this.throwableProps.forEach((prop, propIndex) => {
+      prop.visible = propIndex === throwableIndex;
+    });
+  }
+
+  /**
+   * 应用角色配色：袖口换成毛色、手套换成爪垫色。
+   *
+   * 第一人称只看得到前臂与手，但这两块正好占了屏幕右下角的 1/4；
+   * 手套还是深灰、袖口还是藏青的话，"我选的是 Jerry"这件事在画面上完全读不出来。
+   */
+  public setCharacter(characterIndex: number): void {
+    const style = CHARACTER_STYLES[characterOfIndex(characterIndex)];
+    this.materials.sleeve.color.setHex(style.fur);
+    this.materials.glove.color.setHex(style.paw);
+    // 指节略深一档，避免整只手是一块纯色（卡通里"分不开手指"就是这种感觉）
+    this.materials.gloveHi.color.setHex(style.belly);
   }
 
   /** 当前显示的武器槽位。 */

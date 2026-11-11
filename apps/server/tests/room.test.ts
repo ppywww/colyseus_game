@@ -216,3 +216,69 @@ describe("双客户端联机闭环", () => {
     }
   });
 });
+
+describe("角色外观同步", () => {
+  /** 只取需要的字段，避免为了一个断言把整个 Player 类型搬进测试。 */
+  type PlayerLook = { character: number };
+
+  /** 首个状态补丁到达前 `room.state` 是 undefined，所以每次都要重新取。 */
+  function playersOf(room: Room): Map<string, PlayerLook> | undefined {
+    return (room.state as unknown as { players?: Map<string, PlayerLook> } | undefined)?.players;
+  }
+
+  it("入房选项里的角色会落到 Player.character（uint8 下标，用于第三人称建模）", async () => {
+    const room = (await clientA.joinOrCreate(DEFAULT_ROOM_NAME, {
+      ...joinOptions("Chooser"),
+      character: "jerry",
+    })) as Room;
+
+    try {
+      await waitFor(() => playersOf(room)?.get(room.sessionId)?.character === 1, "jerry 应同步为下标 1");
+      assert.equal(playersOf(room)!.get(room.sessionId)!.character, 1);
+    } finally {
+      await room.leave();
+    }
+  });
+
+  it("不传或传非法角色时回退默认（tom = 0），不能是随机值", async () => {
+    const room = (await clientA.joinOrCreate(DEFAULT_ROOM_NAME, {
+      ...joinOptions("NoChoice"),
+      character: "daffy",
+    })) as Room;
+
+    try {
+      await waitFor(() => playersOf(room)?.get(room.sessionId)?.character === 0, "非法角色应回退到 tom");
+      assert.equal(playersOf(room)!.get(room.sessionId)!.character, 0);
+    } finally {
+      await room.leave();
+    }
+  });
+
+  it("角色只影响外观：两方血量/弹药初始值必须完全一致", async () => {
+    const roomA = (await clientA.joinOrCreate(DEFAULT_ROOM_NAME, {
+      ...joinOptions("Slim"),
+      character: "spike",
+    })) as Room;
+    const roomB = (await clientB.joinOrCreate(DEFAULT_ROOM_NAME, {
+      ...joinOptions("Fat"),
+      character: "jerry",
+    })) as Room;
+
+    try {
+      const playersA = (roomA.state as unknown as {
+        players: Map<string, { hp: number; ammo: number; reserve: number; character: number }>;
+      }).players;
+      await waitFor(() => playersA.size === 2 && playersA.get(roomB.sessionId) !== undefined, "应看到两名玩家");
+
+      const spike = playersA.get(roomA.sessionId)!;
+      const jerry = playersA.get(roomB.sessionId)!;
+      assert.notEqual(spike.character, jerry.character, "两名玩家应确实是不同角色");
+      assert.equal(spike.hp, jerry.hp, "血量不能因为角色不同而不同");
+      assert.equal(spike.ammo, jerry.ammo, "弹匣不能因为角色不同而不同");
+      assert.equal(spike.reserve, jerry.reserve, "备弹不能因为角色不同而不同");
+    } finally {
+      await roomA.leave();
+      await roomB.leave();
+    }
+  });
+});

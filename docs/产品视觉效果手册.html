@@ -815,7 +815,8 @@
           <p class="muted">
             第 03–06 节是设计提案，本节是<b>代码跑出来的画面</b>。截图来自离线预览工具：
             大厅走无头浏览器、地图与 HUD 走 <code>tools/arena-preview.html</code> 与
-            <code>tools/hud-preview.html</code>、角色走 <code>scripts/preview-viewmodel.mts --target avatar</code>。
+            <code>tools/hud-preview.html</code>（加 <code>?slot=3</code> 就是"手里拿着平底锅"的真 WebGL 画面）、
+            角色走 <code>scripts/preview-viewmodel.mts --target avatar</code>。
             三套工具都留在仓库里，改完样式可以随时重出图对照。
           </p>
         </div>
@@ -875,6 +876,38 @@
             关节处全部加了「气球球」把胶囊段的断口吞掉，这是低多边形角色不显廉价的关键。
             角色只改毛色 / 耳朵 / 尾巴 / 配饰，判定体与手感完全一致——
             敌我识别交给围巾颜色（T 番茄红 / CT 天空蓝），不交给毛色。
+          </p>
+        </div>
+
+        <div class="card" style="margin-top: 18px">
+          <h3>第一人称 · 手里那件东西</h3>
+          <p class="muted">
+            视模型的验收标准只有一条：<b>玩家能不能一眼认出手里拿的是什么</b>。
+            所以枪必须是"注塑玩具水枪"（黄色枪身 + 半透明水箱 + 喷嘴圆环），
+            投掷物必须和飞出去的那件<b>同形同色</b>——手里是锅、飞出去是球，这种不一致比没有模型更伤。
+          </p>
+          <div class="grid2">
+            <figure>
+              <img class="shot" src="screenshots/07-viewmodel-watergun.png" alt="高压水枪" />
+              <figcaption>高压水枪 · 半透明水箱是"这是水枪"的唯一线索</figcaption>
+            </figure>
+            <figure>
+              <img class="shot" src="screenshots/08-viewmodel-pan.png" alt="平底锅" />
+              <figcaption>平底锅 · 锅沿亮环 + 锅底煎蛋，缺一个就读成黑圆盘</figcaption>
+            </figure>
+            <figure>
+              <img class="shot" src="screenshots/09-viewmodel-pepper.png" alt="胡椒瓶" />
+              <figcaption>胡椒瓶 · 奶酪黄标环负责在远处区分于面粉袋</figcaption>
+            </figure>
+            <figure>
+              <img class="shot" src="screenshots/10-viewmodel-flour.png" alt="面粉袋" />
+              <figcaption>面粉袋 · 木色扎口 + 顶上那撮粉</figcaption>
+            </figure>
+          </div>
+          <p class="muted">
+            构图有三条硬约束：道具必须<b>高于拳头</b>（压在拳心正后方会被手套整块吃掉）、
+            距离压在 <b>0.6m</b> 上下（80° FOV 下再远就退化成一个小点）、
+            锅面朝镜头<b>微斜 15°</b>（正对是一块纯色圆饼，斜着才看得见锅沿厚度和煎蛋）。
           </p>
         </div>
       </section>

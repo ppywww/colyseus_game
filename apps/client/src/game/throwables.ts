@@ -229,7 +229,7 @@ export class ThrowableSystem {
       this.propMaterials.push(material);
       return material;
     };
-    const panMetal = make(0x4a4150, 0.42, 0.55);
+    const panMetal = make(0x5b5262, 0.42, 0.55);
     const wood = make(0x8a5a34, 0.8, 0.02);
     const cream = make(0xfff3e0, 0.82, 0.02);
     const cheese = make(0xffc63d, 0.55, 0.05);

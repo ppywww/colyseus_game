@@ -855,27 +855,67 @@ export const THROWABLE_HELD_SPEC: Record<ThrowableType, readonly WeaponMeshSpec[
  * 构建
  * ------------------------------------------------------------------ */
 
+/**
+ * 几何缓存：同一份尺寸只上传一次显存。
+ *
+ * 为什么要缓存：一个 avatar 现在是 ~70 个 mesh（16 骨架 + 48 装饰 + 手持道具），
+ * 8 人局就是 560 份 `BufferGeometry`。这些几何的尺寸**只由角色与体型决定**，
+ * 全场最多几十种，逐 avatar 新建等于把同一批顶点上传 7 遍。
+ *
+ * 代价是几何**不能再按 avatar 释放**——所以 `dispose()` 只清引用，真正的释放在
+ * {@link disposeAvatarGeometries}（整局销毁时才调用，和材质同一条规矩）。
+ */
+const geometryCache = new Map<string, THREE.BufferGeometry>();
+
+/** 椭球用的单位球：全场只有这一份，形状差异全靠 `mesh.scale`。 */
+let unitSphere: THREE.SphereGeometry | null = null;
+
+function ellipsoidPrimitive(): THREE.BufferGeometry {
+  unitSphere ??= new THREE.SphereGeometry(0.5, 14, 10);
+  return unitSphere;
+}
+
 function createPrimitive(spec: Pick<MeshSpec, "geometry" | "size">): THREE.BufferGeometry {
   const { x, y, z } = spec.size;
-  if (spec.geometry === "sphere") {
-    return new THREE.SphereGeometry(x, 12, 10);
-  }
+  // 椭球永远是同一个单位球再靠 mesh.scale 变形，天然只有一份，不占缓存
   if (spec.geometry === "ellipsoid") {
-    // 单位球再缩放：这样一个 geometry 能画任意椭球，不必为每个部件单独建几何体
-    return new THREE.SphereGeometry(0.5, 14, 10);
+    return ellipsoidPrimitive();
   }
-  if (spec.geometry === "capsule") {
-    const radius = Math.max(0.002, Math.min(x / 2, y / 2 - 0.001));
-    return new THREE.CapsuleGeometry(radius, Math.max(0.002, y - radius * 2), 4, 10);
+  const key: string =
+    `${spec.geometry}|${x.toFixed(4)}|${y.toFixed(4)}|${z.toFixed(4)}`;
+  const cached = geometryCache.get(key);
+  if (cached !== undefined) {
+    return cached;
   }
-  if (spec.geometry === "cone") {
-    return new THREE.ConeGeometry(Math.max(0.002, x / 2), y, 12);
+  const created: THREE.BufferGeometry = (() => {
+    if (spec.geometry === "sphere") {
+      return new THREE.SphereGeometry(x, 12, 10);
+    }
+    if (spec.geometry === "capsule") {
+      const radius = Math.max(0.002, Math.min(x / 2, y / 2 - 0.001));
+      return new THREE.CapsuleGeometry(radius, Math.max(0.002, y - radius * 2), 4, 10);
+    }
+    if (spec.geometry === "cone") {
+      return new THREE.ConeGeometry(Math.max(0.002, x / 2), y, 12);
+    }
+    if (spec.geometry === "cylinder") {
+      // CylinderGeometry(radiusTop, radiusBottom, height, radialSegments)：x/z 传的是直径
+      return new THREE.CylinderGeometry(x / 2, z / 2, y, 14);
+    }
+    return new THREE.BoxGeometry(x, y, z);
+  })();
+  geometryCache.set(key, created);
+  return created;
+}
+
+/** 释放共享几何（只在整局销毁时调用，avatar 自身 dispose 不碰几何）。 */
+export function disposeAvatarGeometries(): void {
+  for (const geometry of geometryCache.values()) {
+    geometry.dispose();
   }
-  if (spec.geometry === "cylinder") {
-    // CylinderGeometry(radiusTop, radiusBottom, height, radialSegments)：x/z 传的是直径
-    return new THREE.CylinderGeometry(x / 2, z / 2, y, 14);
-  }
-  return new THREE.BoxGeometry(x, y, z);
+  geometryCache.clear();
+  unitSphere?.dispose();
+  unitSphere = null;
 }
 
 function createMesh(spec: MeshSpec & { material: AvatarMaterialKind }, materials: AvatarMaterials): THREE.Mesh {
@@ -1237,13 +1277,16 @@ export class AvatarModel {
     this.poseLocomotion(0, 0);
   }
 
-  /** 释放本 avatar 独占的几何体（材质是共享的，不在这里释放）。 */
+  /**
+   * 释放本 avatar 独占的资源。
+   *
+   * 现在**几何也是共享的**（见 `geometryCache`），所以这里不再 dispose 任何东西：
+   * 一局里第一个离场的玩家就会把别人的腿一起释放掉，画面直接变黑。
+   * 真正的释放在 `disposeAvatarGeometries` / `disposeAvatarMaterials`，整局销毁时调用。
+   * 保留这个方法是为了让调用方（`remote-players`）的接口不用改。
+   */
   public dispose(): void {
-    this.root.traverse((object) => {
-      if (object instanceof THREE.Mesh) {
-        object.geometry.dispose();
-      }
-    });
+    this.root.clear();
   }
 }
 

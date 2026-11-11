@@ -490,6 +490,13 @@ interface ViewmodelMaterials {
   dopplerEdge: THREE.MeshStandardMaterial;
   /** 柄：深蓝塑料。 */
   dopplerGrip: THREE.MeshStandardMaterial;
+  /* ---- 投掷道具：配色必须与 `throwables.ts` 的 `propTemplates` 逐项对齐 ---- */
+  /** 锅身：深板岩灰（不粘锅涂层）。 */
+  panMetal: THREE.MeshStandardMaterial;
+  /** 锅沿/高光环：亮不锈钢。 */
+  panRim: THREE.MeshStandardMaterial;
+  /** 锅柄与面粉袋扎口：熟木色。 */
+  panHandle: THREE.MeshStandardMaterial;
 }
 
 /** {@link ViewModel#update} 的入参：全部来自本地游戏状态，纯表现，不影响弹道。 */
@@ -579,6 +586,12 @@ export class ViewModel {
       dopplerHi: new THREE.MeshStandardMaterial({ color: 0xdde7f0, metalness: 0.74, roughness: 0.26 }),
       dopplerEdge: new THREE.MeshStandardMaterial({ color: 0xf6fbff, metalness: 0.76, roughness: 0.16 }),
       dopplerGrip: plastic(0x2b6f96, 0.62),
+
+      // ---- 投掷道具：与 `throwables.ts` 里飞出去那三件同色，
+      //      "手里拿的"和"扔出去的"必须是同一个东西，颜色不一致比没有模型更伤 ----
+      panMetal: plastic(0x5b5262, 0.46),
+      panRim: new THREE.MeshStandardMaterial({ color: 0x8b93a3, metalness: 0.55, roughness: 0.38 }),
+      panHandle: plastic(0x8a5a34, 0.8),
     };
 
     this.holder = new THREE.Group();
@@ -815,72 +828,121 @@ export class ViewModel {
   }
 
   /**
-   * 投掷物视模型（槽位 3/4/5）：持握手 + 道具。
+   * 投掷物视模型（槽位 3/4/5）：握拳 + 道具。
    *
-   * 手里这件东西**必须和飞出去的那件一模一样**（平底锅 / 胡椒瓶 / 面粉袋），
+   * 手里这件东西**必须和飞出去的那件一模一样**（平底锅 / 胡椒瓶 / 面粉袋）：
+   * 形状与配色都对齐 `throwables.ts` 的 `propTemplates`，
    * 否则"我明明扔的是锅，飞出去是个球"——这种不一致比没有模型更伤。
-   * 三个道具都挂在同一个锚点上，按槽位切 `visible`。
+   * 三个道具都挂在同一个握点上，按槽位切 `visible`。
+   *
+   * 构图三条硬约束（动数字前先读）：
+   *   1. **道具必须高于拳头**。旧版把锅心放在拳心正后方 7cm，锅被手套整块吃掉，
+   *      画面里只剩一圈黑边——"看不见"的根因不是尺寸，是遮挡。
+   *   2. **距离压在 0.6m 上下**。80° FOV 下 17cm 的锅在 0.75m 处只有 43px，
+   *      再远就退化成一个小点，读不出"是口锅"。
+   *   3. **锅面朝镜头微斜，不正对**。正对是一块纯色圆饼；斜 15° 才看得见锅沿厚度
+   *      和锅底那颗煎蛋，而煎蛋是"这是锅"的唯一视觉证据。
    *
    * @returns 道具组的根（出手瞬间整组隐藏）
    */
   private buildThrowable(group: THREE.Group): THREE.Group {
-    // 手里这件的位置必须与 `THROW_ORIGIN_SIDE / THROW_ORIGIN_DROP` 对齐：
-    // 抛物线辅助线就是从这只手的位置起飞的，对不齐会看到"线从手旁边飞出去"。
-    group.add(this.box(0.07, 0.07, 0.09, this.materials.glove, 0.12, -0.2, -0.28, 0.1, 0, -0.1));
-    group.add(this.box(0.064, 0.03, 0.086, this.materials.gloveHi, 0.122, -0.16, -0.29, 0.1, 0, -0.08));
+    // 握点（拳心）。三个道具都以它为原点摆放，所以切槽位时只有 visible 变化，
+    // 手不会跟着跳；位置也对齐 `THROW_ORIGIN_SIDE / THROW_ORIGIN_DROP`，
+    // 抛物线辅助线从这只手起飞，对不齐会看到"线从手旁边飞出去"。
+    const grip = new THREE.Vector3(0.105, -0.162, -0.16);
+
+    // ---- 拳：浑圆的拳头 + 三道指节 + 压在上面的拇指 ----
+    // 掌背用**球**不用盒：盒子在这套平光下就是个木箱，球才是动画片里的拳头。
+    // 指节做成横过镜头方向的三道浅色棱，而不是一整块"掌上板"：
+    // 柄是竖着穿过拳心的，指节必须**横**过来才读得出"握"。
+    const fist = new THREE.Mesh(new THREE.SphereGeometry(0.052, 14, 10), this.materials.glove);
+    fist.scale.set(1.05, 1.16, 0.98);
+    fist.position.copy(grip);
+    fist.rotation.set(0.12, 0, -0.06);
+    group.add(fist);
+    for (let band = 0; band < 3; band += 1) {
+      group.add(
+        this.box(0.064, 0.021, 0.032, this.materials.gloveHi, grip.x, grip.y + 0.027 - band * 0.027, grip.z + 0.038, 0.12, 0, -0.06),
+      );
+    }
+    const thumb = new THREE.Mesh(new THREE.SphereGeometry(0.023, 10, 8), this.materials.gloveHi);
+    thumb.scale.set(1, 1.5, 1);
+    thumb.position.set(grip.x - 0.044, grip.y + 0.016, grip.z + 0.016);
+    thumb.rotation.z = -0.3;
+    group.add(thumb);
+
+    // 右前臂 + 袖口：从手腕往后下方伸出画面（粗细与枪模那条一致）
+    const wrist = new THREE.Vector3(grip.x + 0.004, grip.y - 0.03, grip.z + 0.032);
+    const elbow = new THREE.Vector3(grip.x + 0.062, grip.y - 0.2, grip.z + 0.3);
+    group.add(this.limb(wrist, elbow, 0.042, this.materials.sleeve));
+    group.add(this.cuff(wrist, elbow, 0.05, 0.058, this.materials.sleeve));
 
     const root = new THREE.Group();
     root.name = "viewmodel-throwable-prop";
-    root.position.set(0.118, -0.2, -0.35);
+    root.position.copy(grip);
     group.add(root);
 
-    // 0 · 平底锅：竖着拎，锅面朝右前方（正对镜头会被自己挡成一条线）
+    // ---- 0 · 平底锅：锅面朝镜头、锅柄垂到拳心 ----
+    // 定位不是拍脑袋：锅柄末端（锅局部 −0.23 处）绕自身旋转后落在
+    // (0.040, −0.211, 0.083)，取反就是锅心的位置——这样"柄尾正好被拳握住"。
     const pan = new THREE.Group();
-    const panBody = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.068, 0.022, 18), this.materials.gunmetal);
+    pan.position.set(-0.04, 0.211, -0.083);
+    pan.rotation.set(-0.32, -0.2, 0.18);
+    // 锅身：上沿比锅底大 1cm 的浅锥（圆柱看着像罐头盖，锥台才像锅）
+    const panBody = new THREE.Mesh(new THREE.CylinderGeometry(0.098, 0.086, 0.032, 22), this.materials.panMetal);
     panBody.rotation.x = Math.PI / 2;
-    panBody.rotation.z = 0.3;
     pan.add(panBody);
-    pan.add(this.box(0.016, 0.016, 0.11, this.materials.mag, 0, 0.052, 0.055, 0, 0, 0.9));
-    // 0 · 煎蛋：锅底躺一个蛋黄，让"这是锅"一眼成立
-    const eggWhite = new THREE.Mesh(new THREE.SphereGeometry(0.045, 12, 8), this.materials.glove);
-    eggWhite.scale.set(1, 1, 0.24);
-    eggWhite.position.set(0, 0, -0.012);
+    // 锅沿亮环：一圈高光把圆形轮廓"描"出来，深色锅在深色袖口前才不糊
+    const panRim = new THREE.Mesh(new THREE.TorusGeometry(0.096, 0.0062, 8, 26), this.materials.panRim);
+    panRim.position.z = 0.015;
+    pan.add(panRim);
+    // 煎蛋：蛋白是**锥台圆盘**，不是压扁的球——球压到 0.2 倍厚时外缘与锅面几乎平行，
+    // 两片近乎共面的面必然 z-fighting，屏幕上就是一圈放射状黑刺（改了三轮才定位到）。
+    // 三段 z 依次抬起：锅面 0.016 → 蛋白盘 0.019–0.033 → 蛋黄 0.032–0.048。
+    const eggWhite = new THREE.Mesh(new THREE.CylinderGeometry(0.056, 0.05, 0.014, 18), this.materials.glove);
     eggWhite.rotation.x = Math.PI / 2;
+    eggWhite.position.set(-0.004, -0.008, 0.026);
     pan.add(eggWhite);
-    const yolk = new THREE.Mesh(new THREE.SphereGeometry(0.019, 10, 8), this.materials.gold);
-    yolk.scale.set(1, 1, 0.5);
-    yolk.position.set(0, 0, -0.026);
-    yolk.rotation.x = Math.PI / 2;
+    // 蛋黄用**扁球**（穹顶）不用圆盘：圆盘底面和蛋白正面是两片平行面，
+    // 差 1mm 就会在交界圆上炸出一圈黑刺；球的底只是一个点，怎么咬都不会打架。
+    const yolk = new THREE.Mesh(new THREE.SphereGeometry(0.024, 16, 12), this.materials.gold);
+    yolk.scale.set(1, 1, 0.55);
+    yolk.position.set(0.006, 0.01, 0.039);
     pan.add(yolk);
+    // 锅柄：木色，从锅沿下缘伸到拳心
+    pan.add(this.box(0.023, 0.15, 0.02, this.materials.panHandle, 0, -0.155, 0.004));
 
-    // 1 · 胡椒瓶：圆柱瓶身 + 尖顶旋盖
+    // ---- 1 · 胡椒瓶：奶白瓶身 + 奶酪黄标环 + 灰旋盖 ----
     const pepper = new THREE.Group();
-    const bottle = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.036, 0.085, 14), this.materials.glove);
+    pepper.position.set(-0.012, 0.092, -0.045);
+    const bottle = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.045, 0.115, 16), this.materials.glove);
     pepper.add(bottle);
-    const cap = new THREE.Mesh(new THREE.ConeGeometry(0.032, 0.034, 14), this.materials.gunmetal);
-    cap.position.y = 0.058;
+    // 标环：远处认"这是胡椒瓶不是保温杯"全靠这一圈黄
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.0465, 0.0465, 0.048, 16), this.materials.gold);
+    band.position.y = -0.006;
+    pepper.add(band);
+    const cap = new THREE.Mesh(new THREE.ConeGeometry(0.042, 0.046, 16), this.materials.panMetal);
+    cap.position.y = 0.079;
     pepper.add(cap);
-    pepper.add(this.box(0.036, 0.012, 0.036, this.materials.gold, 0, -0.046, 0));
 
-    // 2 · 面粉袋：鼓袋 + 扎口 + 顶上的一撮粉
+    // ---- 2 · 面粉袋：鼓袋 + 木色扎口 + 顶上一撮粉 ----
     const flour = new THREE.Group();
-    const sack = new THREE.Mesh(new THREE.SphereGeometry(0.062, 14, 10), this.materials.glove);
-    sack.scale.set(1, 1.18, 0.92);
+    flour.position.set(-0.01, 0.098, -0.04);
+    const sack = new THREE.Mesh(new THREE.SphereGeometry(0.078, 16, 12), this.materials.glove);
+    sack.scale.set(1, 1.12, 0.94);
     flour.add(sack);
-    const tie = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.03, 0.03, 12), this.materials.mag);
-    tie.position.y = 0.072;
+    const tie = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.039, 0.038, 12), this.materials.panHandle);
+    tie.position.y = 0.088;
     flour.add(tie);
-    const puff = new THREE.Mesh(new THREE.SphereGeometry(0.028, 10, 8), this.materials.gloveHi);
-    puff.scale.set(1, 0.7, 1);
-    puff.position.y = 0.092;
+    const puff = new THREE.Mesh(new THREE.SphereGeometry(0.036, 12, 8), this.materials.gloveHi);
+    puff.scale.set(1, 0.68, 1);
+    puff.position.y = 0.113;
     flour.add(puff);
+    // 袋身标签：朝镜头一侧（飞出去的那件标签在 −Z，手里的必须朝 +Z 才看得见）
+    flour.add(this.box(0.072, 0.058, 0.016, this.materials.gold, 0, -0.006, 0.068));
 
     this.throwableProps.push(pan, pepper, flour);
     root.add(pan, pepper, flour);
-    // 右前臂：从手腕往后下方伸出画面（和枪模共用同一条 limb，粗细一致）
-    group.add(
-      this.limb(new THREE.Vector3(0.1, -0.24, -0.24), new THREE.Vector3(0.16, -0.34, 0.06), 0.04, this.materials.sleeve),
-    );
     return root;
   }
 

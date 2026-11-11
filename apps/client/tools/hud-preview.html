@@ -42,6 +42,7 @@
       import * as THREE from "three";
       import { buildArena, ARENA_SKY_COLOR, ARENA_FOG } from "/src/game/map.ts";
       import { Hud } from "/src/game/hud.ts";
+      import { ViewModel } from "/src/game/viewmodel.ts";
       import { characterIndexOf } from "@colyseus-fps/shared";
 
       const params = new URLSearchParams(location.search);
@@ -72,6 +73,25 @@
       camera.position.set(num("x", 0), 1.6, num("z", 12));
       camera.rotation.y = num("yaw", 0);
       camera.rotation.x = num("pitch", -0.02);
+
+      // 第一人称视模型挂在相机上，所以相机必须进场景图，否则它的子节点不会被渲染。
+      // `?slot=3/4/5` 就是"手里拿着平底锅 / 胡椒瓶 / 面粉袋"的真实 WebGL 画面——
+      // 软件光栅器只能验轮廓，z-fighting、透明、材质响应都得回到真渲染器上看。
+      scene.add(camera);
+      const viewmodel = new ViewModel(camera);
+      viewmodel.setWeaponSlot(num("slot", 0));
+      viewmodel.setCharacter(characterIndexOf(params.get("character") ?? "tom"));
+      // `?throw=300` 把投掷动作推进到第 300ms 再出图（700ms 一轮，315ms 松手）——
+      // 投掷是唯一会把视模型甩出画面的动作，只有真渲染能验"道具是不是整块跑没了"。
+      const throwMs = num("throw", 0);
+      const frameState = { moving: false, grounded: true, reloadProgress: 0, throwing: throwMs > 0, firingAt: 0 };
+      if (throwMs > 0) {
+        for (let elapsed = 0; elapsed < throwMs; elapsed += 1000 / 60) {
+          viewmodel.update(1 / 60, frameState);
+        }
+      } else {
+        viewmodel.update(1 / 60, { ...frameState, throwing: false });
+      }
 
       const hud = new Hud(document.getElementById("hud-mount"));
       const character = params.get("character") ?? "tom";

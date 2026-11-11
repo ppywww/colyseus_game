@@ -282,6 +282,25 @@ describe("材质共享（按 角色 × 队伍 缓存）", () => {
     assert.notEqual(after, before, "缓存应被清空并重建");
     disposeAvatarMaterials();
   });
+
+  it("几何必须跨 avatar 共享（8 人局不能上传 8 套顶点）", () => {
+    const first = buildAvatarModel("T", "tom");
+    const second = buildAvatarModel("T", "tom");
+    try {
+      // 同一个部件、同一个体型 → 必须是同一个 BufferGeometry 实例
+      assert.equal(
+        first.parts.get("torso")!.geometry,
+        second.parts.get("torso")!.geometry,
+        "同角色同体型应共用几何",
+      );
+      // 释放单个 avatar 不能把共享几何一起 dispose 掉（否则别人会变黑块）
+      first.dispose();
+      const survivors = second.parts.get("torso")!.geometry;
+      assert.ok(survivors.getAttribute("position") !== undefined, "共享几何在他人 dispose 后仍应可用");
+    } finally {
+      second.dispose();
+    }
+  });
 });
 
 describe("手持道具（全部厨房化）", () => {

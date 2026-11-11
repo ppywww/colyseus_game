@@ -239,9 +239,13 @@ describe("武器槽可切性", () => {
     for (const slot of SLOT_ORDER) {
       assert.ok(SLOT_LABEL[slot].length > 0, `槽位 ${slot} 缺少图标文字`);
     }
-    assert.equal(SLOT_LABEL[0], "AK");
-    assert.equal(SLOT_LABEL[1], "手枪");
-    assert.equal(SLOT_LABEL[2], "刀");
+    // 猫和老鼠主题：六个槽位全部是玩具/厨具，不允许出现真实枪械名
+    assert.equal(SLOT_LABEL[0], "高压水枪");
+    assert.equal(SLOT_LABEL[1], "橡皮筋枪");
+    assert.equal(SLOT_LABEL[2], "餐叉");
+    assert.equal(SLOT_LABEL[3], "平底锅");
+    assert.equal(SLOT_LABEL[4], "胡椒瓶");
+    assert.equal(SLOT_LABEL[5], "面粉袋");
   });
 });
 

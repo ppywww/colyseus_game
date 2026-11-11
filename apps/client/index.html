@@ -3,59 +3,81 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
-    <title>Colyseus FPS · 竞技场</title>
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#F6E8CE" />
+    <title>猫鼠战场 · 厨房 4v4</title>
   </head>
   <body>
-    <!-- 大厅：连接设置 -->
-    <main id="lobby" class="shell">
-      <section class="panel hero">
-        <p class="eyebrow">Colyseus FPS Prototype</p>
-        <h1>S4 多人竞技场</h1>
-        <p class="summary">服务端权威战斗：开火、手雷、闪光、烟雾全部由服务端裁定。打开两个浏览器标签页即可对战。</p>
-      </section>
+    <!-- 大厅：品牌区 + 进入卡 -->
+    <main id="lobby" class="lobby">
+      <div class="lobby-inner">
+        <header class="brand">
+          <p class="brand-eyebrow"><i></i>CARTOON TACTICAL · 4V4</p>
+          <h1 class="brand-title">猫鼠战场</h1>
+          <p class="brand-sub">厨房 4v4 · 玩具枪与厨具的战争</p>
+          <ul class="brand-points">
+            <li>先到 12 杀或打满 5 回合，每一发水弹都由服务端判定</li>
+            <li>六个槽位：高压水枪 / 橡皮筋枪 / 餐叉 / 平底锅 / 胡椒瓶 / 面粉袋</li>
+            <li>同一张厨房地图，三条通道：台面高线 · 中央地砖 · 桌下通道</li>
+          </ul>
 
-      <section class="panel controls" aria-label="连接设置">
-        <label>
-          服务端地址
-          <input id="server-url" type="url" spellcheck="false" autocomplete="off" />
-        </label>
-        <label>
-          玩家名
-          <input id="player-name" maxlength="24" autocomplete="off" />
-        </label>
-        <div class="actions">
-          <button id="join-button" type="button">进入战场</button>
-        </div>
-        <p class="join-meta">
-          <span id="join-status" class="badge">未连接</span>
-          <span>协议 v<span id="protocol-version">—</span></span>
-        </p>
-      </section>
+          <!-- 角色阵容由 src/main.ts 从 ui/art.ts 注入，与 HUD 头像同源 -->
+          <div class="roster">
+            <div class="roster-head"><b>ROSTER</b><span>本作四名角色</span></div>
+            <div class="roster-list" id="roster-list"></div>
+          </div>
+        </header>
 
-      <section class="panel">
-        <details class="settings" id="settings">
-          <summary>设置</summary>
-          <!-- 灵敏度滑块由 src/ui/settings.ts 的 mountSensitivitySlider 注入
-               （与游戏内 Esc 遮罩共用同一个组件与同一个 SettingsStore） -->
-          <div id="settings-body" class="settings-body"></div>
-        </details>
-      </section>
+        <section class="join-card" aria-label="进入对局">
+          <h2>进入厨房</h2>
+          <p class="card-hint">输入名字，点击开始。打开两个浏览器标签页即可对战。</p>
 
-      <section class="panel">
-        <h2>操作说明</h2>
-        <ul class="help-list">
-          <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> 移动</li>
-          <li><kbd>Shift</kbd> 冲刺</li>
-          <li><kbd>空格</kbd> 跳跃</li>
-          <li><kbd>左键</kbd> 开火 / 投掷 / 挥刀（服务端判定命中）</li>
-          <li><kbd>滚轮</kbd> 或 <kbd>1</kbd>–<kbd>6</kbd> 切换武器</li>
-          <li><kbd>R</kbd> 换弹</li>
-          <li><kbd>G</kbd> 手雷 · <kbd>F</kbd> 闪光弹 · <kbd>V</kbd> 烟雾弹（自动切槽并立即投出）</li>
-          <li><kbd>鼠标</kbd> 视角（点击画面锁定指针）</li>
-          <li><kbd>Esc</kbd> 释放鼠标 / 打开设置</li>
-        </ul>
-      </section>
+          <label class="field">
+            玩家名
+            <input id="player-name" maxlength="24" autocomplete="off" />
+          </label>
+
+          <!-- 服务端地址默认折起：主流程只需要「名字 + 开始」两步 -->
+          <details class="advanced">
+            <summary>高级 · 服务端地址</summary>
+            <label class="field">
+              服务端地址
+              <input id="server-url" type="url" spellcheck="false" autocomplete="off" />
+            </label>
+          </details>
+
+          <button id="join-button" class="btn primary" type="button">开始对战</button>
+
+          <p class="join-meta">
+            <span id="join-status" class="badge">未连接</span>
+            <span>协议 v<span id="protocol-version">—</span></span>
+          </p>
+
+          <details class="settings" id="settings">
+            <summary>操作与设置</summary>
+            <!-- 灵敏度 / 准星由 src/ui/settings.ts 注入（与游戏内 Esc 遮罩共用同一组件） -->
+            <div id="settings-body" class="settings-body"></div>
+            <dl class="help-grid">
+              <dt><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt>
+              <dd>移动</dd>
+              <dt><kbd>Shift</kbd></dt>
+              <dd>冲刺</dd>
+              <dt><kbd>空格</kbd></dt>
+              <dd>跳跃</dd>
+              <dt><kbd>左键</kbd></dt>
+              <dd>开火 / 投掷 / 挥叉</dd>
+              <dt><kbd>1</kbd>–<kbd>6</kbd></dt>
+              <dd>切换槽位（滚轮同效）</dd>
+              <dt><kbd>R</kbd></dt>
+              <dd>换弹</dd>
+              <dt><kbd>G</kbd><kbd>F</kbd><kbd>V</kbd></dt>
+              <dd>平底锅 / 胡椒瓶 / 面粉袋（自动切槽并投出）</dd>
+              <dt><kbd>Esc</kbd></dt>
+              <dd>释放鼠标 / 打开设置</dd>
+            </dl>
+          </details>
+        </section>
+      </div>
     </main>
 
     <!-- 游戏容器：canvas 与 HUD 由代码注入 -->

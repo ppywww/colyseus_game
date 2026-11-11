@@ -429,14 +429,17 @@ export const SWITCH_DURATION_MS: Record<WeaponSlot, number> = {
   5: 250,
 };
 
-/** HUD 武器栏的图标文字（6 格，顺序 = {@link SLOT_ORDER}）。 */
+/** HUD 武器栏的图标文字（6 格，顺序 = {@link SLOT_ORDER}）。
+ *
+ * 六个槽位全部是玩具与厨具（猫和老鼠主题），不出现真实枪械名称。
+ * 数值与判定逻辑不随名称改变：这里只是显示层的标签。 */
 export const SLOT_LABEL: Record<WeaponSlot, string> = {
-  0: "AK",
-  1: "手枪",
-  2: "刀",
-  3: "手雷",
-  4: "闪光",
-  5: "烟雾",
+  0: "高压水枪",
+  1: "橡皮筋枪",
+  2: "餐叉",
+  3: "平底锅",
+  4: "胡椒瓶",
+  5: "面粉袋",
 };
 
 /** HUD 武器栏左上角的按键角标（数字键 1–6 直达）。 */

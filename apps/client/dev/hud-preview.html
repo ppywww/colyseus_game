@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HUD 预览 · 开发用</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #c9a97a;
+      }
+
+      /* 默认是模拟厨房的暖色渐变；`?bg=<url>` 可以换成任意实机截图来验对比度 */
+      #stage {
+        position: fixed;
+        inset: 0;
+        background:
+          radial-gradient(60% 60% at 30% 18%, #f7e3bb 0%, #cda579 55%, #8a6a45 100%);
+        background-size: cover;
+        background-position: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <script type="module">
+      import { Hud } from "../src/game/hud.ts";
+      import { getSettingsStore, mountSettingsPanel } from "../src/ui/settings.ts";
+      import "../src/style.css";
+
+      const stage = document.getElementById("stage");
+      const hud = new Hud(stage);
+      const params = new URLSearchParams(location.search);
+      const fx = params.has("fx");
+
+      const bg = params.get("bg");
+      if (bg) {
+        stage.style.backgroundImage = `url("${bg}")`;
+      }
+
+      hud.setCrosshair({
+        color: "#fff8e9",
+        length: 7,
+        thickness: 3,
+        gap: 6,
+        dot: true,
+        outline: true,
+        dynamic: true,
+      });
+
+      const player = (id, name, x, z, yaw, team, alive = true) => ({
+        sessionId: id,
+        displayName: name,
+        joinedAt: 0,
+        x,
+        y: 0,
+        z,
+        yaw,
+        pitch: 0,
+        seq: 0,
+        hp: 100,
+        alive,
+        kills: 0,
+        deaths: 0,
+        respawnSeq: 0,
+        respawnAt: 0,
+        ammo: 30,
+        reserve: 90,
+        reloadEndAt: 0,
+        pistolAmmo: 12,
+        pistolReserve: 36,
+        frags: 2,
+        flashes: 1,
+        smokes: 1,
+        weaponSlot: 3,
+        switchEndAt: 0,
+        team,
+      });
+
+      const self = player("self", "玩家-521", -1, 2, 0.35, "T");
+      const mates = [player("m1", "Tom", -4, 1, 1.2, "T"), player("m2", "Spike", 3, 3, -0.8, "T", false)];
+      const enemies = [player("e1", "Butch", 4, -2, 2.4, "CT")];
+
+      hud.setRadarPlayers([self, ...mates, ...enemies], self.sessionId);
+      hud.setPlayers(
+        [
+          { sessionId: "self", displayName: "玩家-521", kills: 7, deaths: 3, alive: true },
+          { sessionId: "m1", displayName: "Tom", kills: 5, deaths: 4, alive: true },
+          { sessionId: "m2", displayName: "Spike", kills: 2, deaths: 5, alive: false },
+          { sessionId: "e1", displayName: "Butch", kills: 6, deaths: 4, alive: true },
+        ],
+        "self",
+      );
+
+      hud.update({
+        position: { x: self.x, y: 0, z: self.z },
+        playerCount: 4,
+        remoteCount: 3,
+        selfHp: 74,
+        selfAlive: true,
+        selfRespawnAt: 0,
+        weaponSlot: 0,
+        ammo: 27,
+        reserve: 90,
+        pistolAmmo: 12,
+        pistolReserve: 36,
+        reloadProgress: 0,
+        frags: 2,
+        flashes: 1,
+        smokes: 1,
+        spread: 9,
+      });
+
+      hud.pushKillFeed("玩家-521 用水枪 淘汰 Butch");
+      hud.pushKillFeed("Tom 被 平底锅 砸中");
+
+      if (fx) {
+        hud.showKillBanner("淘汰 Butch");
+        hud.showNiceBanner("NICE!");
+        hud.flashHitmarker("head");
+        hud.showZoneDamage("头部", 100);
+        // 命中标记只有 220ms，静态截图很难抓到；预览里循环触发，方便看样式
+        setInterval(() => {
+          hud.flashHitmarker("head");
+          hud.showKillBanner("淘汰 Butch");
+        }, 200);
+      }
+
+      if (params.has("probe")) {
+        const panel = document.querySelector(".lock-panel");
+        const overlay = document.getElementById("lock-overlay");
+        const cs = getComputedStyle(panel);
+        document.title = JSON.stringify({
+          paper: getComputedStyle(document.documentElement).getPropertyValue("--paper"),
+          panelBg: cs.backgroundColor,
+          panelOpacity: cs.opacity,
+          overlayBg: getComputedStyle(overlay).backgroundColor,
+          overlayOpacity: getComputedStyle(overlay).opacity,
+        });
+      }
+
+      if (params.has("lock")) {
+        mountSettingsPanel(hud.settingsContainer, getSettingsStore());
+        hud.setLockOverlayVisible(true);
+        // 静态截图会卡在淡入过渡的中间帧（无头虚拟时间不推进动画），这里直接定格
+        const overlay = document.getElementById("lock-overlay");
+        overlay.style.transition = "none";
+        overlay.style.opacity = "1";
+      }
+
+      // 让雷达每帧刷新（真实游戏里由 Game 的循环驱动）
+      const tick = () => {
+        hud.update({
+          position: { x: self.x, y: 0, z: self.z },
+          playerCount: 4,
+          remoteCount: 3,
+          selfHp: 74,
+          selfAlive: true,
+          selfRespawnAt: 0,
+          weaponSlot: 0,
+          ammo: 27,
+          reserve: 90,
+          pistolAmmo: 12,
+          pistolReserve: 36,
+          reloadProgress: 0,
+          frags: 2,
+          flashes: 1,
+          smokes: 1,
+          spread: 9,
+        });
+        requestAnimationFrame(tick);
+      };
+      tick();
+    </script>
+  </body>
+</html>

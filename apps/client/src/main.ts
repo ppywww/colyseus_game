@@ -6,6 +6,7 @@ import {
 import { Game } from "./game/game.js";
 import { LobbyConnection } from "./net/connection.js";
 import type { PlayerState } from "./net/types.js";
+import { CHARACTERS, HEADS } from "./ui/art.js";
 import { getSettingsStore, mountSettingsPanel } from "./ui/settings.js";
 import type {
   DamageTakenMessage,
@@ -72,6 +73,42 @@ playerNameInput.value = `玩家-${Math.floor(Math.random() * 900 + 100)}`;
 // 大厅「设置」折叠区：与游戏内 Esc 遮罩共用同一个组件与同一个 SettingsStore。
 // 只挂一次，页面生命周期内一直有效（折叠区关掉也不会卸载，值不会丢）。
 mountSettingsPanel(requiredElement<HTMLElement>("settings-body"), getSettingsStore());
+
+/**
+ * 大厅阵容条：头像是 `ui/art.ts` 里的同一份 SVG，和 HUD 生命面板完全一致。
+ * 这里只做展示（角色选择在第三阶段随模型一起开放），不做假的选择交互。
+ */
+function mountRoster(): void {
+  const host = document.getElementById("roster-list");
+  if (host === null) {
+    return;
+  }
+  for (const character of CHARACTERS) {
+    const card = document.createElement("div");
+    card.className = "roster-card";
+
+    const face = document.createElement("span");
+    face.className = "roster-face";
+    face.style.background = character.tint;
+    face.innerHTML = HEADS[character.id];
+
+    const name = document.createElement("span");
+    name.className = "roster-name";
+    name.textContent = character.name;
+
+    const role = document.createElement("span");
+    role.className = "roster-role";
+    role.textContent = character.role;
+
+    const text = document.createElement("span");
+    text.append(name, role);
+
+    card.append(face, text);
+    host.append(card);
+  }
+}
+
+mountRoster();
 
 function setStatus(text: string, busy: boolean): void {
   statusBadge.textContent = text;

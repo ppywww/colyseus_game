@@ -1,60 +1,71 @@
 /**
- * 左上角小地图（雷达）。
+ * 左上角圆形雷达。
  *
- * 设计取舍（参照 CS / COD 这类战术射击游戏的常见做法）：
+ * 视觉规则（与整套 UI 同源）：
+ *   - 纸底 + 墨线，不透明——沙漠/厨房这类高亮场景上也能看清；
+ *   - 只有三种点位颜色：自己（墨黑箭头）、队友（天空蓝）、敌人（番茄红）；
+ *   - 视野扇形用奶酪黄，和武器栏选中态是同一个信号。
+ *
+ * 布局取舍：
  *   - **北朝上固定**：地图不跟着视角旋转，玩家箭头自己转。旋转雷达在快节奏对枪时
  *     容易让人分不清"哪边是 A 点"，而这张图的三路布局本身就是靠方位记的；
- *   - **只画实心体块**：墙体/建筑用亮色、1.1m 矮掩体用暗色。小地图不是 3D 预览，
- *     玩家需要的是"哪条路是通的、我在哪个拐角"，不是复刻场景；
- *   - **敌人只在通视时显示**：与 gameplay 一致（没有雷达扫描/听声辨位），
- *     用同一条 2D 视线求交判断，避免"小地图卖队友位置"变成透视挂；
- *   - **静态层缓存**：97 个体块每帧重绘没有必要，墙体只画一次到离屏 canvas，
+ *   - **整张图塞进圆盘**：按地图对角线算缩放（`/√2`），保证四个角不被圆形边框切掉。
+ *     代价是地图比"填满圆盘"小一圈，但宁可小也不能丢信息——角落里的包点是能决定胜负的；
+ *   - **只画实心体块**：墙体用墨色、矮掩体用淡墨。雷达不是 3D 预览，玩家要的是
+ *     "哪条路通、我在哪个拐角"。
+ *   - **敌人只在通视时显示**：与 gameplay 一致（没有雷达扫描），用同一条 2D 视线求交，
+ *     避免"雷达卖队友位置"变成透视挂；
+ *   - **静态层缓存**：97 个体块每帧重绘没必要，墙体只画一次到离屏 canvas，
  *     每帧只 blit 一次 + 画几个点，15Hz 刷新，开销可以忽略。
  */
 
 import { MAP_BOUNDS, MAP_ZONES, OBSTACLES, mapZoneAt } from "@colyseus-fps/shared";
 import type { PlayerState } from "../net/types.js";
 
-/** 面板边长（CSS px）。 */
-const PANEL_SIZE = 196;
-/** 面板内边距：留出方位标记与描边。 */
-const PANEL_PADDING = 7;
-/** 重绘频率上限（Hz）。小地图不需要 60fps，15Hz 已经比人眼反应快。 */
+/** 表盘直径（CSS px），必须与 style.css 的 `.hud-radar-dial` 一致。 */
+const PANEL_SIZE = 208;
+/** 地图到圆盘边缘的留白（含方位刻度）。 */
+const PANEL_PADDING = 14;
+/** 重绘频率上限（Hz）。雷达不需要 60fps，15Hz 已经比人眼反应快。 */
 const MINIMAP_MAX_FPS = 15;
 /** 视线判定时把体块外扩的余量（米）：贴着墙站不至于被自己的墙挡成"看不见"。 */
 const LOS_EPSILON = 0.02;
-/** 矮于该高度的掩体不挡视线（1.1m 的箱子只到胸口，小地图上不当作遮挡）。 */
+/** 矮于该高度的掩体不挡视线（1.1m 的箱子只到胸口）。 */
 const LOS_BLOCK_HEIGHT = 1.3;
-/** 视野扇形半角（弧度）与长度（米）：与 80° 竖直 FOV、16:9 下的水平视场接近。 */
+/** 视野扇形半角（弧度）与长度（米）。 */
 const VIEW_CONE_HALF_ANGLE = (42 * Math.PI) / 180;
 const VIEW_CONE_RANGE = 22;
 
 const COLOR = {
-  frame: "rgba(148, 163, 184, 0.5)",
-  frameSoft: "rgba(148, 163, 184, 0.22)",
-  wall: "rgba(226, 232, 240, 0.72)",
-  lowCover: "rgba(148, 163, 184, 0.34)",
-  siteFill: "rgba(245, 158, 11, 0.1)",
-  siteStroke: "rgba(245, 158, 11, 0.55)",
-  siteText: "rgba(253, 230, 138, 0.95)",
-  label: "rgba(203, 213, 225, 0.72)",
-  self: "#7dd3fc",
-  teammate: "#38bdf8",
-  teammateDead: "rgba(56, 189, 248, 0.3)",
-  enemy: "#f87171",
-  cone: "rgba(125, 211, 252, 0.16)",
+  base: "#f3e6ca",
+  grid: "rgba(43, 27, 47, 0.05)",
+  bound: "rgba(43, 27, 47, 0.38)",
+  wall: "#5a4459",
+  lowCover: "rgba(90, 68, 89, 0.2)",
+  siteFill: "rgba(255, 198, 61, 0.45)",
+  siteStroke: "rgba(43, 27, 47, 0.55)",
+  siteText: "#2b1b2f",
+  label: "rgba(43, 27, 47, 0.62)",
+  labelHalo: "rgba(255, 248, 233, 0.9)",
+  self: "#2b1b2f",
+  teammate: "#3fa9e0",
+  teammateDead: "rgba(63, 169, 224, 0.4)",
+  enemy: "#e8432f",
+  cone: "rgba(255, 198, 61, 0.3)",
 } as const;
 
-/** 需要在地图上写字的区域（其余分区只用于播报/查询）。 */
+/**
+ * 需要在地图上写字的区域（其余分区只用于播报/查询）。
+ *
+ * 只保留四个：包点两个、出生点两个。地图塞进圆盘后可用面积很小，
+ * 每多一个标签就会和墙块、包点字母挤在一起——"在哪"由下方胶囊回答，
+ * 圆盘只回答"往哪走"。
+ */
 const LABELED_ZONE_IDS: ReadonlySet<string> = new Set([
   "site_a",
   "site_b",
   "spawn_t",
   "spawn_ct",
-  "mid",
-  "long_a",
-  "tunnels",
-  "ct_mid",
 ]);
 
 interface StaticLayers {
@@ -68,13 +79,15 @@ export class Minimap {
   private readonly context: CanvasRenderingContext2D;
   private readonly layer: StaticLayers;
   private readonly dpr: number;
-  /** 每米多少 CSS 像素（世界 → 面板）。 */
+  /** 每米多少 CSS 像素（世界 → 表盘）。 */
   private readonly scale: number;
-  /** 世界原点到面板左上角的偏移（CSS px）。 */
+  /** 世界原点到表盘左上角的偏移（CSS px）。 */
   private readonly offsetX: number;
   private readonly offsetY: number;
   private lastDrawAt = 0;
   private exploded = false;
+  /** 自己当前所在分区的名字（HUD 胶囊里显示），由 update 写入。 */
+  private zoneLabel = "";
 
   public constructor(container: HTMLElement) {
     this.dpr = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
@@ -83,8 +96,8 @@ export class Minimap {
     this.canvas.className = "minimap";
     this.canvas.width = Math.round(PANEL_SIZE * this.dpr);
     this.canvas.height = Math.round(PANEL_SIZE * this.dpr);
-    this.canvas.style.width = `${PANEL_SIZE}px`;
-    this.canvas.style.height = `${PANEL_SIZE}px`;
+    // 尺寸交给 CSS（100% 撑满表盘）：窄屏下表盘变小，画布跟着等比缩放，
+    // 不能写死 208px，否则小屏会把圆盘右下角裁掉一半。
     container.appendChild(this.canvas);
 
     const context = this.canvas.getContext("2d");
@@ -103,9 +116,11 @@ export class Minimap {
     const spanX = MAP_BOUNDS.maxX - MAP_BOUNDS.minX;
     const spanZ = MAP_BOUNDS.maxZ - MAP_BOUNDS.minZ;
     const drawable = PANEL_SIZE - PANEL_PADDING * 2;
-    this.scale = drawable / Math.max(spanX, spanZ);
-    this.offsetX = PANEL_PADDING + (drawable - spanX * this.scale) / 2;
-    this.offsetY = PANEL_PADDING + (drawable - spanZ * this.scale) / 2;
+    // 按对角线定标：矩形图的对角线 = 圆的内接正方形边长，四角才都落在圆内
+    const diagonal = Math.hypot(spanX, spanZ);
+    this.scale = drawable / diagonal;
+    this.offsetX = PANEL_SIZE / 2 - (spanX * this.scale) / 2;
+    this.offsetY = PANEL_SIZE / 2 - (spanZ * this.scale) / 2;
 
     this.layer = this.buildStaticLayer();
   }
@@ -114,7 +129,12 @@ export class Minimap {
     return this.canvas;
   }
 
-  /** 世界坐标 → 面板 CSS 像素坐标。z 越大越靠下（北在上，与 CS 雷达同向）。 */
+  /** 当前所在分区名（未初始化时为空串）。 */
+  public get currentZoneLabel(): string {
+    return this.zoneLabel;
+  }
+
+  /** 世界坐标 → 表盘 CSS 像素坐标。z 越大越靠下（北在上）。 */
   private project(x: number, z: number): { x: number; y: number } {
     return {
       x: this.offsetX + (x - MAP_BOUNDS.minX) * this.scale,
@@ -125,7 +145,7 @@ export class Minimap {
   /**
    * 把墙体/建筑画一次到离屏 canvas。
    *
-   * 分层规则：`height >= 1.3` 用亮色（挡视线、挡子弹的主力），更矮的用暗色
+   * 分层规则：`height >= 1.3` 用墨色（挡视线、挡子弹的主力），更矮的用淡墨
    * （能跳过去、也能被子弹穿过上半身）。这比"一律同色"更能读出可走性。
    */
   private buildStaticLayer(): StaticLayers {
@@ -138,7 +158,43 @@ export class Minimap {
     }
     context.scale(this.dpr, this.dpr);
 
-    // 包点底纹：先铺 A/B 两块，让"往哪打"一眼可见
+    // 地图底：浅纸色矩形，让"可活动区域"从表盘留白里分出来
+    const origin = this.project(MAP_BOUNDS.minX, MAP_BOUNDS.minZ);
+    const far = this.project(MAP_BOUNDS.maxX, MAP_BOUNDS.maxZ);
+    context.fillStyle = COLOR.base;
+    context.strokeStyle = COLOR.bound;
+    context.lineWidth = 1.5;
+    context.beginPath();
+    context.rect(origin.x, origin.y, far.x - origin.x, far.y - origin.y);
+    context.fill();
+    context.stroke();
+
+    // 2m 网格：给距离感一个参照，比纯色块更像"地图"
+    context.save();
+    context.beginPath();
+    context.rect(origin.x, origin.y, far.x - origin.x, far.y - origin.y);
+    context.clip();
+    context.strokeStyle = COLOR.grid;
+    context.lineWidth = 1;
+    for (let x = Math.ceil(MAP_BOUNDS.minX / 2) * 2; x < MAP_BOUNDS.maxX; x += 2) {
+      const top = this.project(x, MAP_BOUNDS.minZ);
+      const bottom = this.project(x, MAP_BOUNDS.maxZ);
+      context.beginPath();
+      context.moveTo(top.x, top.y);
+      context.lineTo(bottom.x, bottom.y);
+      context.stroke();
+    }
+    for (let z = Math.ceil(MAP_BOUNDS.minZ / 2) * 2; z < MAP_BOUNDS.maxZ; z += 2) {
+      const left = this.project(MAP_BOUNDS.minX, z);
+      const right = this.project(MAP_BOUNDS.maxX, z);
+      context.beginPath();
+      context.moveTo(left.x, left.y);
+      context.lineTo(right.x, right.y);
+      context.stroke();
+    }
+    context.restore();
+
+    // 包点底纹：先铺，让"往哪打"一眼可见
     for (const zone of MAP_ZONES) {
       if (zone.kind !== "site") {
         continue;
@@ -147,7 +203,7 @@ export class Minimap {
       const bottomRight = this.project(zone.maxX, zone.maxZ);
       context.fillStyle = COLOR.siteFill;
       context.strokeStyle = COLOR.siteStroke;
-      context.lineWidth = 1;
+      context.lineWidth = 1.5;
       context.fillRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
       context.strokeRect(topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
     }
@@ -157,31 +213,41 @@ export class Minimap {
     for (const obstacle of sorted) {
       const topLeft = this.project(obstacle.x - obstacle.width / 2, obstacle.z - obstacle.depth / 2);
       const bottomRight = this.project(obstacle.x + obstacle.width / 2, obstacle.z + obstacle.depth / 2);
-      const width = Math.max(1, bottomRight.x - topLeft.x);
-      const height = Math.max(1, bottomRight.y - topLeft.y);
+      const width = Math.max(1.5, bottomRight.x - topLeft.x);
+      const height = Math.max(1.5, bottomRight.y - topLeft.y);
       context.fillStyle = obstacle.height >= LOS_BLOCK_HEIGHT ? COLOR.wall : COLOR.lowCover;
       context.fillRect(topLeft.x, topLeft.y, width, height);
     }
 
-    // 分区文字
+    // 分区文字：先描一圈纸色光晕再填字，压在墙块上也读得清
     context.textAlign = "center";
     context.textBaseline = "middle";
+    context.lineJoin = "round";
+    const drawLabel = (text: string, x: number, y: number, color: string): void => {
+      context.strokeStyle = COLOR.labelHalo;
+      context.lineWidth = 3.5;
+      context.strokeText(text, x, y);
+      context.fillStyle = color;
+      context.fillText(text, x, y);
+    };
+
     for (const zone of MAP_ZONES) {
-      if (!LABELED_ZONE_IDS.has(zone.id)) {
+      if (!LABELED_ZONE_IDS.has(zone.id) || zone.kind === "site") {
         continue;
       }
       const center = this.project((zone.minX + zone.maxX) / 2, (zone.minZ + zone.maxZ) / 2);
-      if (zone.kind === "site") {
-        context.font = "700 13px 'Segoe UI', system-ui, sans-serif";
-        context.fillStyle = COLOR.siteText;
-        context.fillText(zone.id === "site_a" ? "A" : "B", center.x, center.y);
-      } else {
-        context.font = "500 8.5px 'Segoe UI', system-ui, sans-serif";
-        context.fillStyle = COLOR.label;
-        // 出生点贴边写，避免盖住通道
-        const y = zone.kind === "spawn" ? center.y : center.y;
-        context.fillText(zone.label, center.x, y);
+      context.font = "700 8.5px 'Microsoft YaHei', sans-serif";
+      drawLabel(zone.label, center.x, center.y, COLOR.label);
+    }
+
+    // 包点字母最后画：它是"往哪打"的最终答案，不能被任何标签盖住
+    for (const zone of MAP_ZONES) {
+      if (zone.kind !== "site") {
+        continue;
       }
+      const center = this.project((zone.minX + zone.maxX) / 2, (zone.minZ + zone.maxZ) / 2);
+      context.font = "800 16px 'Baloo 2', 'Microsoft YaHei', sans-serif";
+      drawLabel(zone.id === "site_a" ? "A" : "B", center.x, center.y, COLOR.siteText);
     }
 
     return { canvas, width: PANEL_SIZE, height: PANEL_SIZE };
@@ -213,10 +279,6 @@ export class Minimap {
     context.clearRect(0, 0, this.canvas.width, this.canvas.height);
     context.scale(this.dpr, this.dpr);
 
-    // 底板（比纯黑更透气，能看到背后的场景）
-    context.fillStyle = "rgba(9, 14, 22, 0.62)";
-    context.fillRect(0, 0, PANEL_SIZE, PANEL_SIZE);
-
     context.drawImage(this.layer.canvas, 0, 0, PANEL_SIZE, PANEL_SIZE);
 
     // 视野扇形：自己朝向的前方 22m
@@ -233,7 +295,7 @@ export class Minimap {
         if (!player.alive || !this.hasLineOfSight(self, player)) {
           continue;
         }
-        this.drawDot(context, player, COLOR.enemy, 2.6);
+        this.drawDot(context, player, COLOR.enemy, 3.8);
         continue;
       }
       this.drawTeammate(context, player);
@@ -242,25 +304,8 @@ export class Minimap {
     // 自己最后画（永远压在队友/敌人上面）
     this.drawSelf(context, self);
 
-    // 外框 + 方位标记
-    context.strokeStyle = COLOR.frame;
-    context.lineWidth = 1;
-    context.strokeRect(0.5, 0.5, PANEL_SIZE - 1, PANEL_SIZE - 1);
-
-    context.font = "700 9px 'Segoe UI', system-ui, sans-serif";
-    context.textAlign = "center";
-    context.textBaseline = "top";
-    context.fillStyle = COLOR.frame;
-    context.fillText("N", PANEL_SIZE / 2, 2);
-
-    // 当前所在区域：写在地图下沿，回答"我在哪"
     const zone = mapZoneAt(self.x, self.z);
-    if (zone !== null) {
-      context.textBaseline = "bottom";
-      context.fillStyle = "rgba(226, 232, 240, 0.9)";
-      context.font = "500 9.5px 'Segoe UI', system-ui, sans-serif";
-      context.fillText(zone.label, PANEL_SIZE / 2, PANEL_SIZE - 4);
-    }
+    this.zoneLabel = zone === null ? "" : zone.label;
   }
 
   private drawViewCone(
@@ -284,6 +329,7 @@ export class Minimap {
     context.fill();
   }
 
+  /** 点位统一「实心圆 + 墨线描边」，在纸底和深色墙块上都立得住。 */
   private drawDot(
     context: CanvasRenderingContext2D,
     player: PlayerState,
@@ -295,27 +341,30 @@ export class Minimap {
     context.arc(point.x, point.y, radius, 0, Math.PI * 2);
     context.fillStyle = color;
     context.fill();
+    context.strokeStyle = "rgba(43, 27, 47, 0.85)";
+    context.lineWidth = 1.6;
+    context.stroke();
   }
 
   private drawTeammate(context: CanvasRenderingContext2D, player: PlayerState): void {
     if (!player.alive) {
-      // 阵亡队友保留一个空心圈：位置信息在 CS 里也是可见的，方便判断哪条路丢了
+      // 阵亡队友保留空心圈：位置信息在 CS 里也是可见的，方便判断哪条路丢了
       const point = this.project(player.x, player.z);
       context.beginPath();
-      context.arc(point.x, point.y, 2.4, 0, Math.PI * 2);
+      context.arc(point.x, point.y, 3, 0, Math.PI * 2);
       context.strokeStyle = COLOR.teammateDead;
-      context.lineWidth = 1;
+      context.lineWidth = 1.6;
       context.stroke();
       return;
     }
-    this.drawDot(context, player, COLOR.teammate, 2.6);
+    this.drawDot(context, player, COLOR.teammate, 3.8);
     // 朝向短线：判断"他瞄哪边"
     const point = this.project(player.x, player.z);
     context.beginPath();
     context.moveTo(point.x, point.y);
-    context.lineTo(point.x + Math.sin(-player.yaw) * 5.5, point.y - Math.cos(-player.yaw) * 5.5);
+    context.lineTo(point.x + Math.sin(-player.yaw) * 7, point.y - Math.cos(-player.yaw) * 7);
     context.strokeStyle = COLOR.teammate;
-    context.lineWidth = 1;
+    context.lineWidth = 2.2;
     context.stroke();
   }
 
@@ -323,18 +372,19 @@ export class Minimap {
     const point = this.project(self.x, self.z);
     context.save();
     context.translate(point.x, point.y);
-    // 画布 +y 向下；yaw=0 面向 −Z → 箭头朝上。rotate(−yaw) 把 −Z 方向转到箭头的 +Y 前
+    // 画布 +y 向下；yaw=0 面向 −Z → 箭头朝上
     context.rotate(-self.yaw);
     context.beginPath();
-    context.moveTo(0, -5.4);
-    context.lineTo(3.6, 4.2);
-    context.lineTo(0, 2.2);
-    context.lineTo(-3.6, 4.2);
+    context.moveTo(0, -8.4);
+    context.lineTo(5.8, 6.4);
+    context.lineTo(0, 3.6);
+    context.lineTo(-5.8, 6.4);
     context.closePath();
-    context.fillStyle = self.alive ? COLOR.self : "rgba(125, 211, 252, 0.45)";
+    context.fillStyle = self.alive ? COLOR.self : "rgba(43, 27, 47, 0.45)";
     context.fill();
-    context.strokeStyle = "rgba(8, 12, 18, 0.85)";
-    context.lineWidth = 1;
+    // 反向描奶油边，压深色墙块时也能看见箭头轮廓
+    context.strokeStyle = "#fff8e9";
+    context.lineWidth = 2;
     context.stroke();
     context.restore();
   }
@@ -342,7 +392,7 @@ export class Minimap {
   /**
    * 2D 视线判定：从自己到目标的一条线段是否被"够高的体块"挡住。
    *
-   * 只做 XZ 平面的 slab 求交 + 高度过滤，足够回答小地图的问题；真正的弹道遮挡
+   * 只做 XZ 平面的 slab 求交 + 高度过滤，足够回答雷达的问题；真正的弹道遮挡
    * 由服务端 `rayAabb` 负责（那里是 3D，还带命中点与法向）。
    */
   private hasLineOfSight(from: PlayerState, to: PlayerState): boolean {

@@ -1,7 +1,70 @@
+/* ==========================================================================
+   猫鼠战场 · 视觉系统（v1）
+   --------------------------------------------------------------------------
+   所有界面共用一层 token：颜色、描边、圆角、投影、字体。改这里 = 改全站。
+   规则只有四条，新增组件必须遵守：
+     1. 底色只有「奶油纸」与「深墨」两档，不允许第三种主色；
+     2. 任何面板都要有 3px 墨线描边 + 朝向光源的硬投影（无模糊）；
+     3. 强调色只允许番茄红（危险/主操作）与奶酪黄（选中/奖励），
+        天空蓝只用于队友与自己；
+     4. 不用 backdrop-filter：半透明 WebGL 画布上做实时模糊会掉帧，
+        而且在不同合成后端会撑坏布局。需要通透感就用不透明渐变。
+   ========================================================================== */
+
+@font-face {
+  font-family: "Baloo 2";
+  src: url("/fonts/baloo-2-latin-600-normal.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Baloo 2";
+  src: url("/fonts/baloo-2-latin-700-normal.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Baloo 2";
+  src: url("/fonts/baloo-2-latin-800-normal.woff2") format("woff2");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  color: #e6edf3;
-  background: #0b1017;
-  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  /* ---- 颜色 ---- */
+  --paper: #fff8e9;
+  --paper-2: #f6e8ce;
+  --paper-3: #e7d6b6;
+  --ink: #2b1b2f;
+  --ink-2: #5a4459;
+  --ink-3: #8a7590;
+  --tomato: #e8432f;
+  --tomato-deep: #c4331f;
+  --cheese: #ffc63d;
+  --cheese-deep: #e0a21a;
+  --sky: #3fa9e0;
+  --mint: #3fbf8f;
+
+  /* ---- 形状 ---- */
+  --line: 3px;
+  --radius: 20px;
+  --radius-sm: 12px;
+  --shadow: 0 7px 0 rgba(43, 27, 47, 0.34);
+  --shadow-sm: 0 4px 0 rgba(43, 27, 47, 0.28);
+  --shadow-lift: 0 14px 0 rgba(43, 27, 47, 0.3);
+
+  /* ---- 字体 ---- */
+  --f-num: "Baloo 2", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  --f-cn: "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+
+  color: var(--ink);
+  background: var(--paper);
+  font-family: var(--f-cn);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
@@ -16,151 +79,457 @@ body {
   padding: 0;
   height: 100%;
   overflow: hidden;
+  background: var(--paper);
 }
 
 body {
   min-width: 320px;
-  background:
-    radial-gradient(circle at 20% 0%, rgba(47, 129, 247, 0.16), transparent 30%),
-    #0b1017;
 }
 
 button,
 input {
   font: inherit;
+  color: inherit;
 }
 
 .hidden {
   display: none !important;
 }
 
-/* ---------- 大厅 ---------- */
+/* ==========================================================================
+   通用组件
+   ========================================================================== */
 
-.shell {
-  width: min(640px, calc(100% - 32px));
+/* 纸卡：所有面板的母版 */
+.plate {
+  background: var(--paper);
+  border: var(--line) solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+/* 主按钮 */
+.btn {
+  height: 62px;
+  padding: 0 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: var(--line) solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper);
+  box-shadow: var(--shadow);
+  font-family: var(--f-cn);
+  font-weight: 700;
+  font-size: 21px;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.1s ease, background 0.1s ease;
+}
+
+.btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 9px 0 rgba(43, 27, 47, 0.34);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(4px);
+  box-shadow: 0 2px 0 rgba(43, 27, 47, 0.34);
+}
+
+.btn.primary {
+  background: var(--tomato);
+  color: var(--paper);
+}
+
+.btn:disabled {
+  background: var(--paper-3);
+  color: var(--ink-3);
+  box-shadow: 0 4px 0 rgba(43, 27, 47, 0.2);
+  cursor: not-allowed;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 24px;
+  padding: 2px 7px;
+  text-align: center;
+  color: var(--ink);
+  background: var(--paper);
+  border: 2px solid var(--ink);
+  border-radius: 7px;
+  box-shadow: 0 2px 0 rgba(43, 27, 47, 0.35);
+  font-family: var(--f-num);
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+/* ==========================================================================
+   大厅
+   ========================================================================== */
+
+.lobby {
+  position: fixed;
+  inset: 0;
+  overflow-y: auto;
+  background:
+    radial-gradient(90% 70% at 12% -10%, #fffdf6 0%, rgba(255, 253, 246, 0) 60%),
+    radial-gradient(70% 60% at 100% 100%, #efd6ac 0%, rgba(239, 214, 172, 0) 62%),
+    var(--paper-2);
+}
+
+/* 背景纹理：45° 细斜纹，给大块奶油色一点纸质颗粒感 */
+.lobby::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(43, 27, 47, 0.035) 0 1px,
+    rgba(43, 27, 47, 0) 1px 9px
+  );
+  pointer-events: none;
+}
+
+/* 底部红白格纹 = 桌布，是这张图的主题符号；压在下沿，不抢主内容 */
+.lobby::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 54px;
+  border-top: var(--line) solid var(--ink);
+  background:
+    repeating-conic-gradient(var(--tomato) 0 25%, #fffdf4 0 50%) 0 0 / 52px 52px;
+  opacity: 0.92;
+  pointer-events: none;
+}
+
+.lobby-inner {
+  position: relative;
+  width: min(1180px, 100%);
+  min-height: 100%;
   margin: 0 auto;
-  padding: 48px 0;
+  padding: 6vh 40px 12vh;
+  display: grid;
+  /* 两栏都定宽并居中：品牌区不跟着窗口一起拉宽，
+     否则宽屏下标题与进入卡之间会出现一大块空白 */
+  grid-template-columns: minmax(0, 560px) 430px;
+  justify-content: center;
+  align-items: center;
+  gap: 64px;
+}
+
+/* ---- 左侧品牌区 ---- */
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+.brand-eyebrow {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  align-self: flex-start;
+  padding: 6px 14px;
+  border: 2.5px solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper);
+  box-shadow: 0 3px 0 rgba(43, 27, 47, 0.3);
+  font-family: var(--f-num);
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  color: var(--ink-2);
+}
+
+.brand-eyebrow i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--tomato);
+}
+
+.brand-title {
+  margin: 0;
+  font-family: var(--f-cn);
+  font-weight: 700;
+  font-size: clamp(56px, 7.4vw, 104px);
+  line-height: 1.02;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  text-shadow:
+    7px 7px 0 var(--cheese),
+    14px 15px 0 rgba(43, 27, 47, 0.1);
+}
+
+.brand-sub {
+  margin: 0;
+  font-family: var(--f-cn);
+  font-weight: 700;
+  font-size: 19px;
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+}
+
+.brand-points {
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+
+.brand-points li {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+}
+
+.brand-points li::before {
+  content: "";
+  flex: none;
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+  border-radius: 3px;
+  background: var(--cheese);
+  border: 2.5px solid var(--ink);
+}
+
+/* ---- 阵容条 ---- */
+
+.roster {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.roster-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-family: var(--f-cn);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--ink-3);
+}
+
+.roster-head b {
+  font-family: var(--f-num);
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  color: var(--ink-2);
+}
+
+.roster-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.roster-card {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 13px 7px 7px;
+  border: 2.5px solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper);
+  box-shadow: 0 3px 0 rgba(43, 27, 47, 0.24);
+}
+
+.roster-face {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 50%;
+  border: 2.5px solid var(--ink);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.roster-face svg {
+  width: 27px;
+  height: 27px;
+}
+
+.roster-name {
+  display: block;
+  font-family: var(--f-num);
+  font-weight: 800;
+  font-size: 14px;
+  letter-spacing: 0.05em;
+  color: var(--ink);
+  line-height: 1.15;
+}
+
+.roster-role {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-3);
+  line-height: 1.1;
+}
+
+/* ---- 右侧进入卡 ---- */
+
+.join-card {
+  padding: 26px 26px 22px;
+  background: var(--paper);
+  border: var(--line) solid var(--ink);
+  border-radius: 26px;
+  box-shadow: var(--shadow-lift);
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-height: 100vh;
-  overflow-y: auto;
 }
 
-.panel {
-  background: rgba(18, 26, 38, 0.92);
-  border: 1px solid #263247;
-  border-radius: 12px;
-  padding: 20px 24px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
-}
-
-.hero .eyebrow {
-  margin: 0 0 6px;
-  color: #58a6ff;
-  font-size: 12px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-}
-
-.hero h1 {
-  margin: 0 0 8px;
-  font-size: 28px;
-}
-
-.hero .summary {
+.join-card h2 {
   margin: 0;
-  color: #8b98a9;
-  line-height: 1.6;
+  font-family: var(--f-cn);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 
-.controls label {
-  display: block;
-  margin-bottom: 14px;
-  color: #8b98a9;
+.join-card .card-hint {
+  margin: -8px 0 0;
   font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-3);
 }
 
-.controls input {
+.field {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--ink-3);
+}
+
+.field input {
   display: block;
   width: 100%;
-  margin-top: 6px;
-  padding: 10px 12px;
-  color: #e6edf3;
-  background: #0d1420;
-  border: 1px solid #2d3a4f;
-  border-radius: 8px;
+  height: 54px;
+  margin-top: 7px;
+  padding: 0 16px;
+  background: var(--paper-2);
+  border: var(--line) solid var(--ink);
+  border-radius: 14px;
   outline: none;
+  font-family: var(--f-cn);
+  font-weight: 700;
+  font-size: 17px;
+  letter-spacing: 0.02em;
+  color: var(--ink);
 }
 
-.controls input:focus {
-  border-color: #3b82f6;
+.field input:focus {
+  background: #fffdf4;
+  box-shadow: 0 0 0 4px rgba(255, 198, 61, 0.55);
 }
 
-.actions button {
-  padding: 10px 28px;
-  color: #fff;
-  background: linear-gradient(180deg, #2f81f7, #1d4ed8);
-  border: none;
-  border-radius: 8px;
+.field input::placeholder {
+  color: var(--ink-3);
+  font-weight: 400;
+}
+
+/* 服务端地址：默认折起，避免把「玩家名 + 进入」这一条主流程冲淡 */
+.advanced {
+  border-top: 2px dashed rgba(43, 27, 47, 0.18);
+  padding-top: 14px;
+}
+
+.advanced summary {
   cursor: pointer;
-  font-weight: 600;
+  list-style: none;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--ink-3);
 }
 
-.actions button:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
+.advanced summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced summary::before {
+  content: "▸ ";
+}
+
+.advanced[open] summary::before {
+  content: "▾ ";
+}
+
+.advanced .field {
+  margin-top: 10px;
+}
+
+.join-card .btn {
+  width: 100%;
+  margin-top: 2px;
 }
 
 .join-meta {
   display: flex;
   align-items: center;
-  gap: 14px;
-  margin: 14px 0 0;
-  color: #8b98a9;
-  font-size: 13px;
+  gap: 10px;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-3);
 }
 
 .badge {
-  padding: 3px 10px;
-  background: #212b3d;
+  padding: 4px 12px;
+  border: 2.5px solid var(--ink);
   border-radius: 999px;
+  background: var(--paper-2);
+  font-family: var(--f-cn);
   font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-2);
 }
 
 .badge.busy {
-  color: #fbbf24;
+  background: var(--cheese);
+  color: var(--ink);
 }
 
-.help-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  color: #8b98a9;
-  line-height: 2;
-}
+/* ==========================================================================
+   设置面板（大厅折叠区与游戏内 Esc 遮罩共用）
+   ========================================================================== */
 
-kbd {
-  display: inline-block;
-  min-width: 22px;
-  margin-right: 4px;
-  padding: 1px 6px;
-  text-align: center;
-  color: #dbe4f0;
-  background: #1a2333;
-  border: 1px solid #31405a;
-  border-radius: 4px;
-  font-size: 12px;
+.settings {
+  border-top: 2px dashed rgba(43, 27, 47, 0.18);
+  padding-top: 14px;
 }
-
-/* ---------- 设置（大厅折叠区 + 游戏内 Esc 遮罩共用） ---------- */
 
 .settings summary {
-  color: #e6edf3;
-  font-size: 15px;
-  font-weight: 600;
   cursor: pointer;
   list-style: none;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--ink-2);
 }
 
 .settings summary::-webkit-details-marker {
@@ -169,7 +538,7 @@ kbd {
 
 .settings summary::before {
   content: "▸ ";
-  color: #58a6ff;
+  color: var(--tomato);
 }
 
 .settings[open] summary::before {
@@ -180,29 +549,79 @@ kbd {
   margin-top: 14px;
 }
 
+/* 操作说明：折在设置里，不进主流程 */
+.help-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+  margin: 16px 0 0;
+  padding-top: 14px;
+  border-top: 2px dashed rgba(43, 27, 47, 0.14);
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.help-grid dt {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.help-grid dd {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.settings-group + .settings-group {
+  padding-top: 14px;
+  border-top: 2px dashed rgba(43, 27, 47, 0.14);
+}
+
+.settings-title {
+  margin: 0;
+  font-family: var(--f-cn);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--ink-3);
+}
+
 .settings-slider {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .settings-row {
   display: grid;
-  grid-template-columns: 96px 1fr 56px;
+  grid-template-columns: 74px 1fr 62px;
   align-items: center;
   gap: 12px;
-  color: #8b98a9;
   font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-2);
 }
 
 .settings-name {
   white-space: nowrap;
 }
 
-/* 滑块本体：默认外观在不同浏览器差异太大，这里统一成细轨 + 圆钮 */
 .settings-range {
   width: 100%;
-  height: 20px;
+  height: 22px;
   margin: 0;
   appearance: none;
   background: transparent;
@@ -210,88 +629,68 @@ kbd {
 }
 
 .settings-range::-webkit-slider-runnable-track {
-  height: 4px;
-  background: #2d3a4f;
+  height: 8px;
+  border: 2.5px solid var(--ink);
   border-radius: 999px;
+  background: var(--paper-3);
 }
 
 .settings-range::-webkit-slider-thumb {
   appearance: none;
-  width: 14px;
-  height: 14px;
-  margin-top: -5px;
-  background: #3b82f6;
-  border: 1px solid #7dd3fc;
+  width: 22px;
+  height: 22px;
+  margin-top: -9px;
+  border: 2.5px solid var(--ink);
   border-radius: 50%;
+  background: var(--cheese);
+  box-shadow: 0 2px 0 rgba(43, 27, 47, 0.35);
 }
 
 .settings-range::-moz-range-track {
-  height: 4px;
-  background: #2d3a4f;
+  height: 8px;
+  border: 2.5px solid var(--ink);
   border-radius: 999px;
+  background: var(--paper-3);
 }
 
 .settings-range::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  background: #3b82f6;
-  border: 1px solid #7dd3fc;
+  width: 20px;
+  height: 20px;
+  border: 2.5px solid var(--ink);
   border-radius: 50%;
+  background: var(--cheese);
 }
 
 .settings-value {
-  color: #7dd3fc;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
   text-align: right;
+  font-family: var(--f-num);
+  font-weight: 800;
+  font-size: 16px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
 }
 
 .settings-hint {
   margin: 0;
-  color: #64748b;
-  font-size: 12px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ink-3);
 }
 
-/* 设置面板：灵敏度 / 准星两组，组间用细分隔线 */
-.settings-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.settings-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.settings-group + .settings-group {
-  padding-top: 12px;
-  border-top: 1px solid #1f2b3d;
-}
-
-.settings-title {
-  margin: 0;
-  color: #e6edf3;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-/* 准星预览：与游戏内准星共用 .xh 的规则，外面套一块浅色底模拟墙面 */
 .xh-preview-wrap {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 64px;
-  border-radius: 8px;
+  height: 66px;
+  border: 2.5px solid var(--ink);
+  border-radius: 14px;
+  /* 预览底要偏深：准星默认是奶油白，浅色墙上根本看不清，
+     所以这里模拟"背光的木墙"而不是"阳光下的白墙" */
   background:
-    radial-gradient(circle at 50% 50%, rgba(214, 190, 148, 0.55), rgba(120, 96, 64, 0.25) 70%),
-    #1b2432;
-  border: 1px solid #253143;
+    radial-gradient(circle at 50% 40%, rgba(150, 118, 78, 0.95), rgba(92, 70, 46, 0.98) 78%),
+    #6b4f31;
 }
 
-/* 色块：选中态给白圈 + 黑边，深浅色都看得出来 */
 .settings-swatches {
   display: flex;
   align-items: center;
@@ -300,26 +699,24 @@ kbd {
 }
 
 .settings-swatch {
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   padding: 0;
-  border: 2px solid transparent;
-  border-radius: 4px;
-  box-shadow: 0 0 0 1px #0b1220;
+  border: 2.5px solid var(--ink);
+  border-radius: 7px;
   cursor: pointer;
 }
 
 .settings-swatch.active {
-  border-color: #ffffff;
-  box-shadow: 0 0 0 2px #58a6ff;
+  box-shadow: 0 0 0 3px var(--cheese);
 }
 
 .settings-color {
-  width: 28px;
+  width: 30px;
   height: 24px;
   padding: 0;
-  border: 1px solid #2d3a4f;
-  border-radius: 4px;
+  border: 2.5px solid var(--ink);
+  border-radius: 7px;
   background: transparent;
   cursor: pointer;
 }
@@ -327,9 +724,10 @@ kbd {
 .settings-toggles {
   display: flex;
   flex-wrap: wrap;
-  gap: 14px;
-  color: #8b98a9;
-  font-size: 12px;
+  gap: 12px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ink-2);
 }
 
 .settings-toggle {
@@ -340,28 +738,34 @@ kbd {
 }
 
 .settings-toggle input {
-  accent-color: #3b82f6;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--tomato);
   cursor: pointer;
 }
 
 .settings-reset {
   align-self: flex-start;
   margin-top: 2px;
-  padding: 5px 12px;
-  color: #b9c6d8;
+  padding: 7px 14px;
+  border: 2.5px solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper);
+  box-shadow: 0 2px 0 rgba(43, 27, 47, 0.25);
   font-size: 12px;
-  background: #1b2432;
-  border: 1px solid #2d3a4f;
-  border-radius: 6px;
+  font-weight: 700;
+  color: var(--ink-2);
   cursor: pointer;
 }
 
 .settings-reset:hover {
-  color: #e6edf3;
-  border-color: #3b82f6;
+  background: var(--cheese);
+  color: var(--ink);
 }
 
-/* ---------- 游戏容器与 HUD ---------- */
+/* ==========================================================================
+   游戏容器与 HUD 基础
+   ========================================================================== */
 
 #game-container {
   position: fixed;
@@ -377,25 +781,17 @@ kbd {
   inset: 0;
   pointer-events: none;
   user-select: none;
+  font-family: var(--f-cn);
 }
 
-/* 准星 = 四臂 + 可选中心点，全部尺寸/颜色由 JS 写入的 CSS 变量驱动
-   （设置面板「准星」一节可调，见 src/ui/settings.ts）
+/* ---- 准星：四臂 + 可选中心点，尺寸/颜色由 JS 写入 CSS 变量 ---- */
 
-   --xh-len    臂长（px）
-   --xh-thick  臂宽 = 中心点边长（px）
-   --xh-gap    中心到臂内侧的**静态**间距（px），玩家可调
-   --xh-color  颜色
-   --spread    开火时的额外张开量（px，由 Game 按服务端同源角度每帧换算）
-
-   容器是 0×0 的点，四臂靠 bottom/top/left/right 从中心往外摆——
-   这样改任何一个变量都只动一根臂，不会像固定 22px 盒子那样需要重算偏移。 */
 .xh {
   --xh-len: 6px;
   --xh-thick: 2px;
   --xh-gap: 5px;
-  --xh-color: #e6edf3;
-  --xh-shadow: rgba(0, 0, 0, 0.85);
+  --xh-color: #fff8e9;
+  --xh-shadow: rgba(43, 27, 47, 0.92);
   --spread: 0px;
   position: relative;
   width: 0;
@@ -407,21 +803,24 @@ kbd {
   position: absolute;
   left: 50%;
   top: 50%;
+  z-index: 6;
 }
 
 .xh span {
   position: absolute;
   display: block;
   background: var(--xh-color);
-  box-shadow: 0 0 3px var(--xh-shadow);
+  /* 卡通描边：恒定 2px 墨线，浅色墙上也不会糊 */
+  box-shadow:
+    0 0 0 2px var(--xh-shadow),
+    0 0 4px var(--xh-shadow);
   transition: transform 0.06s linear;
 }
 
-/* 描边开关：1px 实黑边 + 一点柔光，浅色墙面（沙漠图最常见的背景）上也看得清 */
 .xh.outline span {
   box-shadow:
-    0 0 0 1px var(--xh-shadow),
-    0 0 3px var(--xh-shadow);
+    0 0 0 2.5px var(--xh-shadow),
+    0 0 5px var(--xh-shadow);
 }
 
 .xh span:nth-child(1) { left: calc(var(--xh-thick) / -2); bottom: var(--xh-gap); width: var(--xh-thick); height: var(--xh-len); transform: translateY(calc(-1 * var(--spread))); }
@@ -429,7 +828,6 @@ kbd {
 .xh span:nth-child(3) { top: calc(var(--xh-thick) / -2); right: var(--xh-gap); width: var(--xh-len); height: var(--xh-thick); transform: translateX(calc(-1 * var(--spread))); }
 .xh span:nth-child(4) { top: calc(var(--xh-thick) / -2); left: var(--xh-gap); width: var(--xh-len); height: var(--xh-thick); transform: translateX(var(--spread)); }
 
-/* 中心点：默认不画，勾选后由 .has-dot 打开 */
 .xh .xh-dot {
   left: calc(var(--xh-thick) / -2);
   top: calc(var(--xh-thick) / -2);
@@ -442,210 +840,482 @@ kbd {
   display: block;
 }
 
-/* 顶栏 */
-.hud-top {
+/* ---- 雷达（左上） ---- */
+
+.hud-radar {
   position: absolute;
-  top: 14px;
-  left: 16px;
-  right: 16px;
+  left: 18px;
+  top: 18px;
+  width: 208px;
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
 }
 
-.hud-status,
-.hud-position {
-  padding: 6px 12px;
-  background: rgba(13, 20, 32, 0.72);
-  border: 1px solid rgba(59, 130, 246, 0.25);
-  border-radius: 8px;
-  font-size: 12px;
-  color: #b9c6d8;
-  backdrop-filter: blur(4px);
-}
-
-/* 左上角小地图：面板本身由 Minimap 画在 canvas 上，这里只负责定位与外观。
-   放在状态条下面（top 58px），不遮挡它。 */
-.hud-minimap {
-  position: absolute;
-  top: 58px;
-  left: 16px;
-  border-radius: 10px;
+.hud-radar-dial {
+  position: relative;
+  width: 208px;
+  height: 208px;
+  border-radius: 50%;
+  border: var(--line) solid var(--ink);
+  background: var(--paper);
+  box-shadow: var(--shadow);
   overflow: hidden;
-  background: rgba(9, 14, 22, 0.5);
-  box-shadow:
-    0 10px 24px rgba(0, 0, 0, 0.45),
-    0 0 0 1px rgba(148, 163, 184, 0.18);
-  backdrop-filter: blur(3px);
+}
+
+.hud-radar-dial canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* 圆盘上的方位标签：由 CSS 画，跟着圆盘转也不用重算 */
+.hud-radar-tick {
+  position: absolute;
+  font-family: var(--f-num);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--ink-3);
   pointer-events: none;
 }
 
-.hud-minimap canvas {
+.hud-radar-tick.n { top: 4px; left: 50%; transform: translateX(-50%); color: var(--tomato); }
+.hud-radar-tick.s { bottom: 3px; left: 50%; transform: translateX(-50%); }
+
+.hud-radar-name {
+  height: 28px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 2.5px solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper);
+  box-shadow: 0 3px 0 rgba(43, 27, 47, 0.28);
+  font-family: var(--f-cn);
+  font-weight: 700;
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.hud-radar-name b {
+  font-family: var(--f-num);
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: var(--ink);
+}
+
+/* ---- 生命（左下） ---- */
+
+.hud-vitals {
+  position: absolute;
+  left: 18px;
+  bottom: 22px;
+  width: 292px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px 12px 12px;
+  background: var(--paper);
+  border: var(--line) solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.hud-vitals-face {
+  flex: none;
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  border: var(--line) solid var(--ink);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: var(--paper-2);
+}
+
+.hud-vitals-face svg {
+  width: 54px;
+  height: 54px;
+}
+
+.hud-vitals-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.hud-vitals-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-bottom: 6px;
+}
+
+.hud-hp-text {
+  font-family: var(--f-num);
+  font-weight: 800;
+  font-size: 38px;
+  line-height: 0.86;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-vitals-unit {
+  font-family: var(--f-cn);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: var(--ink-3);
+}
+
+.hud-hp-track {
+  height: 18px;
+  border: var(--line) solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper-3);
+  overflow: hidden;
+}
+
+.hud-hp-bar {
+  height: 100%;
+  width: 100%;
+  border-radius: 0 999px 999px 0;
+  background: linear-gradient(180deg, #63d9a6, var(--mint));
+  transition: width 0.12s ease;
+}
+
+.hud-hp-bar.low {
+  background: linear-gradient(180deg, #f4685a, var(--tomato));
+}
+
+/* ---- 弹药（右下） ---- */
+
+.hud-ammo {
+  position: absolute;
+  right: 18px;
+  bottom: 22px;
+  min-width: 198px;
+  padding: 10px 18px 13px;
+  background: var(--paper);
+  border: var(--line) solid var(--ink);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  text-align: right;
+  overflow: hidden;
+}
+
+.hud-ammo-tag {
+  font-family: var(--f-cn);
+  font-weight: 700;
+  font-size: 11.5px;
+  letter-spacing: 0.16em;
+  color: var(--ink-3);
+}
+
+.hud-ammo-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.hud-ammo-current {
+  font-family: var(--f-num);
+  font-weight: 800;
+  font-size: 46px;
+  line-height: 1.02;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-ammo-current.empty {
+  color: var(--tomato);
+}
+
+.hud-ammo-reserve {
+  font-family: var(--f-num);
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-ammo-reload {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 7px;
+  width: 0;
+  background: var(--cheese);
+  transition: width 0.08s linear;
+}
+
+/* ---- 武器栏（底部中央 6 格） ---- */
+
+.hud-weaponbar {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 9px;
+  background: rgba(43, 27, 47, 0.86);
+  border: var(--line) solid var(--ink);
+  border-radius: 24px;
+  box-shadow: var(--shadow);
+}
+
+.hud-weapon {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding-top: 5px;
+  border: var(--line) solid var(--ink);
+  border-radius: 16px;
+  background: var(--paper-2);
+  color: var(--ink-2);
+  transition: opacity 0.12s ease, transform 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.hud-weapon svg {
+  width: 32px;
+  height: 32px;
   display: block;
+}
+
+/* 当前槽：奶酪黄 + 抬起 6px（不给描边换个颜色，帧间对比更稳） */
+.hud-weapon.active {
+  background: var(--cheese);
+  color: var(--ink);
+  transform: translateY(-6px);
+  box-shadow: 0 6px 0 rgba(43, 27, 47, 0.5);
+}
+
+.hud-weapon.empty {
+  opacity: 0.42;
+  border-style: dashed;
+}
+
+@keyframes hud-weapon-pulse {
+  from { transform: scale(1.12); }
+  to { transform: scale(1); }
+}
+
+.hud-weapon.pulse {
+  animation: hud-weapon-pulse 120ms ease-out;
+}
+
+.hud-weapon-key {
+  position: absolute;
+  top: -9px;
+  left: -7px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 2.5px solid var(--ink);
+  border-radius: 50%;
+  background: var(--paper);
+  font-family: var(--f-num);
+  font-weight: 800;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.hud-weapon-count {
+  position: relative;
+  font-family: var(--f-num);
+  font-weight: 800;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-weapon.active .hud-weapon-count {
+  color: var(--ink);
+}
+
+/* ---- 顶栏：玩家列表 / 击杀播报 ---- */
+
+.hud-top {
+  position: absolute;
+  top: 16px;
+  left: 244px;
+  right: 18px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  gap: 14px;
 }
 
 .hud-players {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  align-items: flex-end;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 52%;
 }
 
 .hud-player-row {
-  padding: 3px 10px;
-  background: rgba(13, 20, 32, 0.72);
-  border: 1px solid rgba(59, 130, 246, 0.18);
-  border-radius: 6px;
-  font-size: 12px;
-  color: #cbd5e1;
+  padding: 4px 11px;
+  border: 2.5px solid var(--ink);
+  border-radius: 999px;
+  background: rgba(255, 248, 233, 0.92);
+  box-shadow: 0 2px 0 rgba(43, 27, 47, 0.24);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--ink-2);
+  white-space: nowrap;
 }
 
 .hud-player-row.self {
-  color: #7dd3fc;
-  border-color: rgba(125, 211, 252, 0.45);
+  background: var(--cheese);
+  color: var(--ink);
 }
 
-/* 底栏 */
-.hud-bottom {
-  position: absolute;
-  left: 16px;
-  right: 16px;
-  bottom: 14px;
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  gap: 16px;
+.hud-player-row.dead {
+  opacity: 0.45;
+  text-decoration: line-through;
 }
 
-.hud-hint {
-  font-size: 12px;
-  color: rgba(185, 198, 216, 0.75);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
-}
-
-/* 指针锁定引导遮罩 */
-#lock-overlay {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(5, 9, 16, 0.55);
-  opacity: 0;
-  transition: opacity 0.15s ease;
-  pointer-events: none;
-}
-
-#lock-overlay.visible {
-  opacity: 1;
-  cursor: pointer;
-  pointer-events: auto; /* 可见时由遮罩自身承接点击，不依赖命中 canvas */
-}
-
-/* Esc 遮罩里的内容盒：标题 + 操作提示 + 设置滑块 */
-.lock-panel {
+.hud-killfeed {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  padding: 22px 30px 20px;
-  background: rgba(18, 26, 38, 0.96);
-  border: 1px solid #3b82f6;
-  border-radius: 12px;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  align-items: flex-end;
+  gap: 5px;
+  min-width: 180px;
 }
 
-#lock-overlay .lock-title {
-  margin: 0;
-  padding: 0;
-  background: none;
-  border: none;
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-}
-
-#lock-overlay .lock-hint {
-  margin: 0;
-  padding: 0;
-  max-width: 460px;
-  color: #8b98a9;
-  background: none;
-  border: none;
+.hud-killfeed-item {
+  position: relative;
+  padding: 5px 12px 5px 14px;
+  border: 2.5px solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper);
+  box-shadow: 0 2px 0 rgba(43, 27, 47, 0.26);
   font-size: 12px;
-  font-weight: 400;
-  line-height: 1.7;
-  letter-spacing: 0;
-  text-align: center;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  animation: killfeed-in 0.16s ease;
 }
 
-/* 游戏内设置：与大厅共用 mountSettingsPanel 生成的 DOM */
-#lock-settings {
-  width: 100%;
-  min-width: 360px;
-  padding-top: 4px;
-  cursor: default;
-  /* Esc 遮罩会滚动：准星一节内容较多，别把"点击进入战斗"挤出屏幕 */
-  max-height: 46vh;
-  overflow-y: auto;
+/* 左侧小色条：红色 = 有击杀关系，比整条染红更克制 */
+.hud-killfeed-item::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  width: 4px;
+  height: 14px;
+  margin-top: -7px;
+  border-radius: 2px;
+  background: var(--tomato);
 }
 
-#lock-settings .settings-row {
-  color: #b9c6d8;
+@keyframes killfeed-in {
+  from { opacity: 0; transform: translateX(14px) scale(0.94); }
+  to { opacity: 1; transform: none; }
 }
 
-#lock-settings .settings-hint {
-  text-align: center;
+/* ---- 调试信息（雷达下方，默认很淡） ---- */
+
+.hud-debug {
+  position: absolute;
+  left: 18px;
+  top: 268px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-family: var(--f-num);
+  font-weight: 600;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: rgba(43, 27, 47, 0.5);
+  text-shadow: 0 1px 0 rgba(255, 248, 233, 0.8);
 }
 
-/* ---------- S3 战斗 HUD ---------- */
+.hud-debug .hud-position,
+.hud-debug .hud-status {
+  font-variant-numeric: tabular-nums;
+}
 
-/* 命中标记：命中玩家时准星旁短暂显示 ✕ */
+/* ==========================================================================
+   命中与战斗反馈
+   ========================================================================== */
+
 #hitmarker {
   position: absolute;
   left: 50%;
   top: 50%;
-  transform: translate(-50%, -50%);
-  color: #f87171;
-  font-size: 20px;
-  font-weight: 700;
-  text-shadow: 0 0 4px rgba(0, 0, 0, 0.9);
+  z-index: 7;
+  width: 56px;
+  height: 56px;
+  margin: -28px 0 0 -28px;
+  color: var(--paper);
   opacity: 0;
   transition: opacity 0.1s ease;
+}
+
+#hitmarker svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transition: transform 0.1s ease;
 }
 
 #hitmarker.visible {
   opacity: 1;
 }
 
-/* 爆头：红色大 ✕（命中反馈分级的第二级） */
+/* 爆头：奶酪黄 + 放大一圈 */
 #hitmarker.hitmarker-head {
-  color: #ef4444;
-  font-size: 28px;
-  text-shadow: 0 0 8px rgba(239, 68, 68, 0.9), 0 0 4px rgba(0, 0, 0, 0.95);
+  color: var(--cheese);
 }
 
-/* 击杀：红色更大 + 1.6 倍缩放（第三级，最强烈的确认感） */
+#hitmarker.hitmarker-head svg {
+  transform: scale(1.12);
+}
+
+/* 击杀：番茄红 + 再放大（三级反馈里最重的一级） */
 #hitmarker.hitmarker-kill {
-  color: #dc2626;
-  font-size: 32px;
-  transform: translate(-50%, -50%) scale(1.6);
-  text-shadow: 0 0 12px rgba(220, 38, 38, 0.95), 0 0 4px rgba(0, 0, 0, 0.95);
+  color: var(--tomato);
 }
 
-/* 部位伤害读数：准星下方 40px，显示「头部 −100」500ms */
+#hitmarker.hitmarker-kill svg {
+  transform: scale(1.3);
+}
+
+/* 部位伤害读数：准星下方 44px */
 #zone-damage {
   position: absolute;
   left: 50%;
-  top: calc(50% + 40px);
-  transform: translateX(-50%);
-  color: #fecaca;
-  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  top: calc(50% + 44px);
+  z-index: 7;
+  transform: translateX(-50%) rotate(-2deg);
+  padding: 4px 14px;
+  border: 2.5px solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper);
+  box-shadow: 0 3px 0 rgba(43, 27, 47, 0.35);
+  font-family: var(--f-cn);
   font-size: 15px;
   font-weight: 700;
   letter-spacing: 0.04em;
-  text-shadow: 0 0 6px rgba(0, 0, 0, 0.95);
+  color: var(--tomato-deep);
+  white-space: nowrap;
   opacity: 0;
   transition: opacity 0.12s ease;
   pointer-events: none;
@@ -655,87 +1325,134 @@ kbd {
   opacity: 1;
 }
 
-.hud-player-row.dead {
-  opacity: 0.45;
-  text-decoration: line-through;
-}
-
-/* 击杀播报（右上） */
-.hud-killfeed {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  align-items: flex-end;
-  min-width: 200px;
-}
-
-.hud-killfeed-item {
-  padding: 3px 10px;
-  background: rgba(60, 18, 18, 0.78);
-  border: 1px solid rgba(248, 113, 113, 0.4);
-  border-radius: 6px;
-  font-size: 12px;
-  color: #fecaca;
-  animation: killfeed-in 0.15s ease;
-}
-
-@keyframes killfeed-in {
-  from {
-    opacity: 0;
-    transform: translateX(12px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-/* 血量条（左下） */
-.hud-hp {
+/* 击杀横幅（屏幕中上）：番茄红纸牌 */
+#kill-banner {
   position: absolute;
-  left: 16px;
-  bottom: 52px;
-  width: 220px;
-  height: 20px;
-  background: rgba(13, 20, 32, 0.78);
-  border: 1px solid rgba(59, 130, 246, 0.3);
-  border-radius: 6px;
-  overflow: hidden;
+  left: 50%;
+  top: 17%;
+  z-index: 5;
+  transform: translate(-50%, 0) rotate(-2deg) scale(0.9);
+  padding: 10px 26px;
+  background: var(--tomato);
+  border: var(--line) solid var(--ink);
+  border-radius: 18px;
+  box-shadow: 0 7px 0 rgba(43, 27, 47, 0.38);
+  font-family: var(--f-cn);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--paper);
+  opacity: 0;
+  white-space: nowrap;
+  transition: opacity 0.15s ease, transform 0.18s cubic-bezier(0.2, 1.5, 0.4, 1);
 }
 
-.hud-hp-bar {
-  height: 100%;
-  width: 100%;
-  background: linear-gradient(90deg, #22c55e, #4ade80);
-  transition: width 0.12s ease;
+#kill-banner.visible {
+  opacity: 1;
+  transform: translate(-50%, 0) rotate(-2deg) scale(1);
 }
 
-.hud-hp-bar.low {
-  background: linear-gradient(90deg, #dc2626, #f87171);
+/* 爆头奖励横幅：奶酪黄爆炸字 */
+#nice-banner {
+  position: absolute;
+  left: 50%;
+  top: 8%;
+  z-index: 5;
+  transform: translate(-50%, 10px) rotate(-4deg) scale(0.7);
+  font-family: var(--f-num);
+  font-size: 56px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--cheese);
+  text-shadow:
+    5px 5px 0 var(--ink),
+    -5px -5px 0 var(--ink),
+    5px -5px 0 var(--ink),
+    -5px 5px 0 var(--ink),
+    0 5px 0 var(--ink),
+    0 -5px 0 var(--ink),
+    5px 0 0 var(--ink),
+    -5px 0 0 var(--ink),
+    0 12px 0 rgba(43, 27, 47, 0.32);
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  transition: opacity 0.16s ease, transform 0.22s cubic-bezier(0.2, 1.6, 0.4, 1);
 }
 
-.hud-hp-text {
+#nice-banner.visible {
+  opacity: 1;
+  transform: translate(-50%, 0) rotate(-4deg) scale(1);
+}
+
+/* 闪光致盲：奶油白（不用纯白，避免和 UI 纸色撞成一片） */
+#flash-overlay {
   position: absolute;
   inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  font-weight: 600;
-  color: #e8eef5;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+  z-index: 8;
+  background: #fffdf4;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s linear;
 }
 
-/* 死亡遮罩：全屏暗红 + 重生倒计时 */
+/* 受击：红色边缘 + 方向弧形 */
+#damage-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+  background: radial-gradient(ellipse at center, rgba(232, 67, 47, 0) 42%, rgba(232, 67, 47, 0.6) 100%);
+}
+
+#damage-overlay.visible {
+  opacity: 1;
+}
+
+#hud.low-hp #damage-overlay {
+  opacity: 1;
+  animation: low-hp-pulse 1.4s ease-in-out infinite;
+  background: radial-gradient(ellipse at center, rgba(232, 67, 47, 0) 38%, rgba(196, 51, 31, 0.48) 100%);
+}
+
+@keyframes low-hp-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+#damage-arc {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 6;
+  width: 200px;
+  height: 200px;
+  margin: -100px 0 0 -100px;
+  border-radius: 50%;
+  border-top: 7px solid var(--tomato);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  filter: drop-shadow(0 0 6px rgba(43, 27, 47, 0.5));
+}
+
+#damage-arc.visible {
+  opacity: 1;
+}
+
+/* 死亡：暗紫压暗 + 纸牌倒计时 */
 #death-overlay {
   position: absolute;
   inset: 0;
+  z-index: 9;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  background: rgba(70, 10, 10, 0.42);
+  gap: 12px;
+  background: rgba(43, 27, 47, 0.52);
   opacity: 0;
   transition: opacity 0.2s ease;
 }
@@ -746,252 +1463,201 @@ kbd {
 
 #death-overlay p {
   margin: 0;
+  padding: 12px 30px;
+  border: var(--line) solid var(--ink);
+  border-radius: 20px;
+  background: var(--paper);
+  box-shadow: var(--shadow);
+  font-family: var(--f-cn);
   font-size: 26px;
   font-weight: 700;
-  color: #fecaca;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
+  color: var(--ink);
 }
 
 #death-overlay .death-countdown {
+  padding: 6px 18px;
+  border: 2.5px solid var(--ink);
+  border-radius: 999px;
+  background: var(--cheese);
+  box-shadow: 0 3px 0 rgba(43, 27, 47, 0.3);
+  font-family: var(--f-num);
   font-size: 15px;
-  font-weight: 400;
-  color: #fca5a5;
-}
-
-/* ---------- S4：弹药 / 道具 / 受击与闪光反馈 ---------- */
-
-/* 弹药面板（右下） */
-.hud-ammo {
-  position: absolute;
-  right: 18px;
-  bottom: 52px;
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 8px 14px;
-  background: rgba(13, 20, 32, 0.78);
-  border: 1px solid rgba(59, 130, 246, 0.3);
-  border-radius: 8px;
-  min-width: 132px;
-  justify-content: flex-end;
-  overflow: hidden;
-}
-
-.hud-ammo-current {
-  font-size: 26px;
   font-weight: 700;
-  color: #e6edf5;
-  font-variant-numeric: tabular-nums;
+  color: var(--ink);
 }
 
-.hud-ammo-current.empty {
-  color: #f87171;
-}
+/* ==========================================================================
+   指针锁定 / 暂停遮罩
+   ========================================================================== */
 
-.hud-ammo-reserve {
-  font-size: 13px;
-  color: #8b98a9;
-}
-
-.hud-ammo-reload {
+#lock-overlay {
   position: absolute;
-  left: 0;
-  bottom: 0;
-  height: 3px;
-  width: 0;
-  background: linear-gradient(90deg, #3b82f6, #7dd3fc);
-  transition: width 0.08s linear;
-}
-
-.hud-ammo-reload.active {
-  opacity: 1;
-}
-
-/* ---------- 武器栏（底部中央 6 格，S6） ---------- */
-
-.hud-weaponbar {
-  position: absolute;
-  left: 50%;
-  bottom: 46px;
-  transform: translateX(-50%);
+  inset: 0;
+  z-index: 10;
   display: flex;
-  gap: 6px;
-  padding: 6px 8px;
-  background: rgba(13, 20, 32, 0.72);
-  border: 1px solid rgba(59, 130, 246, 0.22);
-  border-radius: 10px;
+  align-items: center;
+  justify-content: center;
+  background: rgba(43, 27, 47, 0.55);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
 }
 
-.hud-weapon {
-  position: relative;
+#lock-overlay.visible {
+  opacity: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.lock-panel {
+  width: min(560px, calc(100% - 48px));
+  max-height: 86vh;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  min-width: 62px;
-  padding: 5px 8px 4px;
-  background: rgba(20, 30, 46, 0.9);
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 7px;
-  font-size: 11px;
-  color: #cbd5e1;
-  /* 未选中的格子压暗，让"手里拿的是哪把"一眼可见 */
-  opacity: 0.45;
-  transition: opacity 0.12s ease, border-color 0.12s ease;
+  gap: 14px;
+  padding: 26px 28px 24px;
+  background: var(--paper);
+  border: var(--line) solid var(--ink);
+  border-radius: 26px;
+  box-shadow: var(--shadow-lift);
+  cursor: default;
 }
 
-/* 当前槽位：金色描边 + 完全不透明（规格给定的唯二视觉信号） */
-.hud-weapon.active {
-  border-color: #fbbf24;
-  opacity: 1;
-  background: rgba(38, 48, 26, 0.9);
-}
-
-/* 数量为 0 的投掷物格：再加一层暗化，和"只是没选中"区分开 */
-.hud-weapon.empty {
-  opacity: 0.28;
-  border-style: dashed;
-}
-
-/* 切槽脉冲：120ms 的 scale(1.12) → 1 */
-@keyframes hud-weapon-pulse {
-  from {
-    transform: scale(1.12);
-  }
-  to {
-    transform: scale(1);
-  }
-}
-
-.hud-weapon.pulse {
-  animation: hud-weapon-pulse 120ms ease-out;
-}
-
-.hud-weapon-key {
-  position: absolute;
-  top: 2px;
-  left: 4px;
-  font-size: 9px;
-  color: #7b8a9e;
-  font-variant-numeric: tabular-nums;
-}
-
-.hud-weapon-icon {
+#lock-overlay .lock-title {
+  margin: 0;
+  padding: 9px 24px;
+  border: var(--line) solid var(--ink);
+  border-radius: 999px;
+  background: var(--tomato);
+  color: var(--paper);
+  font-family: var(--f-cn);
+  font-size: 19px;
   font-weight: 700;
+  letter-spacing: 0.1em;
+  box-shadow: 0 4px 0 rgba(43, 27, 47, 0.34);
+}
+
+#lock-overlay .lock-hint {
+  margin: 0;
+  max-width: 440px;
+  text-align: center;
   font-size: 12px;
-  letter-spacing: 0.02em;
+  font-weight: 400;
+  line-height: 1.8;
+  color: var(--ink-2);
 }
 
-.hud-weapon-count {
-  color: #9fb0c5;
-  font-variant-numeric: tabular-nums;
+/* 游戏内设置：与大厅共用组件，但在纸卡里要独占一整行 */
+#lock-settings {
+  width: 100%;
+  cursor: default;
+  padding-top: 12px;
+  border-top: 2px dashed rgba(43, 27, 47, 0.16);
 }
 
-.hud-weapon.active .hud-weapon-icon {
-  color: #fde68a;
+#lock-settings .settings-hint {
+  text-align: left;
 }
 
-/* 击杀横幅（屏幕中上） */
-#kill-banner {
+/* ==========================================================================
+   窄屏兜底：单列、缩小面板，保证不溢出
+   ========================================================================== */
+
+@media (max-width: 1080px) {
+  /* 底部红白格纹 = 桌布，是这张图的主题符号；压在下沿，不抢主内容 */
+.lobby::after {
+  content: "";
   position: absolute;
-  left: 50%;
-  top: 18%;
-  transform: translate(-50%, 0) scale(0.94);
-  padding: 8px 22px;
-  background: rgba(60, 18, 18, 0.82);
-  border: 1px solid rgba(248, 113, 113, 0.55);
-  border-radius: 8px;
-  font-size: 17px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  color: #fecaca;
-  opacity: 0;
-  transition: opacity 0.15s ease, transform 0.15s ease;
-  white-space: nowrap;
-}
-
-#kill-banner.visible {
-  opacity: 1;
-  transform: translate(-50%, 0) scale(1);
-}
-
-/* 爆头奖励横幅：金色、更大，从下方弹入 */
-#nice-banner {
-  position: absolute;
-  left: 50%;
-  top: 9%;
-  transform: translate(-50%, 8px) scale(0.7) rotate(-3deg);
-  font-size: 44px;
-  font-weight: 900;
-  letter-spacing: 0.08em;
-  color: #fde047;
-  text-shadow:
-    0 0 18px rgba(253, 224, 71, 0.9),
-    0 4px 0 rgba(120, 53, 15, 0.85),
-    0 0 42px rgba(251, 191, 36, 0.55);
-  opacity: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 54px;
+  border-top: var(--line) solid var(--ink);
+  background:
+    repeating-conic-gradient(var(--tomato) 0 25%, #fffdf4 0 50%) 0 0 / 52px 52px;
+  opacity: 0.92;
   pointer-events: none;
-  white-space: nowrap;
-  transition: opacity 0.16s ease, transform 0.22s cubic-bezier(0.2, 1.6, 0.4, 1);
 }
 
-#nice-banner.visible {
-  opacity: 1;
-  transform: translate(-50%, 0) scale(1) rotate(-3deg);
+.lobby-inner {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+    padding: 5vh 24px 6vh;
+    align-items: start;
+  }
+
+  .join-card {
+    width: 100%;
+    max-width: 520px;
+  }
 }
 
-/* 闪光致盲全屏白幕 */
-#flash-overlay {
-  position: absolute;
-  inset: 0;
-  background: #f8fafc;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.12s linear;
-}
+@media (max-width: 720px) {
+  .brand-title {
+    font-size: 52px;
+  }
 
-/* 受击红色边缘 */
-#damage-overlay {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.18s ease;
-  background: radial-gradient(ellipse at center, rgba(153, 27, 27, 0) 45%, rgba(153, 27, 27, 0.55) 100%);
-}
+  .hud-radar {
+    width: 152px;
+  }
 
-#damage-overlay.visible {
-  opacity: 1;
-}
+  .hud-radar-dial {
+    width: 152px;
+    height: 152px;
+  }
 
-/* 低血量持续红边呼吸 */
-#hud.low-hp #damage-overlay {
-  opacity: 1;
-  animation: low-hp-pulse 1.4s ease-in-out infinite;
-  background: radial-gradient(ellipse at center, rgba(153, 27, 27, 0) 40%, rgba(153, 27, 27, 0.42) 100%);
-}
+  .hud-vitals {
+    width: 216px;
+    padding: 9px 12px 9px 9px;
+  }
 
-@keyframes low-hp-pulse {
-  0%, 100% { opacity: 0.55; }
-  50% { opacity: 1; }
-}
+  .hud-vitals-face {
+    width: 46px;
+    height: 46px;
+  }
 
-/* 受击方向弧形指示 */
-#damage-arc {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 190px;
-  height: 190px;
-  margin: -95px 0 0 -95px;
-  border-radius: 50%;
-  border-top: 4px solid rgba(248, 113, 113, 0.9);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.2s ease;
-  filter: drop-shadow(0 0 6px rgba(248, 113, 113, 0.6));
-}
+  .hud-vitals-face svg {
+    width: 40px;
+    height: 40px;
+  }
 
-#damage-arc.visible {
-  opacity: 1;
+  .hud-hp-text {
+    font-size: 28px;
+  }
+
+  .hud-ammo {
+    min-width: 148px;
+    padding: 8px 12px 10px;
+  }
+
+  .hud-ammo-current {
+    font-size: 34px;
+  }
+
+  .hud-weapon {
+    width: 48px;
+    height: 48px;
+  }
+
+  .hud-weapon svg {
+    width: 30px;
+    height: 30px;
+  }
+
+  .hud-weaponbar {
+    gap: 5px;
+    padding: 7px;
+  }
+
+  /* 雷达在窄屏是 152px，顶栏要避开它，否则胶囊会压到表盘上 */
+  .hud-top {
+    left: 186px;
+    right: 12px;
+  }
+
+  .hud-debug {
+    display: none;
+  }
 }

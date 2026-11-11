@@ -25,13 +25,15 @@ const currentDir: string = dirname(fileURLToPath(import.meta.url));
 const clientRoot: string = resolve(currentDir, "..");
 
 describe("客户端入口占位", () => {
-  it("index.html 占位页应存在且包含画布容器改造说明", () => {
+  it("index.html 入口页应存在且包含产品标识与画布容器", () => {
     const htmlPath: string = resolve(clientRoot, "index.html");
     assert.ok(existsSync(htmlPath), `缺少客户端入口文件：${htmlPath}`);
 
     const html: string = readFileSync(htmlPath, "utf8");
     assert.ok(html.includes("<!doctype html>"), "入口文件缺少 HTML 声明");
-    assert.ok(html.includes("Colyseus FPS"), "入口文件缺少项目标识");
+    // 产品标识随视觉改版变化：断言当前主题名，防止入口页被整体替换成空壳
+    assert.ok(html.includes("猫鼠战场"), "入口文件缺少产品标识");
+    assert.ok(html.includes('id="game-container"'), "入口文件缺少画布容器");
   });
 
   it("入口脚本 src/main.ts 应存在", () => {

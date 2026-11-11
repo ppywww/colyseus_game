@@ -8,6 +8,7 @@
 
 import { Minimap } from "./minimap.js";
 import type { PlayerState } from "../net/types.js";
+import { HEADS, WEAPON_ICONS } from "../ui/art.js";
 import {
   CROSSHAIR_DEFAULT,
   SLOT_KEY,
@@ -53,7 +54,7 @@ export interface HudSnapshot {
 
 /** 操作提示（大厅与游戏内共用同一句，改一处即可）。 */
 export const HUD_HINT_TEXT =
-  "WASD 移动 · Shift 冲刺 · Ctrl/C 下蹲 · 空格 跳跃 · 左键 开火/投掷/挥刀 · 滚轮/123456 切武器 · R 换弹 · G/F/V 快捷投掷 · Esc 设置";
+  "WASD 移动 · Shift 冲刺 · Ctrl/C 下蹲 · 空格 跳跃 · 左键 开火/投掷/挥叉 · 滚轮/123456 切槽位 · R 换弹 · G/F/V 平底锅/胡椒瓶/面粉袋 · Esc 设置";
 
 /** 武器栏格子数（= 槽位数量，顺序与 `SLOT_ORDER` 一致）。 */
 const WEAPON_CELL_COUNT: number = SLOT_ORDER.length;
@@ -71,6 +72,8 @@ export class Hud {
   private readonly niceBanner: HTMLElement;
   /** 左上角雷达的容器（面板本身由 {@link Minimap} 负责绘制）。 */
   private readonly minimap: Minimap;
+  /** 雷达下方的区域胶囊（「厨房 · 中央地砖」）。 */
+  private readonly radarZone: HTMLElement;
   /** 雷达需要完整玩家状态（位置/朝向/队伍），与击杀面板用的 `HudPlayerRow` 是两套。 */
   private radarPlayers: readonly PlayerState[] = [];
   private radarSelfId = "";
@@ -79,6 +82,7 @@ export class Hud {
   private readonly positionLine: HTMLElement;
   private readonly hpBar: HTMLElement;
   private readonly hpText: HTMLElement;
+  private readonly ammoTag: HTMLElement;
   private readonly ammoText: HTMLElement;
   private readonly reserveText: HTMLElement;
   private readonly reloadBar: HTMLElement;
@@ -116,19 +120,26 @@ export class Hud {
     this.crosshair.innerHTML =
       "<span></span><span></span><span></span><span></span><span class=\"xh-dot\"></span>";
 
+    // 命中标记：四道外扩斜杠，中心留空——不能盖住准星正中，
+    // 否则爆头瞬间反而看不见自己瞄在哪儿。墨线在外、彩色在内，浅色墙上也读得出。
     this.hitmarker = document.createElement("div");
     this.hitmarker.id = "hitmarker";
-    this.hitmarker.textContent = "✕";
+    this.hitmarker.innerHTML = `<svg viewBox="0 0 56 56" aria-hidden="true">
+      <g stroke="#2b1b2f" stroke-width="7" stroke-linecap="round">
+        <path d="M13 13l6.5 6.5M43 13l-6.5 6.5M13 43l6.5-6.5M43 43l-6.5-6.5"/>
+      </g>
+      <g stroke="currentColor" stroke-width="3.6" stroke-linecap="round">
+        <path d="M13 13l6.5 6.5M43 13l-6.5 6.5M13 43l6.5-6.5M43 43l-6.5-6.5"/>
+      </g>
+    </svg>`;
 
     // 部位伤害提示：准星下方 40px，显示「头部 −100」500ms
     this.zoneDamage = document.createElement("div");
     this.zoneDamage.id = "zone-damage";
 
+    // ---- 顶栏：玩家列表 + 击杀播报 ----
     const topBar = document.createElement("div");
     topBar.className = "hud-top";
-
-    this.statusLine = document.createElement("div");
-    this.statusLine.className = "hud-status";
 
     this.playerList = document.createElement("div");
     this.playerList.className = "hud-players";
@@ -136,39 +147,81 @@ export class Hud {
     this.killFeed = document.createElement("div");
     this.killFeed.className = "hud-killfeed";
 
-    topBar.append(this.statusLine, this.playerList, this.killFeed);
+    topBar.append(this.playerList, this.killFeed);
 
-    // 左上角小地图：容器只负责定位，画布由 Minimap 自己创建
-    const minimapContainer = document.createElement("div");
-    minimapContainer.className = "hud-minimap";
-    this.minimap = new Minimap(minimapContainer);
+    // ---- 左上圆形雷达：表盘 + 下方区域胶囊 ----
+    const radarWrap = document.createElement("div");
+    radarWrap.className = "hud-radar";
+
+    const radarDial = document.createElement("div");
+    radarDial.className = "hud-radar-dial";
+    this.minimap = new Minimap(radarDial);
+
+    // 方位靠 CSS 画（不跟着画布重绘），只保留 N/S 两个，避免圆盘上文字太吵
+    const tickN = document.createElement("span");
+    tickN.className = "hud-radar-tick n";
+    tickN.textContent = "N";
+    const tickS = document.createElement("span");
+    tickS.className = "hud-radar-tick s";
+    tickS.textContent = "S";
+    radarDial.append(tickN, tickS);
+
+    this.radarZone = document.createElement("span");
+    this.radarZone.textContent = "";
+    const radarName = document.createElement("div");
+    radarName.className = "hud-radar-name";
+    const mapTag = document.createElement("b");
+    mapTag.textContent = "厨房";
+    radarName.append(mapTag, this.radarZone);
+
+    radarWrap.append(radarDial, radarName);
 
     this.killBanner = document.createElement("div");
     this.killBanner.id = "kill-banner";
 
-    // 爆头奖励：金色「NICE!」，位置比击杀横幅更靠上，避免两者重叠
+    // 爆头奖励：奶酪黄「NICE!」，位置比击杀横幅更靠上，避免两者重叠
     this.niceBanner = document.createElement("div");
     this.niceBanner.id = "nice-banner";
 
-    const bottomBar = document.createElement("div");
-    bottomBar.className = "hud-bottom";
+    // ---- 调试信息：雷达下方，小字低对比（不是给玩家看的信息） ----
+    const debugStack = document.createElement("div");
+    debugStack.className = "hud-debug";
+    this.statusLine = document.createElement("div");
+    this.statusLine.className = "hud-status";
     this.positionLine = document.createElement("div");
     this.positionLine.className = "hud-position";
-    const hint = document.createElement("div");
-    hint.className = "hud-hint";
-    hint.textContent = HUD_HINT_TEXT;
-    bottomBar.append(this.positionLine, hint);
+    debugStack.append(this.statusLine, this.positionLine);
 
-    // 血量
+    // ---- 生命：头像 + 大数字 + 分段条 ----
     const hpWrap = document.createElement("div");
-    hpWrap.className = "hud-hp";
-    this.hpBar = document.createElement("div");
-    this.hpBar.className = "hud-hp-bar";
+    hpWrap.className = "hud-vitals";
+
+    const hpFace = document.createElement("div");
+    hpFace.className = "hud-vitals-face";
+    hpFace.innerHTML = HEADS.jerry;
+
+    const hpMain = document.createElement("div");
+    hpMain.className = "hud-vitals-main";
+
+    const hpRow = document.createElement("div");
+    hpRow.className = "hud-vitals-row";
     this.hpText = document.createElement("div");
     this.hpText.className = "hud-hp-text";
-    hpWrap.append(this.hpBar, this.hpText);
+    const hpUnit = document.createElement("span");
+    hpUnit.className = "hud-vitals-unit";
+    hpUnit.textContent = "生命";
+    hpRow.append(this.hpText, hpUnit);
 
-    // 武器栏（底部中央 6 格）
+    const hpTrack = document.createElement("div");
+    hpTrack.className = "hud-hp-track";
+    this.hpBar = document.createElement("div");
+    this.hpBar.className = "hud-hp-bar";
+    hpTrack.append(this.hpBar);
+
+    hpMain.append(hpRow, hpTrack);
+    hpWrap.append(hpFace, hpMain);
+
+    // ---- 武器栏（底部中央 6 格） ----
     const weaponBar = document.createElement("div");
     weaponBar.className = "hud-weaponbar";
     for (const slot of SLOT_ORDER) {
@@ -179,16 +232,24 @@ export class Hud {
       weaponBar.append(cell);
     }
 
-    // 弹药（右下，显示当前武器）
+    // ---- 弹药（右下，显示当前武器） ----
     const ammoPanel = document.createElement("div");
     ammoPanel.className = "hud-ammo";
+
+    this.ammoTag = document.createElement("div");
+    this.ammoTag.className = "hud-ammo-tag";
+
+    const ammoLine = document.createElement("div");
+    ammoLine.className = "hud-ammo-line";
     this.ammoText = document.createElement("span");
     this.ammoText.className = "hud-ammo-current";
     this.reserveText = document.createElement("span");
     this.reserveText.className = "hud-ammo-reserve";
+    ammoLine.append(this.ammoText, this.reserveText);
+
     this.reloadBar = document.createElement("div");
     this.reloadBar.className = "hud-ammo-reload";
-    ammoPanel.append(this.ammoText, this.reserveText, this.reloadBar);
+    ammoPanel.append(this.ammoTag, ammoLine, this.reloadBar);
 
     // 死亡遮罩
     this.deathOverlay = document.createElement("div");
@@ -233,11 +294,11 @@ export class Hud {
       this.niceBanner,
       this.killBanner,
       topBar,
-      minimapContainer,
+      radarWrap,
+      debugStack,
       hpWrap,
       weaponBar,
       ammoPanel,
-      bottomBar,
       this.deathOverlay,
       this.flashOverlay,
       this.damageArc,
@@ -246,11 +307,17 @@ export class Hud {
     container.append(this.root);
   }
 
-  /** 武器栏单格：键盘角标 + 图标文字 + 数量角标。 */
+  /**
+   * 武器栏单格：键盘角标 + 图标（SVG）+ 数量角标。
+   *
+   * 图标用 SVG 而不是文字：中文单字（刀/雷/闪）在 12px 下几乎无法分辨，
+   * 而这个游戏 6 个槽位里有 4 个是投掷物——图标是唯一能一眼区分的信号。
+   */
   private createWeaponCell(slot: WeaponSlot): HTMLElement {
     const cell = document.createElement("div");
     cell.className = "hud-weapon";
     cell.dataset.slot = String(slot);
+    cell.title = SLOT_LABEL[slot];
 
     const key = document.createElement("span");
     key.className = "hud-weapon-key";
@@ -258,7 +325,9 @@ export class Hud {
 
     const icon = document.createElement("span");
     icon.className = "hud-weapon-icon";
-    icon.textContent = SLOT_LABEL[slot];
+    icon.setAttribute("role", "img");
+    icon.setAttribute("aria-label", SLOT_LABEL[slot]);
+    icon.innerHTML = WEAPON_ICONS[slot] ?? "";
 
     const count = document.createElement("span");
     count.className = "hud-weapon-count";
@@ -468,12 +537,18 @@ export class Hud {
 
   public update(snapshot: HudSnapshot): void {
     this.minimap.update(this.radarPlayers, this.radarSelfId, performance.now());
+    // 区域名写进雷达下方的胶囊，不画在圆盘里——圆盘内每多一行字就少一分可读性
+    const zone: string = this.minimap.currentZoneLabel;
+    if (this.radarZone.textContent !== zone) {
+      this.radarZone.textContent = zone;
+    }
+
     const { x, y, z } = snapshot.position;
-    this.positionLine.textContent = `位置 (${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)})`;
-    this.statusLine.textContent = `房间在线 ${snapshot.playerCount} 人 · 远端渲染 ${snapshot.remoteCount} 人`;
+    this.positionLine.textContent = `${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(1)}`;
+    this.statusLine.textContent = `在线 ${snapshot.playerCount} · 远端 ${snapshot.remoteCount}`;
 
     const hp = Math.max(0, Math.round(snapshot.selfHp));
-    this.hpText.textContent = `HP ${hp}`;
+    this.hpText.textContent = String(hp);
     this.hpBar.style.width = `${hp}%`;
     this.hpBar.classList.toggle("low", hp <= 30);
     this.root.classList.toggle("low-hp", hp <= 30 && snapshot.selfAlive);
@@ -497,6 +572,10 @@ export class Hud {
 
     // ---- 右下弹药面板：跟随当前武器 ----
     const current: WeaponSlot = (snapshot.weaponSlot as WeaponSlot) ?? WEAPON_SLOTS.RIFLE;
+    const weaponName: string = SLOT_LABEL[current] ?? "";
+    if (this.ammoTag.textContent !== weaponName) {
+      this.ammoTag.textContent = weaponName;
+    }
     if (current === WEAPON_SLOTS.RIFLE || current === WEAPON_SLOTS.PISTOL) {
       const mag: number = current === WEAPON_SLOTS.PISTOL ? snapshot.pistolAmmo : snapshot.ammo;
       const reserve: number = current === WEAPON_SLOTS.PISTOL ? snapshot.pistolReserve : snapshot.reserve;

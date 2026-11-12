@@ -408,10 +408,13 @@ export interface HitCylinder {
  * 硬约束：
  *   1. 躯干三段（腿→腹→胸→头）必须**首尾相接**（不留缝），缝隙会让垂直下压的子弹从两段之间漏判；
  *   2. 最高段 `yMax` === {@link PLAYER_HEIGHT}，客户端人形模型总高必须与它逐项相等（同源）；
- *   3. 判定体只比模型宽 1–3cm（网络容错方向：宁可判中，不可判漏）。
+ *   3. 判定体只比模型宽 1–3cm（网络容错方向：宁可判中，不可判漏）；
+ *   4. 头部半径 0.175 是**为卡通头让路**：猫和老鼠的脑袋宽 0.32–0.36m，
+ *      用 0.13 会出现"明明打在耳朵上却算身体"。垂直方向（1.63 起算爆头）不变，
+ *      "平射打胸、点头要抬枪"的手感契约原样保留。
  */
 export const PLAYER_HITBOXES: readonly HitCylinder[] = [
-  { zone: "head", offsetRight: 0, yMin: 1.63, yMax: 1.8, radius: 0.13 },
+  { zone: "head", offsetRight: 0, yMin: 1.63, yMax: 1.8, radius: 0.175 },
   { zone: "chest", offsetRight: 0, yMin: 1.14, yMax: 1.63, radius: 0.27 },
   { zone: "belly", offsetRight: 0, yMin: 0.9, yMax: 1.14, radius: 0.25 },
   { zone: "arm", offsetRight: 0.3, yMin: 0.98, yMax: 1.52, radius: 0.1 },

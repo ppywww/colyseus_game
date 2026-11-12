@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  PLAYER_HITBOXES,
   ARENA_RADIUS,
   CLIENT_INTERPOLATION_DELAY_MS,
   FIRE_MODES,
@@ -798,7 +799,11 @@ describe("服务端权威扩散（圆锥采样）", () => {
   it("首发 30m 处的落点半径必须小于头部判定半径（静止首发能稳定爆头）", () => {
     assert.ok(ak !== null);
     const radius: number = 30 * Math.tan((spreadHalfAngleDeg(ak, 0) * Math.PI) / 180);
-    assert.ok(radius < 0.13, `30m 首发半径 ${radius.toFixed(3)}m 超过头部半径 0.13m，首发不再可靠`);
+    const headRadius = PLAYER_HITBOXES.find((box) => box.zone === "head")!.radius;
+    assert.ok(
+      radius < headRadius,
+      `30m 首发半径 ${radius.toFixed(3)}m 超过头部半径 ${headRadius}m，首发不再可靠`,
+    );
   });
 
   it("同一颗种子必须得到逐位相同的采样（QA 能断言、争议弹道能回放）", () => {

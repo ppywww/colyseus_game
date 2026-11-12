@@ -1242,6 +1242,8 @@ export function buildArena(): THREE.Group {
   sun.shadow.camera.near = 1;
   sun.shadow.camera.far = 200;
   sun.shadow.bias = -0.0006;
+  // 弧面（角色躯干、水管、罐子）自阴影会出现一圈圈横向条纹，normalBias 是正解
+  sun.shadow.normalBias = 0.03;
   root.add(sun);
   root.add(sun.target);
 

@@ -147,9 +147,14 @@ interface Triangle {
   verts: [number, number, number, number, number, number];
   /** 三个顶点的相机空间深度（更负 = 更远）。 */
   depths: [number, number, number];
-  r: number;
-  g: number;
-  b: number;
+  /**
+   * 三个顶点各自的颜色（r0,g0,b0, r1,g1,b1, r2,g2,b2）。
+   *
+   * 必须是**逐顶点**而不是"三角形平均色"：躯干胸口的奶白色是烘在顶点上的渐变，
+   * 取平均会把一个平滑的毛色分界渲染成一圈逐三角形的色阶条纹——预览图看着像
+   * 穿了件条纹背心，实机（GPU 走插值）却是干净的软过渡。
+   */
+  colors: [number, number, number, number, number, number, number, number, number];
 }
 
 const triangles: Triangle[] = [];
@@ -227,7 +232,19 @@ rootObject.traverse((object: THREE.Object3D) => {
     c.fromBufferAttribute(position, i2).applyMatrix4(object.matrixWorld);
 
     const material = materialFor(index !== null ? i0 : t * 3) as THREE.MeshStandardMaterial;
-    const baseColor = debugColor ?? material.color ?? new THREE.Color(0xcccccc);
+    // 顶点色：躯干的奶白色胸口是烘进 `color` 属性的（见 avatar-model 的 torsoGeometryOf）。
+    // 软光栅只看 material.color 的话，躯干会渲染成纯白——预览图和实机就分家了。
+    const vertexColor = geometry.getAttribute("color") as THREE.BufferAttribute | undefined;
+    const baseColor: THREE.Color = debugColor ?? material.color ?? new THREE.Color(0xcccccc);
+    const vertexR: [number, number, number] = vertexColor !== undefined && debugColor === null
+      ? [vertexColor.getX(i0), vertexColor.getX(i1), vertexColor.getX(i2)]
+      : [baseColor.r, baseColor.r, baseColor.r];
+    const vertexG: [number, number, number] = vertexColor !== undefined && debugColor === null
+      ? [vertexColor.getY(i0), vertexColor.getY(i1), vertexColor.getY(i2)]
+      : [baseColor.g, baseColor.g, baseColor.g];
+    const vertexB: [number, number, number] = vertexColor !== undefined && debugColor === null
+      ? [vertexColor.getZ(i0), vertexColor.getZ(i1), vertexColor.getZ(i2)]
+      : [baseColor.b, baseColor.b, baseColor.b];
 
     edge1.subVectors(b, a);
     edge2.subVectors(c, a);
@@ -247,9 +264,17 @@ rootObject.traverse((object: THREE.Object3D) => {
     triangles.push({
       verts: [sa.x, sa.y, sb.x, sb.y, sc.x, sc.y],
       depths: [sa.z, sb.z, sc.z],
-      r: Math.min(255, baseColor.r * 255 * shade + emissive.r * 255),
-      g: Math.min(255, baseColor.g * 255 * shade + emissive.g * 255),
-      b: Math.min(255, baseColor.b * 255 * shade + emissive.b * 255),
+      colors: [
+        Math.min(1, vertexR[0] * shade + emissive.r),
+        Math.min(1, vertexG[0] * shade + emissive.g),
+        Math.min(1, vertexB[0] * shade + emissive.b),
+        Math.min(1, vertexR[1] * shade + emissive.r),
+        Math.min(1, vertexG[1] * shade + emissive.g),
+        Math.min(1, vertexB[1] * shade + emissive.b),
+        Math.min(1, vertexR[2] * shade + emissive.r),
+        Math.min(1, vertexG[2] * shade + emissive.g),
+        Math.min(1, vertexB[2] * shade + emissive.b),
+      ],
     });
   }
 });
@@ -268,9 +293,7 @@ const zbuffer = new Float32Array(WIDTH * HEIGHT).fill(-Infinity);
 function fillTriangle(
   verts: [number, number, number, number, number, number],
   depths: [number, number, number],
-  r: number,
-  g: number,
-  b: number,
+  colors: [number, number, number, number, number, number, number, number, number],
 ): void {
   const x0 = verts[0]!;
   const y0 = verts[1]!;
@@ -303,15 +326,16 @@ function fillTriangle(
       }
       zbuffer[index] = z;
       const i = index * 4;
-      pixels[i] = r;
-      pixels[i + 1] = g;
-      pixels[i + 2] = b;
+      // w2 对应顶点 A（verts[0]），w1 → B，w0 → C
+      pixels[i] = (w2 * colors[0] + w1 * colors[3] + w0 * colors[6]) * 255;
+      pixels[i + 1] = (w2 * colors[1] + w1 * colors[4] + w0 * colors[7]) * 255;
+      pixels[i + 2] = (w2 * colors[2] + w1 * colors[5] + w0 * colors[8]) * 255;
     }
   }
 }
 
 for (const triangle of triangles) {
-  fillTriangle(triangle.verts, triangle.depths, triangle.r, triangle.g, triangle.b);
+  fillTriangle(triangle.verts, triangle.depths, triangle.colors);
 }
 
 /* ---------------- PNG 编码（RGBA，filter 0） ---------------- */

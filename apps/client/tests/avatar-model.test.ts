@@ -26,8 +26,10 @@ import {
 } from "@colyseus-fps/shared";
 
 import {
-  ARM_X,
+  ARM_VISUAL_X,
   AVATAR_PARTS,
+  CARRY_ELBOW,
+  CARRY_SHOULDER,
   AvatarModel,
   CHARACTER_STYLES,
   CREST_CENTER_Y,
@@ -36,11 +38,13 @@ import {
   FOOT_HEIGHT,
   FOREARM_WIDTH,
   HEAD_CENTER_Y,
+  HEAD_HALF_HEIGHT,
   HEAD_RADIUS,
   MUZZLE_CENTER_Z,
   MUZZLE_DEPTH,
   MUZZLE_WIDTH,
   NECKBAND_Y,
+  NECK_RADIUS,
   SHOULDER_Y,
   TEAM_ACCENT,
   TORSO_CENTER_Y,
@@ -117,12 +121,22 @@ describe("尺寸与判定体同源", () => {
     assert.equal(PLAYER_HEIGHT, 1.8);
   });
 
-  it("头球下沿必须正好压在头部判定段下沿（1.63m）", () => {
+  it("头球下沿可以压进胸段，但必须被胸段判定完全包住", () => {
     const head = zoneOf("head");
+    const chest = zoneOf("chest");
     const headBottom = HEAD_CENTER_Y - HEAD_RADIUS;
-    assert.ok(headBottom >= head.yMin - 1e-9, `头球下沿 ${headBottom} 低于判定段 ${head.yMin}`);
-    assert.ok(Math.abs(headBottom - head.yMin) < 1e-9, "头球下沿应与判定段下沿对齐");
-    assert.equal(Math.round(headBottom * 1000) / 1000, 1.63);
+    // 卡通头就该比"眼高"大一圈：下巴落在眼高以下，这一段按设计算胸段
+    // （见 PLAYER_HITBOXES 注释：平射必须打胸、点头必须抬枪）。
+    assert.ok(headBottom < head.yMin, "头球下沿应当低于爆头段下沿，否则说明头做小了");
+    assert.ok(headBottom > chest.yMin, "头球下沿不能低到腹段");
+    // 关键不变量：下巴那一圈体积必须完整落在胸段圆柱里，否则会出现"看着打中却穿过去"
+    for (const character of CHARACTER_IDS) {
+      assert.ok(
+        headHalfWidth(character) < chest.radius,
+        `${character} 的下巴半宽 ${headHalfWidth(character)} 超出胸段 ${chest.radius}`,
+      );
+    }
+    assert.equal(Math.round(head.yMin * 1000) / 1000, 1.63);
   });
 
   it("模型必须比判定体窄（宁可判定宽容，不能看着打中却穿过去）", () => {
@@ -135,7 +149,9 @@ describe("尺寸与判定体同源", () => {
     assert.ok(TORSO_WIDTH / 2 < chest.radius, "躯干半宽必须小于胸段判定半径");
     for (const character of CHARACTER_IDS) {
       const style = CHARACTER_STYLES[character];
-      assert.ok(style.bodyScale <= 1, `${character} 的 bodyScale 不能大于 1`);
+      // 真正的护栏不是"bodyScale ≤ 1"，而是"放大之后仍然塞得进胸段圆柱"：
+      // 斗牛犬就是靠 1.24 的体型系数做出一只桶的，只要 0.162 × 1.24 < 0.27 就合法。
+      assert.ok(style.bodyScale <= 1.3, `${character} 的 bodyScale 超过 1.3，视觉会胖出判定体`);
       assert.ok(style.bodyScale > 0.7, `${character} 的 bodyScale 过小会瘦成竹竿`);
       const torsoHalf = (TORSO_WIDTH * style.bodyScale) / 2;
       assert.ok(torsoHalf < chest.radius, `${character} 的躯干 ${torsoHalf} 超过胸段 ${chest.radius}`);
@@ -147,11 +163,13 @@ describe("尺寸与判定体同源", () => {
         `${character} 的头半宽 ${headHalfWidth(character)} 超过判定半径 ${head.radius}`,
       );
 
-      // 臂：肩枢轴 + 上臂半宽 不能超出臂段外沿
-      const shoulderOuter = ARM_X * style.bodyScale + UPPER_ARM_WIDTH / 2;
+      // 臂：视觉肩枢轴（ARM_VISUAL_X，比判定枢轴 ARM_X 收进 11cm）+ 上臂半宽，
+      // 不能超出臂段圆柱的外沿。判定用 ARM_X，视觉收进来，所以这里永远有余量。
+      const shoulderOuter =
+        ARM_VISUAL_X * style.bodyScale + (UPPER_ARM_WIDTH * style.limbScale) / 2;
       assert.ok(
         shoulderOuter < armZone.radius + armZone.offsetRight,
-        `${character} 的臂外沿 ${shoulderOuter} 超出判定体`,
+        `${character} 的臂外沿 ${shoulderOuter} 超出判定体 ${armZone.radius + armZone.offsetRight}`,
       );
     }
   });
@@ -172,24 +190,34 @@ describe("尺寸与判定体同源", () => {
 
   it("毛簇顶面与头顶都必须压在 1.80m", () => {
     assert.ok(Math.abs(CREST_CENTER_Y + CREST_HEIGHT / 2 - PLAYER_HEIGHT) < 1e-9);
-    assert.ok(Math.abs(HEAD_CENTER_Y + HEAD_RADIUS - PLAYER_HEIGHT) < 1e-9);
+    // 头球顶不再顶到 1.80：最后 5cm 交给头顶毛簇（猫/斗牛犬的辨识点之一）
+    assert.ok(HEAD_CENTER_Y + HEAD_RADIUS < PLAYER_HEIGHT);
+    assert.ok(HEAD_CENTER_Y + HEAD_RADIUS > HEAD_CENTER_Y, "头球必须真的有高度");
   });
 
-  it("武器挂点必须挂在右手下方、且 rotation.y = π", () => {
+  it("武器挂点必须落在右手腕、且只抵消屈肘（不许再翻 180°）", () => {
     const model = buildAvatarModel("T");
     try {
-      assert.ok(Math.abs(model.handAnchor.rotation.y - Math.PI) < 1e-9);
+      // 只做一件事：把肩 + 肘的屈曲抵消掉，让"手里那件"重新水平。
+      // 早期这里还叠了 rotation.y = π，净旋转虽是 0，但叠上 X 之后枪会倒着拿。
+      assert.ok(Math.abs(model.handAnchor.rotation.y) < 1e-9, "handAnchor 不能再绕 Y 翻 180°");
+      assert.ok(
+        Math.abs(model.handAnchor.rotation.x + (CARRY_SHOULDER + CARRY_ELBOW)) < 1e-9,
+        "handAnchor 的 X 必须正好抵消肩 + 肘的屈曲",
+      );
       const parent = model.handAnchor.parent;
       assert.ok(parent !== null, "挂点必须有父节点（右前臂下的肘枢轴）");
-      assert.ok(Math.abs(SHOULDER_Y - 1.5) < 0.02);
+      assert.ok(Math.abs(SHOULDER_Y - 1.42) < 0.02);
       model.root.updateMatrixWorld(true);
       const hand = new THREE.Vector3();
       model.handAnchor.getWorldPosition(hand);
       assert.ok(hand.y < SHOULDER_Y, `手部高度 ${hand.y.toFixed(2)} 应低于肩 ${SHOULDER_Y}`);
-      assert.ok(Math.abs(hand.y - 1.12) < 0.02, `手部高度应约 1.12，实际 ${hand.y}`);
-      assert.ok(Math.abs(hand.x - 0.24) < 0.02, `右手应在 x≈0.24，实际 ${hand.x}`);
-      assert.ok(Math.abs(hand.z + 0.2) < 0.02, `右手应在 z≈−0.20，实际 ${hand.z}`);
-      assert.ok(Math.abs(TORSO_CENTER_Y - 1.385) < 1e-9);
+      // 端在腰前：比腰线（0.98）略高、在身前 20cm
+      assert.ok(Math.abs(hand.y - 1.075) < 0.03, `手部高度应约 1.08，实际 ${hand.y}`);
+      assert.ok(Math.abs(hand.x - 0.179) < 0.03, `右手应在 x≈0.18，实际 ${hand.x}`);
+      assert.ok(Math.abs(hand.z + 0.2) < 0.03, `右手应在 z≈−0.20，实际 ${hand.z}`);
+      // 躯干是 0.82（髋）→ 1.458（锁骨）的旋转体，中心取这段的中点
+      assert.ok(Math.abs(TORSO_CENTER_Y - 1.139) < 1e-9);
     } finally {
       model.dispose();
     }
@@ -254,11 +282,11 @@ describe("材质共享（按 角色 × 队伍 缓存）", () => {
       assert.equal(first.materials.fur, second.materials.fur);
       // 队伍之间必须不同实例
       assert.notEqual(first.materials.accent, otherTeam.materials.accent);
-      // 11 种材质：毛/肚/耳内/鼻/眼/爪/识别色/金属/木/刃/墨
-      assert.equal(Object.keys(materials).length, 11);
-      // 部件真的用了共享材质
+      // 15 种材质：毛/肚/耳内/鼻/虹膜/瞳孔/眼白/爪/躯干(顶点色)/识别色/金属/木/刃/墨
+      assert.equal(Object.keys(materials).length, 15);
+      // 部件真的用了共享材质：躯干是顶点色材质，不是"毛色 + 贴片"
       const torso = first.parts.get("torso")!;
-      assert.equal(torso.material, materials.fur);
+      assert.equal(torso.material, materials.torso);
     } finally {
       first.dispose();
       second.dispose();
@@ -370,10 +398,12 @@ describe("动画骨骼", () => {
       assert.ok(Math.abs(shoulderR.rotation.x) < Math.abs(shoulderL.rotation.x), "持物手幅度更小");
       assert.ok(Math.abs(torsoPivot.position.y - WAIST_Y) < 0.03, "躯干上下幅度 ≤ 2cm");
 
-      // amp = 0 时全部归零（站立姿态）
+      // amp = 0 时摆动归零，但**持物手保持端东西的屈曲**（0 → CARRY_SHOULDER）
       model.poseLocomotion(phase, 0);
-      assert.equal(hipL.rotation.x, 0);
-      assert.equal(shoulderR.rotation.x, 0);
+      // 注意 −0：sin(π/2+π) × 0 = −0，用严格相等会假红
+      assert.ok(Math.abs(hipL.rotation.x) < 1e-12);
+      assert.ok(Math.abs(shoulderL.rotation.x) < 1e-12);
+      assert.ok(Math.abs(shoulderR.rotation.x - CARRY_SHOULDER) < 1e-9, "站立时持物手应停在持物角度");
     } finally {
       model.dispose();
     }
@@ -474,22 +504,33 @@ describe("装饰件（不参与判定）", () => {
       );
       assert.ok(ears.length >= 2, `${character} 缺少耳朵`);
 
-      // 眼睛/鼻头必须在头的前方（z < 0），否则就是长在后脑勺
+      // 眼睛/鼻头必须长在脸的前方（z < 0），且高度落在头颅半高以内。
+      // 注意：头部件用的是**头心局部坐标**，不是世界高度——写世界高度会让五官飞出脑袋。
       for (const decor of specs) {
-        if (decor.material === "eye" || decor.material === "nose") {
+        if (decor.material === "sclera" || decor.material === "nose" || decor.material === "iris") {
+          if (decor.parent !== "head") {
+            continue;
+          }
           assert.ok(decor.pos.z < 0, `${character} 的眼睛/鼻头 z=${decor.pos.z} 应在脸的前方`);
-          assert.ok(decor.pos.y > 1.6 && decor.pos.y < PLAYER_HEIGHT, `${character} 五官高度异常`);
+          assert.ok(
+            Math.abs(decor.pos.y) < HEAD_HALF_HEIGHT,
+            `${character} 的五官高度 ${decor.pos.y} 超出头颅半高 ${HEAD_HALF_HEIGHT}`,
+          );
         }
       }
 
-      // 配饰带子必须落在颈部（胸段顶端附近），不能跑到脸上
-      const band = specs.find((decor) => decor.geometry === "cylinder" && decor.material === "accent");
+      // 配饰带子必须箍在脖子上：环半径由脖子半径推出来，不能大一圈悬在空中
+      const band = specs.find((decor) => decor.geometry === "ring" && decor.material === "accent");
       assert.ok(band !== undefined, `${character} 缺少颈部饰带`);
       assert.ok(
         Math.abs(band.pos.y - NECKBAND_Y) < 1e-9,
         `${character} 的饰带高度 ${band.pos.y} 应在颈部 ${NECKBAND_Y}`,
       );
       assert.ok(band.pos.y < HEAD_CENTER_Y - HEAD_RADIUS + 1e-6, "饰带不能高于下巴");
+      assert.ok(
+        band.size.x / 2 <= NECK_RADIUS * CHARACTER_STYLES[character].bodyScale + 0.03,
+        `${character} 的饰带半径 ${band.size.x / 2} 套不住脖子`,
+      );
 
       // 胡须根数必须是偶数（左右对称）
       assert.equal(style.whiskers % 2, 0, `${character} 的胡须应为偶数根`);

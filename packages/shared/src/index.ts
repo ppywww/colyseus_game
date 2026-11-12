@@ -414,7 +414,7 @@ export interface HitCylinder {
  *      "平射打胸、点头要抬枪"的手感契约原样保留。
  */
 export const PLAYER_HITBOXES: readonly HitCylinder[] = [
-  { zone: "head", offsetRight: 0, yMin: 1.63, yMax: 1.8, radius: 0.175 },
+  { zone: "head", offsetRight: 0, yMin: 1.63, yMax: 1.8, radius: 0.18 },
   { zone: "chest", offsetRight: 0, yMin: 1.14, yMax: 1.63, radius: 0.27 },
   { zone: "belly", offsetRight: 0, yMin: 0.9, yMax: 1.14, radius: 0.25 },
   { zone: "arm", offsetRight: 0.3, yMin: 0.98, yMax: 1.52, radius: 0.1 },

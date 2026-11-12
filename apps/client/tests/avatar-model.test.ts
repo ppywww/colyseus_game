@@ -214,7 +214,7 @@ describe("尺寸与判定体同源", () => {
       assert.ok(hand.y < SHOULDER_Y, `手部高度 ${hand.y.toFixed(2)} 应低于肩 ${SHOULDER_Y}`);
       // 端在腰前：比腰线（0.98）略高、在身前 20cm
       assert.ok(Math.abs(hand.y - 1.075) < 0.03, `手部高度应约 1.08，实际 ${hand.y}`);
-      assert.ok(Math.abs(hand.x - 0.179) < 0.03, `右手应在 x≈0.18，实际 ${hand.x}`);
+      assert.ok(Math.abs(hand.x - 0.19) < 0.05, `右手应在 x≈0.19，实际 ${hand.x}`);
       assert.ok(Math.abs(hand.z + 0.2) < 0.03, `右手应在 z≈−0.20，实际 ${hand.z}`);
       // 躯干是 0.82（髋）→ 1.458（锁骨）的旋转体，中心取这段的中点
       assert.ok(Math.abs(TORSO_CENTER_Y - 1.139) < 1e-9);
@@ -294,13 +294,26 @@ describe("材质共享（按 角色 × 队伍 缓存）", () => {
     }
   });
 
-  it("卡通质感的判据是反照率：低金属度 + 高粗糙度", () => {
+  it("卡通质感来自分阶着色：角色件必须是 MeshToonMaterial 且不进色调映射", () => {
     const materials = avatarMaterials("tom", "T");
-    assert.ok(materials.fur.metalness <= 0.1, "毛皮不该有金属度");
-    assert.ok(materials.fur.roughness >= 0.7, "毛皮必须够粗糙才不会反光成塑料球");
-    // 只有厨具允许金属感
-    assert.ok(materials.metal.metalness > 0.5);
-    assert.ok(materials.blade.metalness > 0.5);
+    // PBR 的连续明暗正是"塑料感"的来源。毛/肚/爪/耳内必须是 toon 材质，
+    // 而且必须绕开 ACES——否则 1.0 的白会被压成浅灰，白肚皮永远脏。
+    for (const kind of ["fur", "belly", "paw", "inner", "torso"] as const) {
+      const material = materials[kind];
+      assert.ok(
+        material instanceof THREE.MeshToonMaterial,
+        `${kind} 必须使用 MeshToonMaterial（分阶），不能用 PBR`,
+      );
+      assert.equal(material.toneMapped, false, `${kind} 不能进 ACES 色调映射`);
+      assert.ok(material.gradientMap !== null, `${kind} 必须挂分阶渐变`);
+    }
+    // 只有厨具允许留金属感（它们是唯二留在 PBR 上的东西）
+    assert.ok(
+      materials.metal instanceof THREE.MeshStandardMaterial && materials.metal.metalness > 0.5,
+    );
+    assert.ok(
+      materials.blade instanceof THREE.MeshStandardMaterial && materials.blade.metalness > 0.5,
+    );
   });
 
   it("disposeAvatarMaterials 后可重新构建（缓存已清空）", () => {

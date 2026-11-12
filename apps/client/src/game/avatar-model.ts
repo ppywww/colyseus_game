@@ -74,7 +74,7 @@ const LEG: HitCylinder = zoneOf("leg");
  * 也就是 `0.135 × 1.28 < 0.175` —— 这条不等式由 `tests/avatar-model.test.ts` 守着。
  * 谁把 headScale 调大、或把判定半径调小，测试立刻会红。
  */
-export const HEAD_RADIUS: number = HEAD.radius * 0.772;
+export const HEAD_RADIUS: number = HEAD.radius * 0.75;
 
 /**
  * 头颅中心高度。
@@ -154,7 +154,14 @@ export const ARM_X: number = ARM.offsetRight;
  * 比胸还宽一截，整个人像穿盔甲。收进来不漏判——臂段半径 0.1，视觉臂外沿
  * 0.235 + 0.049 = 0.284，仍在 0.40 内。
  */
-export const ARM_VISUAL_X: number = ARM.offsetRight - 0.11;
+/**
+ * 视觉肩枢轴。
+ *
+ * 手臂**不能**嵌进躯干：一旦重叠，手臂的描边壳会在躯干表面划出一道拱形黑线，
+ * 看起来像"手臂从身上长出来的洞"。宁可留一条窄缝——那条缝本身就是
+ * 手绘动画里手臂与身体之间的轮廓线。
+ */
+export const ARM_VISUAL_X: number = ARM.offsetRight - 0.115;
 
 /** 腿：髋 0.90 → 膝 → 踝 0.075。 */
 export const HIP_Y: number = BELLY.yMin;
@@ -166,11 +173,11 @@ export const KNEE_Y: number = HIP_Y - THIGH_HEIGHT;
 export const THIGH_WIDTH: number = 0.178;
 export const SHIN_WIDTH: number = 0.128;
 /** 脚掌：宽度由腿段判定半径推出来（0.2 × 0.88 = 0.176），不是随手写的数。 */
-export const FOOT_WIDTH: number = LEG.radius * 0.88;
-export const FOOT_DEPTH: number = 0.232;
+export const FOOT_WIDTH: number = LEG.radius * 1.02;
+export const FOOT_DEPTH: number = 0.258;
 export const FOOT_Z: number = -0.052;
 /** 两腿间距：贴在腿段判定半径的 0.47 处（0.094），膝盖略分开的站姿。 */
-export const LEG_X: number = LEG.radius * 0.47;
+export const LEG_X: number = LEG.radius * 0.38;
 
 /**
  * 右手持物姿态。
@@ -296,34 +303,34 @@ export interface CharacterStyle {
 export const CHARACTER_STYLES: Record<CharacterId, CharacterStyle> = {
   tom: {
     id: "tom",
-    fur: 0x8fa0ae,
-    belly: 0xf4f0e6,
+    fur: 0x9aacbc,
+    belly: 0xfbf8f1,
     inner: 0xf2a695,
     nose: 0xe4786b,
     iris: 0xd8db8c,
-    paw: 0xf4f0e6,
+    paw: 0xfbf8f1,
     sclera: 0xfdfbf4,
     ears: "cat",
     bodyScale: 0.94,
     limbScale: 0.95,
-    headScale: 1.26,
+    headScale: 1.32,
     tailLength: 1,
     tailThickness: 1,
     whiskers: 6,
     neck: "scarf",
-    bellyPatch: 0.62,
+    bellyPatch: 0.96,
     waistFill: 0.12,
     face: {
-      eyeW: 0.08, eyeH: 0.09, iris: 0.046, pupil: 0.023,
-      lid: 0.58, tilt: 0.14,
-      browW: 0.076, browH: 0.014, browTilt: 0.1,
+      eyeW: 0.072, eyeH: 0.08, iris: 0.042, pupil: 0.02,
+      lid: 0.38, tilt: 0.14,
+      browW: 0.062, browH: 0.013, browTilt: 0.1,
       muzzle: 1, jowl: 0.052, jowlDrop: 0.012,
       grin: false, fang: false,
     },
   },
   jerry: {
     id: "jerry",
-    fur: 0xc1793e,
+    fur: 0xc9854a,
     belly: 0xedc79a,
     inner: 0xe29a8a,
     nose: 0x2b1b2f,
@@ -333,24 +340,24 @@ export const CHARACTER_STYLES: Record<CharacterId, CharacterStyle> = {
     ears: "mouse",
     bodyScale: 0.86,
     limbScale: 0.88,
-    headScale: 1.22,
+    headScale: 1.3,
     tailLength: 0.95,
     tailThickness: 0.72,
     whiskers: 6,
     neck: "bow",
-    bellyPatch: 0.34,
+    bellyPatch: 0.6,
     waistFill: 0.14,
     face: {
-      eyeW: 0.084, eyeH: 0.098, iris: 0.05, pupil: 0.034,
+      eyeW: 0.078, eyeH: 0.09, iris: 0.046, pupil: 0.028,
       lid: 0, tilt: 0,
-      browW: 0.05, browH: 0.012, browTilt: 0.3,
+      browW: 0.046, browH: 0.012, browTilt: 0.3,
       muzzle: 0.88, jowl: 0.046, jowlDrop: 0.008,
       grin: true, fang: false,
     },
   },
   spike: {
     id: "spike",
-    fur: 0xd2a05c,
+    fur: 0xddab63,
     belly: 0xf3dfb8,
     inner: 0xc8846b,
     nose: 0x2b1b2f,
@@ -360,24 +367,24 @@ export const CHARACTER_STYLES: Record<CharacterId, CharacterStyle> = {
     ears: "dog",
     bodyScale: 1.24,
     limbScale: 1.3,
-    headScale: 1.28,
+    headScale: 1.33,
     tailLength: 0.5,
     tailThickness: 1.15,
     whiskers: 4,
     neck: "collar",
-    bellyPatch: 0.95,
+    bellyPatch: 0.82,
     waistFill: 0.82,
     face: {
-      eyeW: 0.058, eyeH: 0.05, iris: 0.028, pupil: 0.016,
+      eyeW: 0.05, eyeH: 0.044, iris: 0.024, pupil: 0.014,
       lid: 0.3, tilt: -0.2,
-      browW: 0.075, browH: 0.024, browTilt: -0.34,
+      browW: 0.062, browH: 0.022, browTilt: -0.34,
       muzzle: 1.16, jowl: 0.095, jowlDrop: 0.05,
       grin: false, fang: true,
     },
   },
   butch: {
     id: "butch",
-    fur: 0x4a4356,
+    fur: 0x635b76,
     belly: 0x7b7288,
     inner: 0xdb7186,
     nose: 0x2b1b2f,
@@ -387,17 +394,17 @@ export const CHARACTER_STYLES: Record<CharacterId, CharacterStyle> = {
     ears: "cat",
     bodyScale: 0.9,
     limbScale: 0.9,
-    headScale: 1.22,
+    headScale: 1.3,
     tailLength: 1.15,
     tailThickness: 0.86,
     whiskers: 6,
     neck: "collar",
-    bellyPatch: 0.3,
+    bellyPatch: 0.46,
     waistFill: 0.2,
     face: {
-      eyeW: 0.072, eyeH: 0.06, iris: 0.042, pupil: 0.02,
+      eyeW: 0.064, eyeH: 0.054, iris: 0.038, pupil: 0.018,
       lid: 0.5, tilt: -0.16,
-      browW: 0.062, browH: 0.015, browTilt: -0.24,
+      browW: 0.054, browH: 0.014, browTilt: -0.24,
       muzzle: 0.9, jowl: 0.055, jowlDrop: 0.015,
       grin: false, fang: false,
     },
@@ -438,7 +445,15 @@ export type AvatarMaterialKind =
   /** 躯干专用：顶点色（把奶白色的胸口直接烘焙进几何，见 `torsoGeometryOf`）。 */
   | "torso";
 
-export type AvatarMaterials = Record<AvatarMaterialKind, THREE.MeshStandardMaterial>;
+/**
+ * 角色表面材质。卡通件用 `MeshToonMaterial`（分阶明暗），只有厨具留在 PBR 上。
+ *
+ * 用联合类型而不是统一成 `THREE.Material`，是为了让调用方还能安全读 `.color`
+ * （描边、调试配色、截图工具都要读它）。
+ */
+export type AvatarSurfaceMaterial = THREE.MeshStandardMaterial | THREE.MeshToonMaterial;
+
+export type AvatarMaterials = Record<AvatarMaterialKind, AvatarSurfaceMaterial>;
 
 const materialCache = new Map<string, AvatarMaterials>();
 
@@ -446,37 +461,77 @@ function materialKey(character: CharacterId, team: TeamId): string {
   return `${character}|${team}`;
 }
 
+/**
+ * 卡通分阶渐变（4 阶）。
+ *
+ * 这是"看起来像动画"的真正开关，比描边更关键：PBR 的连续明暗无论配色多准，
+ * 出来都是**塑料/橡皮泥**；把明暗压成 4 级台阶之后，同一批几何立刻变成"画"。
+ *
+ * `NearestFilter` 是重点：一旦插值，台阶又被抹平回渐变。
+ */
+let toonGradient: THREE.DataTexture | null = null;
+
+function avatarToonGradient(): THREE.DataTexture {
+  if (toonGradient !== null) {
+    return toonGradient;
+  }
+  // 只要两阶：受光面 / 背光面。
+  //
+  // 4 阶试过，问题是躯干是圆柱、法线连续扫过 180°，NdotL 会依次跨过每一个
+  // 阈值，于是在胸口画出一圈"竖椭圆"色带——像肚皮上破了个洞。
+  // 手绘动画从来不画这种中间调：一条明暗线把形体分成两半就够了。
+  const steps = new Uint8Array([148, 255]);
+  const texture = new THREE.DataTexture(steps, steps.length, 1, THREE.RedFormat);
+  texture.minFilter = THREE.NearestFilter;
+  texture.magFilter = THREE.NearestFilter;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  toonGradient = texture;
+  return texture;
+}
+
 function createMaterials(character: CharacterId, team: TeamId): AvatarMaterials {
   const style = CHARACTER_STYLES[character];
-  // 卡通质感的三个关键：**低金属度**、**高粗糙度**、**无环境反射**。
-  // 真实枪械那套 metalness 0.9 / roughness 0.2 放在大色块造型上会立刻变脏；
-  // 这里统一按哑光橡胶/毛绒处理，只给厨具留一点金属感。
-  const matte = (color: number, roughness = 0.9): THREE.MeshStandardMaterial =>
-    new THREE.MeshStandardMaterial({ color, roughness, metalness: 0.02 });
+  const gradientMap = avatarToonGradient();
+  /**
+   * 卡通材质：分阶明暗 + 无金属度 + 无高光。
+   *
+   * 只有厨具（金属、刀刃、金牌）留在 `MeshStandardMaterial` 上——
+   * 卡通角色身上的毛、布、皮肤一旦有高光，就会退回"塑料玩偶"。
+   */
+  /**
+   * `toneMapped: false` 是卡通角色必须打开的一票否决权。
+   *
+   * 场景用 ACES 压高光（沙漠暖阳需要它），但 ACES 会把 1.0 的白压到 0.8 左右
+   * 再吃掉饱和——于是白肚皮永远是一块浅灰、橙色毛永远发土。
+   * 卡通要的是**平涂原色**，干脆不让它进色调映射这一环。
+   */
+  const toon = (color: number): THREE.MeshToonMaterial =>
+    new THREE.MeshToonMaterial({ color, gradientMap, toneMapped: false });
   return {
-    fur: matte(style.fur, 0.92),
-    belly: matte(style.belly, 0.9),
-    inner: matte(style.inner, 0.88),
-    nose: new THREE.MeshStandardMaterial({ color: style.nose, roughness: 0.4, metalness: 0.04 }),
-    iris: new THREE.MeshStandardMaterial({ color: style.iris, roughness: 0.26, metalness: 0.06 }),
-    pupil: new THREE.MeshStandardMaterial({ color: 0x141018, roughness: 0.22, metalness: 0.08 }),
-    paw: matte(style.paw, 0.94),
-    // 眼白要带一点点自发光：卡通角色的眼睛永远比周围亮一档，纯漫反射在阴影里会灰掉
-    sclera: new THREE.MeshStandardMaterial({
+    fur: toon(style.fur),
+    belly: toon(style.belly),
+    inner: toon(style.inner),
+    nose: toon(style.nose),
+    iris: toon(style.iris),
+    pupil: toon(0x141018),
+    paw: toon(style.paw),
+    // 眼白带一点自发光：卡通角色的眼睛永远比周围亮一档，纯漫反射在阴影里会灰掉
+    sclera: new THREE.MeshToonMaterial({
       color: style.sclera,
-      roughness: 0.3,
-      metalness: 0,
+      gradientMap,
       emissive: style.sclera,
-      emissiveIntensity: 0.12,
+      emissiveIntensity: 0.22,
+      toneMapped: false,
     }),
-    accent: matte(TEAM_ACCENT[team], 0.82),
+    accent: toon(TEAM_ACCENT[team]),
     metal: new THREE.MeshStandardMaterial({ color: 0x8d97a3, roughness: 0.34, metalness: 0.78 }),
-    wood: matte(0x8a5a34, 0.86),
+    wood: toon(0x8a5a34),
     blade: new THREE.MeshStandardMaterial({ color: 0xd9e3ee, roughness: 0.18, metalness: 0.9 }),
-    dark: matte(0x241a28, 0.78),
+    dark: toon(0x241a28),
     gold: new THREE.MeshStandardMaterial({ color: 0xe8b93c, roughness: 0.3, metalness: 0.72 }),
     // 顶点色材质：底色必须是白的，否则会和烘焙进去的颜色相乘变脏
-    torso: new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.92, metalness: 0.02 }),
+    torso: new THREE.MeshToonMaterial({ color: 0xffffff, vertexColors: true, gradientMap, toneMapped: false }),
   };
 }
 
@@ -502,6 +557,8 @@ export function disposeAvatarMaterials(): void {
     }
   }
   materialCache.clear();
+  toonGradient?.dispose();
+  toonGradient = null;
 }
 
 /* ------------------------------------------------------------------ *
@@ -544,6 +601,20 @@ export interface MeshSpec {
   rotZ?: number;
   /** 仅 `lathe` 使用：母线点，[半径, 高度]，按顺序首尾相接。 */
   profile?: readonly (readonly [number, number])[];
+  /**
+   * 这个部件的描边宽度（世界单位）。不填用 `OUTLINE_WIDTH`。
+   *
+   * 手绘动画的线宽是统一的，但**眼睛**是个例外：眼球只有 9cm，用身体那条
+   * 1.3cm 的粗线去描，会把眼白包成一副黑框眼镜。脸部的线必须细一档。
+   */
+  outlineWidth?: number;
+  /**
+   * 强制描边开关。不填时按尺寸自动判断（见 `OUTLINE_MIN_SIZE`）。
+   *
+   * 眼睛必须显式打开：眼白只有 8cm 宽，按尺寸会被跳过，但它是整张脸的
+   * 视觉中心——没有轮廓线的眼白会"飘"在脸上，像贴了两块白胶布。
+   */
+  outline?: boolean;
 }
 
 export interface AvatarPartSpec extends MeshSpec {
@@ -582,17 +653,30 @@ const TORSO_PROFILE: readonly (readonly [number, number])[] = [
 ];
 
 /**
+ * 躯干整体收窄系数。
+ *
+ * 之前躯干的直径 0.35m 配上 0.34m 的头，正面看是"一个桶顶着一个球"——
+ * 肩宽 0.55m 对 1.8m 的身高已经接近真人比例，而卡通角色要的是**窄肩细长条**。
+ * 收到 0.82 之后肩宽约 0.46m，头/肩比接近参考图。
+ */
+const TORSO_SLENDERNESS = 0.82;
+
+/**
  * 按角色微调后的躯干母线。
  *
  * `waistFill` 把腰（y≈1.06）往最粗处抬：斗牛犬是**桶**，没有腰；猫是明显的沙漏。
  * 这不是"通用体型缩放"能表达的——它是形状差异，不是尺寸差异。
+ *
+ * 注意这里同时乘了 `bodyScale`：躯干是唯一由母线直接生成的部件，漏掉 bodyScale
+ * 的话 Spike 的桶身会和 Tom 一样宽，只有手脚变大（上一版就是这个毛病）。
  */
 export function torsoProfileOf(style: CharacterStyle): (readonly [number, number])[] {
   const maxR = Math.max(...TORSO_PROFILE.map(([r]) => r));
   return TORSO_PROFILE.map(([r, y]) => {
     // 高斯窗：只在腰那一带生效，胸、髋一个像素都不动
     const weight = Math.exp(-(((y - 1.062) / 0.062) ** 2));
-    return [r + (maxR - r) * style.waistFill * weight, y] as const;
+    const filled = r + (maxR - r) * style.waistFill * weight;
+    return [filled * TORSO_SLENDERNESS * style.bodyScale, y] as const;
   });
 }
 
@@ -777,11 +861,18 @@ function skullSurfaceZ(x: number, y: number, rx: number, rz: number): number {
 
 /** 关节球：肩 / 肘 / 髋 / 膝各一颗，把两段锥台的接缝吞掉。 */
 function jointDecor(w: number, limb: number): AvatarDecorSpec[] {
-  // 肩与髋的球比肘/膝再小一圈：这两处球一大就会变成"护肩"和"胯垫"
-  const armR = UPPER_ARM_WIDTH * limb * 0.52 * 0.86;
-  const foreR = FOREARM_WIDTH * limb * 0.52;
-  const thighR = THIGH_WIDTH * limb * 0.52 * 0.9;
-  const shinR = SHIN_WIDTH * limb * 0.52;
+  /**
+   * 肩球比手臂粗 24%，肘/膝关节球则略细于肢体。
+   *
+   * 职责完全不同：
+   *   · **肩要"盖住"**——手臂的描边壳在躯干表面会画出一道拱形黑线，
+   *     只有让肩部有一团比手臂更大的体积，那道拱才会变成"肩膀的轮廓"；
+   *   · **肘/膝要"填缝"**——只负责吞掉两段锥台的接缝，一大就成串珠。
+   */
+  const armR = UPPER_ARM_WIDTH * limb * 0.52 * 1.04;
+  const foreR = FOREARM_WIDTH * limb * 0.52 * 0.92;
+  const thighR = THIGH_WIDTH * limb * 0.52 * 1.08;
+  const shinR = SHIN_WIDTH * limb * 0.52 * 0.92;
   const ball = (parent: AvatarDecorParent, r: number): AvatarDecorSpec => ({
     parent,
     geometry: "ellipsoid",
@@ -814,6 +905,20 @@ function headDecor(style: CharacterStyle): AvatarDecorSpec[] {
   const mh = MUZZLE_HEIGHT * muzzleK;
   const muzzleLocalY = MUZZLE_CENTER_Y - HEAD_CENTER_Y;
   const muzzleFront = MUZZLE_CENTER_Z - (MUZZLE_DEPTH * muzzleK) / 2;
+  /**
+   * 口鼻椭球在 (x, 局部y) 处的前表面 z。
+   *
+   * 嘴线、鼻子如果一律用「最前端的那个 z」，在椭球边缘就会悬空——
+   * 上一版的嘴是三条直条贴在固定 z 上，两侧直接飞出脸外，看起来像
+   * 画在空气里的电路图。贴面必须按 x 逐点算。
+   */
+  const muzzleRx = mw / 2;
+  const muzzleRy = mh / 2;
+  const muzzleRz = (MUZZLE_DEPTH * muzzleK) / 2;
+  const muzzleSurfaceZ = (x: number, localY: number): number => {
+    const k = 1 - (x / muzzleRx) ** 2 - ((localY - muzzleLocalY) / muzzleRy) ** 2;
+    return MUZZLE_CENTER_Z - muzzleRz * Math.sqrt(Math.max(0.04, k));
+  };
 
   /* ---- 腮帮：卡通脸的体积基本都长在腮上 ----
      用**毛色**而不是奶白色：奶白留给口鼻那一块，否则脸会变成三颗白球 */
@@ -886,71 +991,98 @@ function headDecor(style: CharacterStyle): AvatarDecorSpec[] {
     }
   }
 
-  /* ---- 眼睛：眼白 + 虹膜 + 瞳孔 + 高光 + 上眼睑 ---- */
-  const eyeX = rx * 0.46;
-  const eyeLocalY = 0.048;
-  const eyeZ = skullSurfaceZ(eyeX, eyeLocalY, rx, rz) + 0.014;
+  /* ---- 眼睛 ----
+     四层：眼白（半嵌进颅骨）→ 虹膜 → 瞳孔 + 高光 → 上眼睑（皮肤色压下来）。
+     上一版把整颗眼白贴在脸外，正面看就是"脸上贴了两个鸡蛋"：眼球必须有
+     一部分埋在头里，边缘才会产生"眼皮包住眼睛"的厚度，而不是贴纸感。 */
+  const eyeX = rx * 0.42;
+  const eyeLocalY = 0.05;
+  const eyeZ = skullSurfaceZ(eyeX, eyeLocalY, rx, rz) + 0.019;
+  /**
+   * 五官尺寸一律乘 `hs`。
+   *
+   * 头被 headScale 放大，眼睛却不跟着放大的话，头越大眼睛越小——上一版把
+   * 头从 1.22 提到 1.32 之后，脸就变成了"大脸配小眼睛"。这里把 style 里的
+   * 五官尺寸定义成**相对基准头**的值，实际大小由 hs 推出来，比例才锁得住。
+   */
+  const fw = face.eyeW * hs;
+  const fh = face.eyeH * hs;
+  const fi = face.iris * hs;
+  const fp = face.pupil * hs;
+  /** 眼白接近正球：扁的眼白从侧面看会变成一片薄片。 */
+  const eyeD = Math.max(fw, fh) * 1.02;
   for (const side of [-1, 1] as const) {
     const tilt = side * face.tilt;
     d.push({
       parent: "head", geometry: "ellipsoid",
-      size: { x: face.eyeW, y: face.eyeH, z: 0.052 },
+      size: { x: fw, y: fh, z: eyeD },
       pos: { x: side * eyeX, y: eyeLocalY, z: eyeZ },
-      rotZ: tilt, material: "sclera",
+      rotZ: tilt, material: "sclera", outline: true, outlineWidth: 0.0042,
     });
+    // 虹膜贴在眼球前极点稍后：贴太前会像"眼珠凸出眼眶"
+    const irisZ = eyeZ - eyeD * 0.5 + 0.011;
     d.push({
       parent: "head", geometry: "ellipsoid",
-      size: { x: face.iris, y: face.iris, z: 0.03 },
-      pos: { x: side * eyeX, y: eyeLocalY - 0.002, z: eyeZ - 0.021 },
+      size: { x: fi, y: fi, z: 0.026 * hs },
+      pos: { x: side * eyeX, y: eyeLocalY - 0.003, z: irisZ },
       rotZ: tilt, material: "iris",
     });
     d.push({
       parent: "head", geometry: "ellipsoid",
-      size: { x: face.pupil, y: face.pupil, z: 0.022 },
-      pos: { x: side * eyeX, y: eyeLocalY - 0.002, z: eyeZ - 0.031 },
+      size: { x: fp, y: fp, z: 0.02 * hs },
+      pos: { x: side * eyeX, y: eyeLocalY - 0.003, z: irisZ - 0.009 },
       material: "pupil",
     });
     // 高光：一颗偏心的小白点，是"眼睛活了"和"玻璃珠子"的分界线
     d.push({
       parent: "head", geometry: "ellipsoid",
-      size: { x: face.pupil * 0.52, y: face.pupil * 0.52, z: 0.012 },
-      pos: { x: side * eyeX - 0.011, y: eyeLocalY + 0.013, z: eyeZ - 0.034 },
+      size: { x: fp * 0.5, y: fp * 0.5, z: 0.012 },
+      pos: { x: side * (eyeX - 0.008 * hs), y: eyeLocalY + 0.012 * hs, z: irisZ - 0.014 },
       material: "sclera",
     });
-    // 上眼睑：一层比眼白略大的穹顶压在上半部。lid=0 时跳过（Jerry 瞪圆眼）
+    // 上眼睑：一层皮肤色的穹顶从上方压下来。
+    // lid=0（Jerry 瞪圆眼）时不画；lid 越大，底边越低、眼睛越困。
     if (face.lid > 0.02) {
-      const lidH = face.eyeH * (0.22 + face.lid * 0.7);
+      const lidY = eyeLocalY + fh * (0.5 - face.lid);
+      // 眼睑本身就是那条"线"：它的细描边压在眼白上，就是上眼睑的轮廓。
+      // 之前这里另外加了一条墨色横条，结果眼睛变成"黑框眼镜"——线叠了两层。
       d.push({
         parent: "head", geometry: "dome",
-        size: { x: face.eyeW * 1.14, y: lidH, z: 0.058 },
-        pos: {
-          x: side * eyeX,
-          y: eyeLocalY + face.eyeH * (0.48 - face.lid * 0.6),
-          z: eyeZ - 0.001,
-        },
-        rotZ: tilt, material: "fur",
+        size: { x: fw * 1.14, y: fh * 0.92, z: eyeD * 1.03 },
+        pos: { x: side * eyeX, y: lidY, z: eyeZ - 0.002 },
+        rotZ: tilt, material: "fur", outline: true, outlineWidth: 0.0042,
       });
     }
-    // 眉毛：粗黑一段，压在眼睛上方，倾角决定表情
+    // 眉毛：贴着额头的一道细长条
+    const browY = Math.min(
+      eyeLocalY + fh * 0.62 + 0.014 * hs,
+      HEAD_HALF_HEIGHT * 0.86,
+    );
+    /**
+     * 眉毛的 z 不能在颅面上算：眼球是凸出来的球，上半部会把后面的眉毛
+     * 整个挡住（"眉毛消失"就是这么来的）。取颅面与眼球前缘里更靠前的那个。
+     */
+    const browZ = Math.min(
+      skullSurfaceZ(eyeX + 0.004 * hs, browY, rx, rz) + 0.005,
+      eyeZ - eyeD * 0.42,
+    );
     d.push({
       parent: "head", geometry: "box",
-      size: { x: face.browW, y: face.browH, z: 0.018 },
-      pos: {
-        x: side * (eyeX + 0.004),
-        y: eyeLocalY + face.eyeH * 0.66 + 0.012,
-        z: eyeZ - 0.008,
-      },
+      size: { x: face.browW * hs, y: face.browH * hs * 0.72, z: 0.011 },
+      pos: { x: side * (eyeX + 0.004 * hs), y: browY, z: browZ },
       rotZ: side * face.browTilt, material: "dark",
     });
   }
 
-  /* ---- 鼻头：半嵌在口鼻最前端 ---- */
-  const noseW = mw * 0.28;
+  /* ---- 鼻头：倒三角，尖端朝下（猫的鼻子不是一颗球） ---- */
+  const noseW = mw * 0.23;
+  const noseH = noseW * 0.8;
+  const noseY = muzzleLocalY + 0.03;
   d.push({
-    parent: "head", geometry: "ellipsoid",
-    size: { x: noseW, y: noseW * 0.74, z: noseW * 0.72 },
-    pos: { x: 0, y: muzzleLocalY + 0.028, z: muzzleFront - 0.004 },
-    material: "nose",
+    parent: "head", geometry: "cone",
+    size: { x: noseW, y: noseH, z: noseW * 0.6 },
+    pos: { x: 0, y: noseY, z: muzzleSurfaceZ(0, noseY) + noseH * 0.16 },
+    rotX: Math.PI, material: "nose",
   });
 
   /* ---- 嘴 ---- */
@@ -961,29 +1093,40 @@ function headDecor(style: CharacterStyle): AvatarDecorSpec[] {
     d.push({
       parent: "head", geometry: "ellipsoid",
       size: { x: mw * 0.74, y: mh * 0.44, z: 0.04 },
-      pos: { x: 0, y: mouthY, z: muzzleFront + 0.018 },
+      pos: { x: 0, y: mouthY, z: muzzleSurfaceZ(0, mouthY) + 0.012 },
       material: "dark",
     });
     for (const side of [-1, 1] as const) {
       d.push({
         parent: "head", geometry: "box",
-        size: { x: mw * 0.19, y: mh * 0.34, z: 0.03 },
-        pos: { x: side * mw * 0.1, y: mouthY - 0.026, z: muzzleFront + 0.012 },
+        size: { x: mw * 0.17, y: mh * 0.34, z: 0.03 },
+        pos: {
+          x: side * mw * 0.09,
+          y: mouthY - 0.026,
+          z: muzzleSurfaceZ(side * mw * 0.09, mouthY - 0.026) + 0.008,
+        },
         material: "sclera",
       });
     }
   } else {
-    // 微笑线：三段细条拼一道浅弧（中间平、两端略下压）
-    for (const side of [-1, 0, 1] as const) {
+    /**
+     * 微笑线：9 段极短的小条拼一条下弯弧。
+     *
+     * 上一版只有 3 段、每段 2cm 长，拼出来是"Z 字折线"——嘴的弧度靠**段数**
+     * 和每段的倾角渐变，段越碎越顺。每段的 z 都按自己的 x 重算，所以整条
+     * 弧线贴着口鼻表面，不会在两端飞出去。
+     */
+    const segments = 9;
+    const halfSpan = mw * 0.36;
+    for (let i = 0; i < segments; i += 1) {
+      const t = (i / (segments - 1)) * 2 - 1;
+      const px = t * halfSpan;
+      const py = muzzleLocalY - 0.026 - (1 - t * t) * 0.02;
       d.push({
         parent: "head", geometry: "box",
-        size: { x: mw * 0.19, y: 0.008, z: 0.012 },
-        pos: {
-          x: side * mw * 0.155,
-          y: muzzleLocalY - 0.028 - (side === 0 ? 0 : 0.004),
-          z: muzzleFront + 0.012,
-        },
-        rotZ: side * 0.18, material: "dark",
+        size: { x: (halfSpan * 2) / (segments - 1) * 1.35, y: 0.006, z: 0.011 },
+        pos: { x: px, y: py, z: muzzleSurfaceZ(px, py) + 0.006 },
+        rotZ: -t * 0.42, material: "dark",
       });
     }
   }
@@ -999,21 +1142,36 @@ function headDecor(style: CharacterStyle): AvatarDecorSpec[] {
   }
 
   /* ---- 胡须：只做剪影，不做物理 ---- */
-  const whiskerLength = 0.1 * (0.75 + hs * 0.25);
-  const perSide = Math.floor(style.whiskers / 2);
+  /**
+   * 胡须：细胶囊，从吻部两侧斜着向外上方挑出去。
+   *
+   * 三条踩过的坑：
+   *   1. 用 `box` 做——正面看是"三根黑铁丝横穿脸颊"；
+   *   2. `rotY` 给了负值——胡须朝前翘，更糟；
+   *   3. 三根挤在 2cm 内——正面糊成一个黑块。
+   * 现在：每侧两根、间距 3.5cm、根部直径 5mm、沿 X 轴横放，
+   * 正面看就是两条细线，才是胡须该有的存在感。
+   */
+  const whiskerLength = 0.098 * (0.75 + hs * 0.25);
+  const whiskerCount = 2;
   for (const side of [-1, 1] as const) {
-    for (let i = 0; i < perSide; i += 1) {
-      const spread = (i - (perSide - 1) / 2) * 0.019;
+    for (let x = 0; x < whiskerCount; x += 1) {
+      const spread = (x - (whiskerCount - 1) / 2) * 0.036;
+      // 越靠下的那根越平：三根从吻部侧面呈扇形挑开
+      const tilt = 1.42 - x * 0.13;
+      const by = muzzleLocalY + 0.018 + spread;
+      const bx = side * mw * 0.42;
       d.push({
-        parent: "head", geometry: "box",
-        size: { x: whiskerLength, y: 0.005, z: 0.005 },
+        parent: "head", geometry: "capsule",
+        size: { x: 0.0045, y: whiskerLength, z: 0.0045 },
+        // capsule 沿局部 Y 轴，rotZ 把它转到接近水平；
+        // 中心点要沿这个方向推半个长度，否则会有一半埋进脸里
         pos: {
-          x: side * (mw * 0.46 + whiskerLength * 0.44),
-          y: muzzleLocalY + 0.004 + spread,
-          z: muzzleFront + 0.035,
+          x: bx + side * Math.sin(tilt) * whiskerLength * 0.5,
+          y: by + Math.cos(tilt) * whiskerLength * 0.5,
+          z: muzzleSurfaceZ(mw * 0.4, by) + 0.012,
         },
-        rotZ: side * (0.26 - i * 0.16),
-        rotY: side * -0.34,
+        rotZ: side * -tilt,
         material: "dark",
       });
     }
@@ -1080,21 +1238,34 @@ function handDecor(w: number): AvatarDecorSpec[] {
   for (const side of [-1, 1] as const) {
     const parent: AvatarDecorParent = side < 0 ? "foreArmL" : "foreArmR";
     const y = -FOREARM_HEIGHT + 0.012;
+    // 连指手套：一整块掌 + 一整块指排 + 三颗指尖。
+    // 上一版是三根分开的胶囊当手指，远看像"三根白香肠"——
+    // 卡通手不是三根独立管子，是一块有指尖起伏的手套。
     d.push({
-      parent, geometry: "ellipsoid", size: { x: 0.092 * w, y: 0.1 * w, z: 0.096 * w },
+      parent, geometry: "ellipsoid", size: { x: 0.1 * w, y: 0.088 * w, z: 0.108 * w },
       pos: { x: 0, y, z: 0 }, material: "paw",
     });
-    for (let i = 0; i < 3; i += 1) {
+    d.push({
+      parent, geometry: "ellipsoid", size: { x: 0.094 * w, y: 0.082 * w, z: 0.084 * w },
+      pos: { x: 0, y: y - 0.052 * w, z: -0.012 * w },
+      rotX: -0.22, material: "paw",
+    });
+    for (const i of [-1, 0, 1] as const) {
       d.push({
-        parent, geometry: "capsule", size: { x: 0.03 * w, y: 0.048 * w, z: 0.03 * w },
-        pos: { x: (i - 1) * 0.025 * w, y: y - 0.042 * w, z: -0.016 * w },
-        rotX: -0.28, material: "paw",
+        parent, geometry: "ellipsoid", size: { x: 0.03 * w, y: 0.034 * w, z: 0.034 * w },
+        pos: {
+          x: i * 0.028 * w,
+          y: y - 0.086 * w + Math.abs(i) * 0.004 * w,
+          z: -0.028 * w,
+        },
+        material: "paw",
       });
     }
+    // 拇指：从掌的内侧斜着伸出来，剪影上才有"抓握"的方向
     d.push({
-      parent, geometry: "capsule", size: { x: 0.032 * w, y: 0.052 * w, z: 0.032 * w },
-      pos: { x: side * 0.046 * w, y: y - 0.014 * w, z: -0.024 * w },
-      rotZ: side * 0.7, rotX: -0.3, material: "paw",
+      parent, geometry: "ellipsoid", size: { x: 0.036 * w, y: 0.058 * w, z: 0.04 * w },
+      pos: { x: side * 0.052 * w, y: y - 0.018 * w, z: -0.026 * w },
+      rotZ: side * 0.72, rotX: -0.34, material: "paw",
     });
   }
   return d;
@@ -1170,7 +1341,7 @@ export function torsoGeometryOf(style: CharacterStyle): THREE.BufferGeometry {
   if (cached !== undefined) {
     return cached;
   }
-  const geometry = new THREE.LatheGeometry(densifyProfile(torsoProfileOf(style), 4), 48);
+  const geometry = new THREE.LatheGeometry(densifyProfile(torsoProfileOf(style), 4), 96);
   const position = geometry.getAttribute("position");
   const colors = new Float32Array(position.count * 3);
   const fur = new THREE.Color(style.fur);
@@ -1178,11 +1349,11 @@ export function torsoGeometryOf(style: CharacterStyle): THREE.BufferGeometry {
   const mixed = new THREE.Color();
   // 胸口补丁的范围：斗牛犬从胯一直铺到锁骨，猫只到胸骨
   const big = style.id === "spike";
-  const patchTop = big ? 1.4 : 1.38;
-  const patchBottom = big ? 0.86 : 1.0;
+  const patchTop = big ? 1.37 : 1.38;
+  const patchBottom = big ? 0.93 : 1.0;
   // bellyPatch 是"强度同时也是开关"：0 表示这只角色胸口没有浅色块
   const intensity = style.bellyPatch;
-  const halfArc = 0.62 + 0.34 * intensity;
+  const halfArc = 0.98 + 0.3 * intensity;
   /**
    * 弧宽随高度变化：这才是"围兜"而不是"胸前贴了一块白纸"。
    *
@@ -1200,7 +1371,8 @@ export function torsoGeometryOf(style: CharacterStyle): THREE.BufferGeometry {
     // LatheGeometry：phi=0 在 +Z（背面），所以正面 −Z 对应 atan2(x, −z) = 0
     const phi = Math.abs(Math.atan2(x, -z));
     const t = (y - patchBottom) / (patchTop - patchBottom);
-    const across = 1 - smoothstep(arcAt(Math.min(1, Math.max(0, t))) * 0.72, arcAt(Math.min(1, Math.max(0, t))), phi);
+    const arc = arcAt(Math.min(1, Math.max(0, t)));
+    const across = 1 - smoothstep(arc * 0.42, arc, phi);
     const along =
       smoothstep(patchBottom, patchBottom + 0.1, y) *
       (1 - smoothstep(patchTop - 0.11, patchTop, y));
@@ -1361,7 +1533,7 @@ function createPrimitive(
       return cached;
     }
     const points = (spec.profile ?? []).map(([r, h]) => new THREE.Vector2(r, h));
-    const created = new THREE.LatheGeometry(points, 22);
+    const created = new THREE.LatheGeometry(points, 96);
     geometryCache.set(key, created);
     return created;
   }
@@ -1396,8 +1568,72 @@ function createPrimitive(
   return created;
 }
 
+/* ------------------------------------------------------------------ *
+ * 卡通描边（inverted hull）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 描边的世界厚度（米）。
+ *
+ * 这是**世界空间**的固定值，不是百分比：1.8m 高的角色、屏幕上约 2.3mm/px，
+ * 0.007 就是 3px 左右的一条线。按百分比做的话，细手指的边会比躯干粗十倍。
+ */
+const OUTLINE_WIDTH = 0.013;
+
+/**
+ * 描边材质：只画**背面**的纯色壳，没有光照。
+ *
+ * 为什么必须有它：卡通角色的"读得像动画"有一半来自轮廓线。没有描边的 3D 造型
+ * 无论配色多准，看上去都是一块塑料——这是上一版被说"丑"的第一原因
+ * （不是配色错，是没有边界，所有面糊在一起）。
+ *
+ * 不用后期 Sobel：那要额外 RenderTarget + 全屏 pass，而这里是低模、硬边少，
+ * 壳法足够，还能跟着骨骼一起变形。
+ */
+let outlineMaterial: THREE.MeshBasicMaterial | null = null;
+
+function avatarOutlineMaterial(): THREE.MeshBasicMaterial {
+  outlineMaterial ??= new THREE.MeshBasicMaterial({
+    color: 0x1c1522,
+    side: THREE.BackSide,
+    // 描边也要吃雾，否则远处角色是一团纯黑剪影
+    fog: true,
+  });
+  return outlineMaterial;
+}
+
+/** 外扩后的旋转体几何（躯干的壳）。母线半径整体 +w，高度不变。 */
+const outlineGeometryCache = new Map<string, THREE.BufferGeometry>();
+
+function outlineLathe(profile: readonly (readonly [number, number])[], segments: number): THREE.BufferGeometry {
+  const key = `outline-lathe|${segments}|${profileKey(profile)}`;
+  const cached = outlineGeometryCache.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const points = profile.map(([r, y]) => new THREE.Vector2(r + OUTLINE_WIDTH, y));
+  const created = new THREE.LatheGeometry(points, segments);
+  outlineGeometryCache.set(key, created);
+  return created;
+}
+
+/**
+ * 这个部件值不值得描边。
+ *
+ * 只给"占据轮廓"的大件加壳：眼睛、牙、胡须、领结这些 8.5cm 以下的小件
+ * 本来就整块落在别的描边里，加壳纯粹白饶一遍 draw call —— 而且一旦壳比本体
+ * 还厚，瞳孔会被自己的描边糊成一团黑。
+ */
+const OUTLINE_MIN_SIZE = 0.085;
+
 /** 释放共享几何（只在整局销毁时调用，avatar 自身 dispose 不碰几何）。 */
 export function disposeAvatarGeometries(): void {
+  outlineMaterial?.dispose();
+  outlineMaterial = null;
+  for (const geometry of outlineGeometryCache.values()) {
+    geometry.dispose();
+  }
+  outlineGeometryCache.clear();
   for (const geometry of geometryCache.values()) {
     geometry.dispose();
   }
@@ -1434,6 +1670,34 @@ function createMesh(spec: MeshSpec & { material: AvatarMaterialKind }, materials
     mesh.rotation.z = spec.rotZ;
   }
   mesh.castShadow = true;
+  // 描边壳：和本体共享同一份几何/同一个父变换，只靠"再放大一圈"推到轮廓外。
+  //
+  // 挂在 mesh 底下而不是并列，是为了**自动继承**位置/旋转——加描边不用在
+  // 任何别处再对齐一次坐标。放大倍数按 spec.size 反推，于是每个部件的壳
+  // 在世界空间里都是**同样的厚度**：手指的边和躯干的边一样粗，才像一支笔画的。
+  const footprint = Math.max(spec.size.x, spec.size.y, spec.size.z);
+  if (spec.outline ?? footprint >= OUTLINE_MIN_SIZE) {
+    const lathe = spec.geometry === "lathe";
+    const shell = new THREE.Mesh(
+      lathe ? outlineLathe(spec.profile ?? [], 96) : geometry,
+      avatarOutlineMaterial(),
+    );
+    shell.name = `outline:${spec.material}`;
+    if (!lathe) {
+      // ×2：spec.size 是**直径**，要让轮廓外每侧各厚一个线宽，
+      // 直径就得加两倍（之前只加了 1 倍，线条细成 1px，等于没有）
+      const grow = (spec.outlineWidth ?? OUTLINE_WIDTH) * 2;
+      shell.scale.set(
+        (spec.size.x + grow) / spec.size.x,
+        (spec.size.y + grow) / spec.size.y,
+        (spec.size.z + grow) / spec.size.z,
+      );
+    }
+    shell.castShadow = false;
+    shell.receiveShadow = false;
+    shell.renderOrder = -1;
+    mesh.add(shell);
+  }
   return mesh;
 }
 
@@ -1609,8 +1873,14 @@ export class AvatarModel {
       const segmentCount = 6;
       const segmentLength = 0.095 * style.tailLength;
       const baseRadius = 0.026 * style.tailThickness;
-      // 每节的相对后仰量：头两节几乎水平向后（−1.1rad），之后逐渐立起来往上卷
-      const curl = [-1.12, 0.34, 0.34, 0.32, 0.3, 0.26];
+      /**
+       * 每节的相对转角。正角度绕 X 轴把本节末端推向 +Z（身后）。
+       *
+       * 这里曾经是 `[-1.12, 0.34, ...]`——符号反了，第一节把尾巴朝 **−Z（身前）**
+       * 折过去，整条尾巴从背后穿过躯干、在胸口露出四节，看起来像"肚子上插了根棍子"。
+       * 这是四个角色共有的 bug，也是"丑"里最扎眼的一处。
+       */
+      const curl = [1.12, -0.34, -0.34, -0.32, -0.3, -0.26];
       let parent: THREE.Object3D = tail;
       for (let i = 0; i < segmentCount; i += 1) {
         const joint = new THREE.Group();
@@ -1662,6 +1932,8 @@ export class AvatarModel {
     attachArm(-1, shoulderL, elbowL);
     attachArm(1, shoulderR, elbowR);
     // 持物姿态：右臂垂、小臂前抬，腕落在腰前；左臂只弯一点点，看起来是自然站姿
+    // 手臂不外倾：外倾会让肩球与上臂错位，关节处露出一道台阶，
+    // 手掌也跟着朝外翻（像举手投降）。肩膀的斜线交给躯干的斜方肌段去做。
     shoulderR.rotation.x = CARRY_SHOULDER;
     elbowR.rotation.x = CARRY_ELBOW;
     elbowL.rotation.x = 0.22;

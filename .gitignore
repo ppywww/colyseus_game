@@ -46,3 +46,8 @@ Thumbs.db
 # 临时文件
 tmp/
 temp/
+
+# WorkBuddy 本地工作区（记忆/临时产物，体积大且只对本人有意义）
+.workbuddy/
+# 演示工具本地状态
+.slidep/
